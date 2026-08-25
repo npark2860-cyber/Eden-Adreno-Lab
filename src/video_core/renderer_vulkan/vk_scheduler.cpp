@@ -87,9 +87,7 @@ void Scheduler::WaitWorker() {
     }
 
     // Now wait for execution to finish.
-    {
-        std::scoped_lock el{execution_mutex};
-    }
+    std::scoped_lock el{execution_mutex};
     if (profiler.Enabled()) {
         profiler.RecordWorkerWait(AdrenoProfiler::ElapsedNs(wait_start));
     }
@@ -154,7 +152,7 @@ void Scheduler::RealizeDeferredClear() {
         return;
     }
     const DeferredClear dc = deferred_clear;
-    deferred_clear.framebuffer = {};
+    deferred_clear = {};
     AdrenoProfiler::Get().RecordDeferredClear();
 
     std::array<VkClearValue, 9> clear_values{};
