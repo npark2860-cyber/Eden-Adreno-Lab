@@ -25,6 +25,7 @@
 #include "video_core/present.h"
 #include "video_core/renderer_vulkan/present/util.h"
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
+#include "video_core/renderer_vulkan/vk_adreno_profiler.h"
 #include "video_core/renderer_vulkan/vk_blit_screen.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -178,6 +179,9 @@ try
 #endif
 {
 
+    AdrenoProfiler::Get().Initialize(
+        device.GetDriverID() == VK_DRIVER_ID_QUALCOMM_PROPRIETARY);
+
     if (Settings::values.renderer_force_max_clock.GetValue() && device.ShouldBoostClocks()) {
         turbo_mode.emplace(instance, dld);
         scheduler.RegisterOnSubmit([this] { turbo_mode->QueueSubmitted(); });
@@ -237,6 +241,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     gpu.RendererFrameEndNotify();
     rasterizer.TickFrame();
+    AdrenoProfiler::Get().FrameEnd();
 }
 
 void RendererVulkan::Report() const {

@@ -18,6 +18,7 @@
 #include "common/bit_field.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
+#include "video_core/renderer_vulkan/vk_adreno_profiler.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
@@ -310,11 +311,16 @@ GraphicsPipeline::GraphicsPipeline(
     }
 
     auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {
+        auto& profiler = AdrenoProfiler::Get();
+        const auto build_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};
         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
         try {
             MakePipeline(render_pass);
         } catch (const vk::Exception& exception) {
+            if (profiler.Enabled()) {
+                profiler.RecordGraphicsPipelineBuild(AdrenoProfiler::ElapsedNs(build_start), false);
+            }
             LOG_CRITICAL(Render_Vulkan, "Graphics pipeline build failed: {}", exception.what());
             std::scoped_lock lock{build_mutex};
             is_built = true;
@@ -323,6 +329,9 @@ GraphicsPipeline::GraphicsPipeline(
                 shader_notify->MarkShaderComplete();
             }
             return;
+        }
+        if (profiler.Enabled()) {
+            profiler.RecordGraphicsPipelineBuild(AdrenoProfiler::ElapsedNs(build_start), true);
         }
         if (pipeline_statistics) {
             pipeline_statistics->Collect(device, *pipeline);

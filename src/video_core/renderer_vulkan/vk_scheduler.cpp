@@ -16,6 +16,7 @@
 #include "common/settings.h"
 #include "common/thread.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "video_core/renderer_vulkan/vk_adreno_profiler.h"
 #include "video_core/renderer_vulkan/vk_command_pool.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
@@ -65,11 +66,18 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore)
     // When finishing, we need to wait for the submission to have executed on the device.
     const u64 presubmit_tick = CurrentTick();
     SubmitExecution(signal_semaphore, wait_semaphore);
+    auto& profiler = AdrenoProfiler::Get();
+    const auto wait_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};
     Wait(presubmit_tick);
+    if (profiler.Enabled()) {
+        profiler.RecordFinishWait(AdrenoProfiler::ElapsedNs(wait_start));
+    }
     AllocateNewContext();
 }
 
 void Scheduler::WaitWorker() {
+    auto& profiler = AdrenoProfiler::Get();
+    const auto wait_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};
     DispatchWork();
 
     // Ensure the queue is drained.
@@ -80,6 +88,9 @@ void Scheduler::WaitWorker() {
 
     // Now wait for execution to finish.
     std::scoped_lock el{execution_mutex};
+    if (profiler.Enabled()) {
+        profiler.RecordWorkerWait(AdrenoProfiler::ElapsedNs(wait_start));
+    }
 }
 
 void Scheduler::DispatchWork() {
@@ -133,6 +144,7 @@ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass
     renderpass_images = framebuffer->Images();
     renderpass_image_ranges = framebuffer->ImageRanges();
     framebuffer->MarkResolveShadowsUpToDate();
+    AdrenoProfiler::Get().RecordRenderPassBegin(framebuffer->NumImages());
 }
 
 void Scheduler::RealizeDeferredClear() {
@@ -141,6 +153,7 @@ void Scheduler::RealizeDeferredClear() {
     }
     const DeferredClear dc = deferred_clear;
     deferred_clear = {};
+    AdrenoProfiler::Get().RecordDeferredClear();
 
     std::array<VkClearValue, 9> clear_values{};
     u32 count = 0;
@@ -212,6 +225,7 @@ void Scheduler::RequestRenderpass(const Framebuffer* framebuffer) {
     if (renderpass == state.renderpass && framebuffer_handle == state.framebuffer &&
         render_area.width == state.render_area.width &&
         render_area.height == state.render_area.height) {
+        AdrenoProfiler::Get().RecordRenderPassReuse();
         return;
     }
     // Ends any active pass and realizes a deferred clear
@@ -264,6 +278,7 @@ bool Scheduler::UpdateDescriptorBufferChunk(u32 descriptor_chunk) {
     }
     state.descriptor_buffer_bound = true;
     state.descriptor_buffer_chunk = descriptor_chunk;
+    AdrenoProfiler::Get().RecordDescriptorBufferBind();
     return true;
 }
 
@@ -380,6 +395,7 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
         }
     });
     chunk->MarkSubmit();
+    AdrenoProfiler::Get().RecordSubmit();
     DispatchWork();
     return signal_value;
 }
@@ -406,6 +422,9 @@ void Scheduler::EndRenderPass()
         if (!state.renderpass) {
             return;
         }
+
+        AdrenoProfiler::Get().RecordRenderPassEnd(num_renderpass_images);
+        AdrenoProfiler::Get().RecordPostRenderPassImageBarriers(num_renderpass_images);
 
         query_cache->CounterClose(VideoCommon::QueryType::StreamingByteCount);
 
