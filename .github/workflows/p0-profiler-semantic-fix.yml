@@ -1,0 +1,48 @@
+name: Repair P0 Profiler Semantic Neutrality
+
+on:
+  push:
+    branches:
+      - lab/p0-adreno-profiler
+    paths:
+      - .github/workflows/p0-profiler-semantic-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: lab/p0-adreno-profiler
+          fetch-depth: 0
+      - name: Restore original scheduler semantics
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/video_core/renderer_vulkan/vk_scheduler.cpp')
+          text = p.read_text(encoding='utf-8')
+
+          old = '''    // Now wait for execution to finish.\n    {\n        std::scoped_lock el{execution_mutex};\n    }\n    if (profiler.Enabled()) {\n        profiler.RecordWorkerWait(AdrenoProfiler::ElapsedNs(wait_start));\n    }\n}'''
+          new = '''    // Now wait for execution to finish.\n    std::scoped_lock el{execution_mutex};\n    if (profiler.Enabled()) {\n        profiler.RecordWorkerWait(AdrenoProfiler::ElapsedNs(wait_start));\n    }\n}'''
+          if text.count(old) != 1:
+              raise RuntimeError('WaitWorker instrumentation context mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''    const DeferredClear dc = deferred_clear;\n    deferred_clear.framebuffer = {};\n    AdrenoProfiler::Get().RecordDeferredClear();'''
+          new = '''    const DeferredClear dc = deferred_clear;\n    deferred_clear = {};\n    AdrenoProfiler::Get().RecordDeferredClear();'''
+          if text.count(old) != 1:
+              raise RuntimeError('deferred_clear instrumentation context mismatch')
+          text = text.replace(old, new, 1)
+
+          p.write_text(text, encoding='utf-8')
+          PY
+          git diff --check -- src/video_core/renderer_vulkan/vk_scheduler.cpp
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/video_core/renderer_vulkan/vk_scheduler.cpp
+          git commit -m "fix(lab): keep P0 scheduler instrumentation semantically neutral [skip ci]"
+          git push origin HEAD:lab/p0-adreno-profiler
