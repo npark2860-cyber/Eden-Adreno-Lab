@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
+#include "video_core/renderer_vulkan/vk_adreno_profiler.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -443,6 +444,14 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
     if (dst_buffer == VK_NULL_HANDLE || src_buffer == VK_NULL_HANDLE) {
         return;
     }
+    u64 copy_bytes{};
+    for (const auto& copy : copies) {
+        copy_bytes += copy.size;
+    }
+    const bool reordered_upload =
+        src_buffer == staging_pool.StreamBuf() && can_reorder_upload;
+    AdrenoProfiler::Get().RecordBufferCopy(copy_bytes, reordered_upload);
+
     static constexpr VkMemoryBarrier READ_BARRIER{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
         .pNext = nullptr,
@@ -459,7 +468,7 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
     // Measuring a popular game, this number never exceeds the specified size once data is warmed up
     boost::container::small_vector<VkBufferCopy, 8> vk_copies(copies.size());
     std::ranges::transform(copies, vk_copies.begin(), MakeBufferCopy);
-    if (src_buffer == staging_pool.StreamBuf() && can_reorder_upload) {
+    if (reordered_upload) {
         scheduler.RecordWithUploadBuffer([src_buffer, dst_buffer, vk_copies](
                                              vk::CommandBuffer, vk::CommandBuffer upload_cmdbuf) {
             upload_cmdbuf.CopyBuffer(src_buffer, dst_buffer, VideoCommon::FixSmallVectorADL(vk_copies));

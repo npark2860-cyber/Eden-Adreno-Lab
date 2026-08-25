@@ -24,6 +24,10 @@ double ToMs(u64 nanoseconds) {
     return static_cast<double>(nanoseconds) / 1'000'000.0;
 }
 
+double ToMiB(u64 bytes) {
+    return static_cast<double>(bytes) / (1024.0 * 1024.0);
+}
+
 } // Anonymous namespace
 
 AdrenoProfiler& AdrenoProfiler::Get() {
@@ -41,7 +45,7 @@ bool AdrenoProfiler::ParseEnabled() {
     }
     const std::string_view value{raw};
     return value == "1" || value == "true" || value == "TRUE" || value == "on" ||
-           value == "ON";
+ value == "ON";
 }
 
 u32 AdrenoProfiler::ParseReportFrames() {
@@ -62,12 +66,12 @@ void AdrenoProfiler::Initialize(bool is_qualcomm_proprietary) {
     enabled.store(active, std::memory_order_relaxed);
     if (active) {
         LOG_INFO(Render_Vulkan,
-                 "[ADRENO-P0] profiler enabled; report interval={} frames",
-                 report_every_frames);
+       "[ADRENO-P0] profiler enabled; report interval={} frames",
+       report_every_frames);
     } else if (requested) {
         LOG_WARNING(Render_Vulkan,
-                    "[ADRENO-P0] EDEN_ADRENO_PROFILE requested on a non-Qualcomm "
-                    "proprietary Vulkan driver; profiler disabled");
+          "[ADRENO-P0] EDEN_ADRENO_PROFILE requested on a non-Qualcomm "
+          "proprietary Vulkan driver; profiler disabled");
     }
 }
 
@@ -86,6 +90,12 @@ void AdrenoProfiler::FrameEnd() {
     const u64 rp_reuse = Take(counters.render_pass_reuse);
     const u64 rp_end = Take(counters.render_pass_end);
     const u64 rp_images = Take(counters.render_pass_images);
+    const u64 rp_end_unknown = Take(counters.render_pass_end_unknown);
+    const u64 rp_end_deferred = Take(counters.render_pass_end_deferred_clear);
+    const u64 rp_end_framebuffer = Take(counters.render_pass_end_framebuffer_change);
+    const u64 rp_end_outside = Take(counters.render_pass_end_outside_operation);
+    const u64 rp_end_submit = Take(counters.render_pass_end_submit);
+    const u64 rp_end_flush_deferred = Take(counters.render_pass_end_flush_deferred_clear);
     const u64 rp_barriers = Take(counters.post_render_pass_image_barriers);
     const u64 deferred_clears = Take(counters.deferred_clears);
     const u64 submits = Take(counters.submits);
@@ -104,6 +114,16 @@ void AdrenoProfiler::FrameEnd() {
     const u64 descriptor_buffer_entries = Take(counters.descriptor_buffer_entries);
     const u64 descriptor_overflows = Take(counters.descriptor_overflows);
     const u64 descriptor_buffer_binds = Take(counters.descriptor_buffer_binds);
+    const u64 staging_upload_requests = Take(counters.staging_upload_requests);
+    const u64 staging_upload_bytes = Take(counters.staging_upload_bytes);
+    const u64 staging_download_requests = Take(counters.staging_download_requests);
+    const u64 staging_download_bytes = Take(counters.staging_download_bytes);
+    const u64 deferred_download_requests = Take(counters.staging_deferred_download_requests);
+    const u64 deferred_download_bytes = Take(counters.staging_deferred_download_bytes);
+    const u64 buffer_copy_calls = Take(counters.buffer_copy_calls);
+    const u64 buffer_copy_bytes = Take(counters.buffer_copy_bytes);
+    const u64 reordered_upload_calls = Take(counters.reordered_upload_copy_calls);
+    const u64 reordered_upload_bytes = Take(counters.reordered_upload_copy_bytes);
 
     LOG_INFO(
         Render_Vulkan,
@@ -119,6 +139,19 @@ void AdrenoProfiler::FrameEnd() {
         compute_builds, compute_failures, ToMs(compute_build_ns),
         descriptor_reservations, descriptor_entries, PerFrame(descriptor_entries, frames),
         descriptor_buffer_entries, descriptor_buffer_binds, descriptor_overflows);
+
+    LOG_INFO(
+        Render_Vulkan,
+        "[ADRENO-P0.2] frames={} | RPend unknown={} deferred={} framebuffer={} outside={} "
+        "submit={} flushDeferred={} | stagingUpload={} {:.3f}MiB stagingDownload={} "
+        "{:.3f}MiB deferredDownload={} {:.3f}MiB | bufferCopy={} {:.3f}MiB "
+        "reorderedUpload={} {:.3f}MiB",
+        frames, rp_end_unknown, rp_end_deferred, rp_end_framebuffer, rp_end_outside,
+        rp_end_submit, rp_end_flush_deferred, staging_upload_requests,
+        ToMiB(staging_upload_bytes), staging_download_requests,
+        ToMiB(staging_download_bytes), deferred_download_requests,
+        ToMiB(deferred_download_bytes), buffer_copy_calls, ToMiB(buffer_copy_bytes),
+        reordered_upload_calls, ToMiB(reordered_upload_bytes));
 }
 
 void AdrenoProfiler::RecordRenderPassBegin(u32 image_count) {
@@ -131,14 +164,35 @@ void AdrenoProfiler::RecordRenderPassReuse() {
     if (Enabled()) counters.render_pass_reuse.fetch_add(1, std::memory_order_relaxed);
 }
 
-void AdrenoProfiler::RecordRenderPassEnd(u32) {
-    if (Enabled()) counters.render_pass_end.fetch_add(1, std::memory_order_relaxed);
+void AdrenoProfiler::RecordRenderPassEnd(u32, RenderPassEndReason reason) {
+    if (!Enabled()) return;
+    counters.render_pass_end.fetch_add(1, std::memory_order_relaxed);
+    switch (reason) {
+    case RenderPassEndReason::Unknown:
+        counters.render_pass_end_unknown.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case RenderPassEndReason::DeferredClear:
+        counters.render_pass_end_deferred_clear.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case RenderPassEndReason::FramebufferChange:
+        counters.render_pass_end_framebuffer_change.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case RenderPassEndReason::OutsideOperation:
+        counters.render_pass_end_outside_operation.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case RenderPassEndReason::Submit:
+        counters.render_pass_end_submit.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case RenderPassEndReason::FlushDeferredClear:
+        counters.render_pass_end_flush_deferred_clear.fetch_add(1, std::memory_order_relaxed);
+        break;
+    }
 }
 
 void AdrenoProfiler::RecordPostRenderPassImageBarriers(u32 image_count) {
     if (Enabled()) {
         counters.post_render_pass_image_barriers.fetch_add(image_count,
-                                                           std::memory_order_relaxed);
+                                                 std::memory_order_relaxed);
     }
 }
 
@@ -184,10 +238,10 @@ void AdrenoProfiler::RecordDescriptorReservation(size_t entries, bool descriptor
     if (!Enabled()) return;
     counters.descriptor_reservations.fetch_add(1, std::memory_order_relaxed);
     counters.descriptor_entries.fetch_add(static_cast<u64>(entries),
-                                          std::memory_order_relaxed);
+                                std::memory_order_relaxed);
     if (descriptor_buffer) {
         counters.descriptor_buffer_entries.fetch_add(static_cast<u64>(entries),
-                                                     std::memory_order_relaxed);
+                                           std::memory_order_relaxed);
     }
 }
 
@@ -198,6 +252,33 @@ void AdrenoProfiler::RecordDescriptorOverflow() {
 void AdrenoProfiler::RecordDescriptorBufferBind() {
     if (Enabled()) {
         counters.descriptor_buffer_binds.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void AdrenoProfiler::RecordStagingRequest(u64 bytes, bool download, bool deferred) {
+    if (!Enabled()) return;
+    if (download) {
+        counters.staging_download_requests.fetch_add(1, std::memory_order_relaxed);
+        counters.staging_download_bytes.fetch_add(bytes, std::memory_order_relaxed);
+        if (deferred) {
+  counters.staging_deferred_download_requests.fetch_add(1,
+                                                       std::memory_order_relaxed);
+  counters.staging_deferred_download_bytes.fetch_add(bytes,
+                                                     std::memory_order_relaxed);
+        }
+    } else {
+        counters.staging_upload_requests.fetch_add(1, std::memory_order_relaxed);
+        counters.staging_upload_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+}
+
+void AdrenoProfiler::RecordBufferCopy(u64 bytes, bool reordered_upload) {
+    if (!Enabled()) return;
+    counters.buffer_copy_calls.fetch_add(1, std::memory_order_relaxed);
+    counters.buffer_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    if (reordered_upload) {
+        counters.reordered_upload_copy_calls.fetch_add(1, std::memory_order_relaxed);
+        counters.reordered_upload_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
     }
 }
 

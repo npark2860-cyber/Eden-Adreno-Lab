@@ -173,7 +173,7 @@ void Scheduler::RealizeDeferredClear() {
         dc.depth_stencil && dc.framebuffer->DiscardsMsaaDepthStencil();
     const VkRenderPass renderpass = dc.framebuffer->RenderPassVariant(
         dc.color_clear_mask, dc.depth_stencil, color_discard_mask, depth_stencil_discard);
-    EndRenderPass();
+    EndRenderPass(RenderPassEndReason::DeferredClear);
     BeginRenderPassImpl(dc.framebuffer, renderpass, clear_values.data(), count);
 }
 
@@ -184,7 +184,7 @@ bool Scheduler::DeferColorClear(const Framebuffer* framebuffer, u32 rt_slot,
     }
     if (deferred_clear.framebuffer != nullptr && deferred_clear.framebuffer != framebuffer) {
         RealizeDeferredClear();
-        EndRenderPass();
+        EndRenderPass(RenderPassEndReason::DeferredClear);
     }
     deferred_clear.framebuffer = framebuffer;
     deferred_clear.color_clear_mask |= 1u << rt_slot;
@@ -198,7 +198,7 @@ bool Scheduler::DeferDepthStencilClear(const Framebuffer* framebuffer, const VkC
     }
     if (deferred_clear.framebuffer != nullptr && deferred_clear.framebuffer != framebuffer) {
         RealizeDeferredClear();
-        EndRenderPass();
+        EndRenderPass(RenderPassEndReason::DeferredClear);
     }
     deferred_clear.framebuffer = framebuffer;
     deferred_clear.depth_stencil = true;
@@ -211,7 +211,7 @@ void Scheduler::FlushDeferredClear() {
         return;
     }
     RealizeDeferredClear();
-    EndRenderPass();
+    EndRenderPass(RenderPassEndReason::FlushDeferredClear);
 }
 
 void Scheduler::RequestRenderpass(const Framebuffer* framebuffer) {
@@ -229,12 +229,12 @@ void Scheduler::RequestRenderpass(const Framebuffer* framebuffer) {
         return;
     }
     // Ends any active pass and realizes a deferred clear
-    EndRenderPass();
+    EndRenderPass(RenderPassEndReason::FramebufferChange);
     BeginRenderPassImpl(framebuffer, renderpass, nullptr, 0);
 }
 
 void Scheduler::RequestOutsideRenderPassOperationContext() {
-    EndRenderPass();
+    EndRenderPass(RenderPassEndReason::OutsideOperation);
 }
 
 bool Scheduler::UpdateGraphicsPipeline(GraphicsPipeline* pipeline) {
@@ -413,17 +413,16 @@ void Scheduler::InvalidateState() {
 
 void Scheduler::EndPendingOperations() {
     query_cache->CounterReset(VideoCommon::QueryType::ZPassPixelCount64);
-    EndRenderPass();
+    EndRenderPass(RenderPassEndReason::Submit);
 }
 
-void Scheduler::EndRenderPass()
-    {
+void Scheduler::EndRenderPass(RenderPassEndReason reason) {
         RealizeDeferredClear();
         if (!state.renderpass) {
             return;
         }
 
-        AdrenoProfiler::Get().RecordRenderPassEnd(num_renderpass_images);
+        AdrenoProfiler::Get().RecordRenderPassEnd(num_renderpass_images, reason);
         AdrenoProfiler::Get().RecordPostRenderPassImageBarriers(num_renderpass_images);
 
         query_cache->CounterClose(VideoCommon::QueryType::StreamingByteCount);

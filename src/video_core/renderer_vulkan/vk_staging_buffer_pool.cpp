@@ -15,6 +15,7 @@
 #include "common/bit_util.h"
 #include "common/common_types.h"
 #include "common/literals.h"
+#include "video_core/renderer_vulkan/vk_adreno_profiler.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -101,6 +102,12 @@ StagingBufferPool::StagingBufferPool(const Device& device_, MemoryAllocator& mem
 StagingBufferPool::~StagingBufferPool() = default;
 
 StagingBufferRef StagingBufferPool::Request(size_t size, MemoryUsage usage, bool deferred) {
+    auto& profiler = AdrenoProfiler::Get();
+    if (usage == MemoryUsage::Upload) {
+        profiler.RecordStagingRequest(static_cast<u64>(size), false, deferred);
+    } else if (usage == MemoryUsage::Download) {
+        profiler.RecordStagingRequest(static_cast<u64>(size), true, deferred);
+    }
     if (!deferred && usage == MemoryUsage::Upload && size <= region_size) {
         return GetStreamBuffer(size);
     }

@@ -29,7 +29,21 @@ Each `[ADRENO-P0]` summary reports:
 - graphics/compute pipeline build count, failures and wall time,
 - descriptor reservation count and entries,
 - descriptor-buffer entries/binds,
-- descriptor payload overflows.
+- descriptor payload overflows,
+- P0.2 staging upload/download request counts and requested bytes,
+- P0.2 buffer-copy calls/bytes plus reordered-upload subset,
+- P0.2 render-pass termination reason counts.
+
+## Analyze a capture
+
+Preserve the complete log and run:
+
+```powershell
+python tools/adreno_lab/analyze_eden_gpu_log.py "C:\path\to\log" --json
+```
+
+The analyzer aggregates every `[ADRENO-P0]` and `[ADRENO-P0.2]` report in the capture and also
+retains the original existing-log Vulkan baseline counters when present.
 
 ## Interpretation rules
 
@@ -40,8 +54,11 @@ Each `[ADRENO-P0]` summary reports:
 - A high render-pass begin/end rate is a candidate for TBDR/GMEM locality review.
 - Descriptor counts are pressure/churn indicators; they do not prove descriptor aliasing is safe.
 
-## Next instrumentation
+## P0.2 status
 
-P0.2 should add byte counts and reason tags for upload/readback/copy paths, plus render-pass
-termination reasons. GPU timestamp instrumentation should remain targeted and opt-in so the
-profiler itself does not materially perturb the workload.
+P0.2 adds transfer-pressure counters and render-pass termination reason tags without changing
+Vulkan command generation. See `LAB/P0_2_TRANSFER_AND_RP_REASONS.md` for counter semantics,
+Windows ARM64 compile validation, and the fixed-scene capture protocol.
+
+GPU timestamp instrumentation remains a later targeted, opt-in step so the profiler itself does
+not materially perturb the workload.
