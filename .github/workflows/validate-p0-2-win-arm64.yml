@@ -8,7 +8,7 @@ on:
 
 jobs:
   video-core-arm64:
-    name: video_core / Windows ARM64
+    name: video_core / Windows ARM64 clang-cl
     runs-on: windows-11-arm
     timeout-minutes: 90
 
@@ -16,17 +16,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up MSVC ARM64
+      - name: Set up MSVC ARM64 environment
         uses: Eden-CI/msvc-dev-cmd@master
         with:
           arch: arm64
+
+      - name: Install LLVM/Clang
+        uses: Nerixyz/install-llvm-action@feat/new-llvm-versions
+        with:
+          version: "22.1.4"
+          env: true
 
       - name: Tool versions
         shell: pwsh
         run: |
           cmake --version
           ninja --version
-          cl 2>&1 | Select-Object -First 4
+          clang-cl --version
 
       - name: Install Vulkan SDK
         shell: powershell
@@ -36,6 +42,8 @@ jobs:
         shell: pwsh
         run: |
           cmake -S . -B build -G Ninja `
+            -DCMAKE_C_COMPILER=clang-cl `
+            -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_BUILD_TYPE=Release `
             -DBUILD_TESTING=OFF `
             -DYUZU_TESTS=OFF `
