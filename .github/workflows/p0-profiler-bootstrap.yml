@@ -1,0 +1,581 @@
+name: Bootstrap P0 Adreno Profiler
+
+on:
+  push:
+    branches:
+      - lab/p0-adreno-profiler
+    paths:
+      - .github/workflows/p0-profiler-bootstrap.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: lab/p0-adreno-profiler
+          fetch-depth: 0
+
+      - name: Apply profiler instrumentation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f'{path}: expected 1 match, got {count}: {old[:100]!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          profiler_h = r'''// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+          // SPDX-License-Identifier: GPL-3.0-or-later
+
+          #pragma once
+
+          #include <atomic>
+          #include <chrono>
+          #include <cstddef>
+
+          #include "common/common_types.h"
+
+          namespace Vulkan {
+
+          class AdrenoProfiler final {
+          public:
+              using Clock = std::chrono::steady_clock;
+              using TimePoint = Clock::time_point;
+
+              static AdrenoProfiler& Get();
+
+              void Initialize(bool is_qualcomm_proprietary);
+
+              [[nodiscard]] bool Enabled() const noexcept {
+                  return enabled.load(std::memory_order_relaxed);
+              }
+
+              static TimePoint Now() noexcept {
+                  return Clock::now();
+              }
+
+              static u64 ElapsedNs(TimePoint start) noexcept {
+                  return static_cast<u64>(
+                      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start)
+                          .count());
+              }
+
+              void FrameEnd();
+              void RecordRenderPassBegin(u32 image_count);
+              void RecordRenderPassReuse();
+              void RecordRenderPassEnd(u32 image_count);
+              void RecordPostRenderPassImageBarriers(u32 image_count);
+              void RecordDeferredClear();
+              void RecordSubmit();
+              void RecordFinishWait(u64 nanoseconds);
+              void RecordWorkerWait(u64 nanoseconds);
+              void RecordGraphicsPipelineBuild(u64 nanoseconds, bool success);
+              void RecordComputePipelineBuild(u64 nanoseconds, bool success);
+              void RecordDescriptorReservation(size_t entries, bool descriptor_buffer);
+              void RecordDescriptorOverflow();
+              void RecordDescriptorBufferBind();
+
+          private:
+              AdrenoProfiler();
+
+              static bool ParseEnabled();
+              static u32 ParseReportFrames();
+
+              struct Counters {
+                  std::atomic<u64> render_pass_begin{0};
+                  std::atomic<u64> render_pass_reuse{0};
+                  std::atomic<u64> render_pass_end{0};
+                  std::atomic<u64> render_pass_images{0};
+                  std::atomic<u64> post_render_pass_image_barriers{0};
+                  std::atomic<u64> deferred_clears{0};
+                  std::atomic<u64> submits{0};
+                  std::atomic<u64> finish_waits{0};
+                  std::atomic<u64> finish_wait_ns{0};
+                  std::atomic<u64> worker_waits{0};
+                  std::atomic<u64> worker_wait_ns{0};
+                  std::atomic<u64> graphics_pipeline_builds{0};
+                  std::atomic<u64> graphics_pipeline_failures{0};
+                  std::atomic<u64> graphics_pipeline_build_ns{0};
+                  std::atomic<u64> compute_pipeline_builds{0};
+                  std::atomic<u64> compute_pipeline_failures{0};
+                  std::atomic<u64> compute_pipeline_build_ns{0};
+                  std::atomic<u64> descriptor_reservations{0};
+                  std::atomic<u64> descriptor_entries{0};
+                  std::atomic<u64> descriptor_buffer_entries{0};
+                  std::atomic<u64> descriptor_overflows{0};
+                  std::atomic<u64> descriptor_buffer_binds{0};
+              } counters;
+
+              const bool requested;
+              const u32 report_every_frames;
+              std::atomic<bool> enabled{false};
+              u64 frames_since_report{};
+          };
+
+          } // namespace Vulkan
+          '''
+
+          profiler_cpp = r'''// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+          // SPDX-License-Identifier: GPL-3.0-or-later
+
+          #include "video_core/renderer_vulkan/vk_adreno_profiler.h"
+
+          #include <algorithm>
+          #include <cstdlib>
+          #include <string_view>
+
+          #include "common/logging.h"
+
+          namespace Vulkan {
+          namespace {
+
+          u64 Take(std::atomic<u64>& value) {
+              return value.exchange(0, std::memory_order_relaxed);
+          }
+
+          double PerFrame(u64 value, u64 frames) {
+              return frames == 0 ? 0.0 : static_cast<double>(value) / static_cast<double>(frames);
+          }
+
+          double ToMs(u64 nanoseconds) {
+              return static_cast<double>(nanoseconds) / 1'000'000.0;
+          }
+
+          } // Anonymous namespace
+
+          AdrenoProfiler& AdrenoProfiler::Get() {
+              static AdrenoProfiler profiler;
+              return profiler;
+          }
+
+          AdrenoProfiler::AdrenoProfiler()
+              : requested{ParseEnabled()}, report_every_frames{ParseReportFrames()} {}
+
+          bool AdrenoProfiler::ParseEnabled() {
+              const char* const raw = std::getenv("EDEN_ADRENO_PROFILE");
+              if (!raw) {
+                  return false;
+              }
+              const std::string_view value{raw};
+              return value == "1" || value == "true" || value == "TRUE" || value == "on" ||
+                     value == "ON";
+          }
+
+          u32 AdrenoProfiler::ParseReportFrames() {
+              const char* const raw = std::getenv("EDEN_ADRENO_PROFILE_FRAMES");
+              if (!raw) {
+                  return 120;
+              }
+              char* end{};
+              const unsigned long parsed = std::strtoul(raw, &end, 10);
+              if (end == raw || *end != '\0') {
+                  return 120;
+              }
+              return static_cast<u32>(std::clamp(parsed, 1UL, 3600UL));
+          }
+
+          void AdrenoProfiler::Initialize(bool is_qualcomm_proprietary) {
+              const bool active = requested && is_qualcomm_proprietary;
+              enabled.store(active, std::memory_order_relaxed);
+              if (active) {
+                  LOG_INFO(Render_Vulkan,
+                           "[ADRENO-P0] profiler enabled; report interval={} frames",
+                           report_every_frames);
+              } else if (requested) {
+                  LOG_WARNING(Render_Vulkan,
+                              "[ADRENO-P0] EDEN_ADRENO_PROFILE requested on a non-Qualcomm "
+                              "proprietary Vulkan driver; profiler disabled");
+              }
+          }
+
+          void AdrenoProfiler::FrameEnd() {
+              if (!Enabled()) {
+                  return;
+              }
+              ++frames_since_report;
+              if (frames_since_report < report_every_frames) {
+                  return;
+              }
+              const u64 frames = frames_since_report;
+              frames_since_report = 0;
+
+              const u64 rp_begin = Take(counters.render_pass_begin);
+              const u64 rp_reuse = Take(counters.render_pass_reuse);
+              const u64 rp_end = Take(counters.render_pass_end);
+              const u64 rp_images = Take(counters.render_pass_images);
+              const u64 rp_barriers = Take(counters.post_render_pass_image_barriers);
+              const u64 deferred_clears = Take(counters.deferred_clears);
+              const u64 submits = Take(counters.submits);
+              const u64 finish_waits = Take(counters.finish_waits);
+              const u64 finish_wait_ns = Take(counters.finish_wait_ns);
+              const u64 worker_waits = Take(counters.worker_waits);
+              const u64 worker_wait_ns = Take(counters.worker_wait_ns);
+              const u64 gfx_builds = Take(counters.graphics_pipeline_builds);
+              const u64 gfx_failures = Take(counters.graphics_pipeline_failures);
+              const u64 gfx_build_ns = Take(counters.graphics_pipeline_build_ns);
+              const u64 compute_builds = Take(counters.compute_pipeline_builds);
+              const u64 compute_failures = Take(counters.compute_pipeline_failures);
+              const u64 compute_build_ns = Take(counters.compute_pipeline_build_ns);
+              const u64 descriptor_reservations = Take(counters.descriptor_reservations);
+              const u64 descriptor_entries = Take(counters.descriptor_entries);
+              const u64 descriptor_buffer_entries = Take(counters.descriptor_buffer_entries);
+              const u64 descriptor_overflows = Take(counters.descriptor_overflows);
+              const u64 descriptor_buffer_binds = Take(counters.descriptor_buffer_binds);
+
+              LOG_INFO(
+                  Render_Vulkan,
+                  "[ADRENO-P0] frames={} | RP begin={} ({:.2f}/f) reuse={} end={} images={} "
+                  "postRPbarriers={} ({:.2f}/f) deferredClear={} | submit={} ({:.2f}/f) | "
+                  "finishWait={} {:.3f}ms workerWait={} {:.3f}ms | gfxPipe={} fail={} {:.3f}ms "
+                  "computePipe={} fail={} {:.3f}ms | descReserve={} entries={} ({:.1f}/f) "
+                  "dbufEntries={} dbufBinds={} overflow={}",
+                  frames, rp_begin, PerFrame(rp_begin, frames), rp_reuse, rp_end, rp_images,
+                  rp_barriers, PerFrame(rp_barriers, frames), deferred_clears, submits,
+                  PerFrame(submits, frames), finish_waits, ToMs(finish_wait_ns), worker_waits,
+                  ToMs(worker_wait_ns), gfx_builds, gfx_failures, ToMs(gfx_build_ns),
+                  compute_builds, compute_failures, ToMs(compute_build_ns),
+                  descriptor_reservations, descriptor_entries, PerFrame(descriptor_entries, frames),
+                  descriptor_buffer_entries, descriptor_buffer_binds, descriptor_overflows);
+          }
+
+          void AdrenoProfiler::RecordRenderPassBegin(u32 image_count) {
+              if (!Enabled()) return;
+              counters.render_pass_begin.fetch_add(1, std::memory_order_relaxed);
+              counters.render_pass_images.fetch_add(image_count, std::memory_order_relaxed);
+          }
+
+          void AdrenoProfiler::RecordRenderPassReuse() {
+              if (Enabled()) counters.render_pass_reuse.fetch_add(1, std::memory_order_relaxed);
+          }
+
+          void AdrenoProfiler::RecordRenderPassEnd(u32) {
+              if (Enabled()) counters.render_pass_end.fetch_add(1, std::memory_order_relaxed);
+          }
+
+          void AdrenoProfiler::RecordPostRenderPassImageBarriers(u32 image_count) {
+              if (Enabled()) {
+                  counters.post_render_pass_image_barriers.fetch_add(image_count,
+                                                                     std::memory_order_relaxed);
+              }
+          }
+
+          void AdrenoProfiler::RecordDeferredClear() {
+              if (Enabled()) counters.deferred_clears.fetch_add(1, std::memory_order_relaxed);
+          }
+
+          void AdrenoProfiler::RecordSubmit() {
+              if (Enabled()) counters.submits.fetch_add(1, std::memory_order_relaxed);
+          }
+
+          void AdrenoProfiler::RecordFinishWait(u64 nanoseconds) {
+              if (!Enabled()) return;
+              counters.finish_waits.fetch_add(1, std::memory_order_relaxed);
+              counters.finish_wait_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
+          }
+
+          void AdrenoProfiler::RecordWorkerWait(u64 nanoseconds) {
+              if (!Enabled()) return;
+              counters.worker_waits.fetch_add(1, std::memory_order_relaxed);
+              counters.worker_wait_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
+          }
+
+          void AdrenoProfiler::RecordGraphicsPipelineBuild(u64 nanoseconds, bool success) {
+              if (!Enabled()) return;
+              counters.graphics_pipeline_builds.fetch_add(1, std::memory_order_relaxed);
+              counters.graphics_pipeline_build_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
+              if (!success) {
+                  counters.graphics_pipeline_failures.fetch_add(1, std::memory_order_relaxed);
+              }
+          }
+
+          void AdrenoProfiler::RecordComputePipelineBuild(u64 nanoseconds, bool success) {
+              if (!Enabled()) return;
+              counters.compute_pipeline_builds.fetch_add(1, std::memory_order_relaxed);
+              counters.compute_pipeline_build_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
+              if (!success) {
+                  counters.compute_pipeline_failures.fetch_add(1, std::memory_order_relaxed);
+              }
+          }
+
+          void AdrenoProfiler::RecordDescriptorReservation(size_t entries, bool descriptor_buffer) {
+              if (!Enabled()) return;
+              counters.descriptor_reservations.fetch_add(1, std::memory_order_relaxed);
+              counters.descriptor_entries.fetch_add(static_cast<u64>(entries),
+                                                    std::memory_order_relaxed);
+              if (descriptor_buffer) {
+                  counters.descriptor_buffer_entries.fetch_add(static_cast<u64>(entries),
+                                                               std::memory_order_relaxed);
+              }
+          }
+
+          void AdrenoProfiler::RecordDescriptorOverflow() {
+              if (Enabled()) counters.descriptor_overflows.fetch_add(1, std::memory_order_relaxed);
+          }
+
+          void AdrenoProfiler::RecordDescriptorBufferBind() {
+              if (Enabled()) {
+                  counters.descriptor_buffer_binds.fetch_add(1, std::memory_order_relaxed);
+              }
+          }
+
+          } // namespace Vulkan
+          '''
+
+          # Dedent source text generated inside YAML/Python indentation.
+          import textwrap
+          Path('src/video_core/renderer_vulkan/vk_adreno_profiler.h').write_text(
+              textwrap.dedent(profiler_h), encoding='utf-8')
+          Path('src/video_core/renderer_vulkan/vk_adreno_profiler.cpp').write_text(
+              textwrap.dedent(profiler_cpp), encoding='utf-8')
+
+          replace_once(
+              'src/video_core/CMakeLists.txt',
+              '    renderer_vulkan/pipeline_statistics.cpp\n    renderer_vulkan/pipeline_statistics.h\n',
+              '    renderer_vulkan/pipeline_statistics.cpp\n    renderer_vulkan/pipeline_statistics.h\n'
+              '    renderer_vulkan/vk_adreno_profiler.cpp\n    renderer_vulkan/vk_adreno_profiler.h\n')
+
+          replace_once(
+              'src/video_core/renderer_vulkan/renderer_vulkan.cpp',
+              '#include "video_core/renderer_vulkan/renderer_vulkan.h"\n',
+              '#include "video_core/renderer_vulkan/renderer_vulkan.h"\n'
+              '#include "video_core/renderer_vulkan/vk_adreno_profiler.h"\n')
+          replace_once(
+              'src/video_core/renderer_vulkan/renderer_vulkan.cpp',
+              '{\n\n    if (Settings::values.renderer_force_max_clock.GetValue() && device.ShouldBoostClocks()) {',
+              '{\n\n    AdrenoProfiler::Get().Initialize(\n'
+              '        device.GetDriverID() == VK_DRIVER_ID_QUALCOMM_PROPRIETARY);\n\n'
+              '    if (Settings::values.renderer_force_max_clock.GetValue() && device.ShouldBoostClocks()) {')
+          replace_once(
+              'src/video_core/renderer_vulkan/renderer_vulkan.cpp',
+              '    gpu.RendererFrameEndNotify();\n    rasterizer.TickFrame();\n}',
+              '    gpu.RendererFrameEndNotify();\n    rasterizer.TickFrame();\n    AdrenoProfiler::Get().FrameEnd();\n}')
+
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '#include "video_core/renderer_vulkan/vk_command_pool.h"\n',
+              '#include "video_core/renderer_vulkan/vk_adreno_profiler.h"\n'
+              '#include "video_core/renderer_vulkan/vk_command_pool.h"\n')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '    const u64 presubmit_tick = CurrentTick();\n    SubmitExecution(signal_semaphore, wait_semaphore);\n    Wait(presubmit_tick);\n    AllocateNewContext();',
+              '    const u64 presubmit_tick = CurrentTick();\n    SubmitExecution(signal_semaphore, wait_semaphore);\n'
+              '    auto& profiler = AdrenoProfiler::Get();\n'
+              '    const auto wait_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};\n'
+              '    Wait(presubmit_tick);\n'
+              '    if (profiler.Enabled()) {\n'
+              '        profiler.RecordFinishWait(AdrenoProfiler::ElapsedNs(wait_start));\n'
+              '    }\n'
+              '    AllocateNewContext();')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              'void Scheduler::WaitWorker() {\n    DispatchWork();',
+              'void Scheduler::WaitWorker() {\n'
+              '    auto& profiler = AdrenoProfiler::Get();\n'
+              '    const auto wait_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};\n'
+              '    DispatchWork();')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '    // Now wait for execution to finish.\n    std::scoped_lock el{execution_mutex};\n}',
+              '    // Now wait for execution to finish.\n'
+              '    {\n        std::scoped_lock el{execution_mutex};\n    }\n'
+              '    if (profiler.Enabled()) {\n'
+              '        profiler.RecordWorkerWait(AdrenoProfiler::ElapsedNs(wait_start));\n'
+              '    }\n}')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '    framebuffer->MarkResolveShadowsUpToDate();\n}',
+              '    framebuffer->MarkResolveShadowsUpToDate();\n'
+              '    AdrenoProfiler::Get().RecordRenderPassBegin(framebuffer->NumImages());\n}')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '    deferred_clear.framebuffer = {};\n\n    std::array<VkClearValue, 9> clear_values{};',
+              '    deferred_clear.framebuffer = {};\n'
+              '    AdrenoProfiler::Get().RecordDeferredClear();\n\n'
+              '    std::array<VkClearValue, 9> clear_values{};')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '        render_area.height == state.render_area.height) {\n        return;\n    }',
+              '        render_area.height == state.render_area.height) {\n'
+              '        AdrenoProfiler::Get().RecordRenderPassReuse();\n'
+              '        return;\n    }')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '    state.descriptor_buffer_bound = true;\n    state.descriptor_buffer_chunk = descriptor_chunk;\n    return true;',
+              '    state.descriptor_buffer_bound = true;\n'
+              '    state.descriptor_buffer_chunk = descriptor_chunk;\n'
+              '    AdrenoProfiler::Get().RecordDescriptorBufferBind();\n'
+              '    return true;')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '    chunk->MarkSubmit();\n    DispatchWork();\n    return signal_value;',
+              '    chunk->MarkSubmit();\n'
+              '    AdrenoProfiler::Get().RecordSubmit();\n'
+              '    DispatchWork();\n    return signal_value;')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_scheduler.cpp',
+              '        if (!state.renderpass) {\n            return;\n        }\n\n        query_cache->CounterClose',
+              '        if (!state.renderpass) {\n            return;\n        }\n\n'
+              '        AdrenoProfiler::Get().RecordRenderPassEnd(num_renderpass_images);\n'
+              '        AdrenoProfiler::Get().RecordPostRenderPassImageBarriers(num_renderpass_images);\n\n'
+              '        query_cache->CounterClose')
+
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp',
+              '#include "video_core/renderer_vulkan/vk_buffer_cache.h"\n',
+              '#include "video_core/renderer_vulkan/vk_adreno_profiler.h"\n'
+              '#include "video_core/renderer_vulkan/vk_buffer_cache.h"\n')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp',
+              '    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {\n'
+              '        const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};\n'
+              '        Validate();\n        try {\n            MakePipeline(render_pass);\n        } catch (const vk::Exception& exception) {',
+              '    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {\n'
+              '        auto& profiler = AdrenoProfiler::Get();\n'
+              '        const auto build_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};\n'
+              '        const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};\n'
+              '        Validate();\n        try {\n            MakePipeline(render_pass);\n        } catch (const vk::Exception& exception) {\n'
+              '            if (profiler.Enabled()) {\n'
+              '                profiler.RecordGraphicsPipelineBuild(AdrenoProfiler::ElapsedNs(build_start), false);\n'
+              '            }')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp',
+              '        if (pipeline_statistics) {\n            pipeline_statistics->Collect(device, *pipeline);\n        }',
+              '        if (profiler.Enabled()) {\n'
+              '            profiler.RecordGraphicsPipelineBuild(AdrenoProfiler::ElapsedNs(build_start), true);\n'
+              '        }\n'
+              '        if (pipeline_statistics) {\n            pipeline_statistics->Collect(device, *pipeline);\n        }')
+
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp',
+              '#include "video_core/renderer_vulkan/vk_buffer_cache.h"\n',
+              '#include "video_core/renderer_vulkan/vk_adreno_profiler.h"\n'
+              '#include "video_core/renderer_vulkan/vk_buffer_cache.h"\n')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp',
+              '    auto func{[this, shader_notify, pipeline_statistics] {\n'
+              '        const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{',
+              '    auto func{[this, shader_notify, pipeline_statistics] {\n'
+              '        auto& profiler = AdrenoProfiler::Get();\n'
+              '        const auto build_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};\n'
+              '        const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp',
+              '        } catch (const vk::Exception& exception) {\n'
+              '            LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,\n'
+              '                         exception.what());',
+              '        } catch (const vk::Exception& exception) {\n'
+              '            if (profiler.Enabled()) {\n'
+              '                profiler.RecordComputePipelineBuild(AdrenoProfiler::ElapsedNs(build_start), false);\n'
+              '            }\n'
+              '            LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,\n'
+              '                         exception.what());')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp',
+              '        // Log compute pipeline creation\n',
+              '        if (profiler.Enabled()) {\n'
+              '            profiler.RecordComputePipelineBuild(AdrenoProfiler::ElapsedNs(build_start), true);\n'
+              '        }\n\n'
+              '        // Log compute pipeline creation\n')
+
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_update_descriptor.cpp',
+              '#include "video_core/renderer_vulkan/vk_scheduler.h"\n',
+              '#include "video_core/renderer_vulkan/vk_adreno_profiler.h"\n'
+              '#include "video_core/renderer_vulkan/vk_scheduler.h"\n')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_update_descriptor.cpp',
+              '    const size_t reserve = required_entries > 0 ? required_entries : DEFAULT_REQUIRED_ENTRIES;\n'
+              '    ASSERT_MSG(reserve < frame_payload_size, "Descriptor reservation {} >= frame capacity {}",',
+              '    const size_t reserve = required_entries > 0 ? required_entries : DEFAULT_REQUIRED_ENTRIES;\n'
+              '    AdrenoProfiler::Get().RecordDescriptorReservation(reserve, use_descriptor_buffer);\n'
+              '    ASSERT_MSG(reserve < frame_payload_size, "Descriptor reservation {} >= frame capacity {}",')
+          replace_once(
+              'src/video_core/renderer_vulkan/vk_update_descriptor.cpp',
+              '    if (used + reserve >= frame_payload_size) {\n'
+              '        LOG_WARNING(Render_Vulkan, "Payload overflow (used={}, reserve={}, capacity={})",',
+              '    if (used + reserve >= frame_payload_size) {\n'
+              '        AdrenoProfiler::Get().RecordDescriptorOverflow();\n'
+              '        LOG_WARNING(Render_Vulkan, "Payload overflow (used={}, reserve={}, capacity={})",')
+
+          p0_doc = r'''# P0 Adreno Profiler
+
+          The P0 profiler is instrumentation-only. It does not change Vulkan command generation,
+          synchronization, resource lifetime, or Qualcomm workaround policy.
+
+          ## Enable
+
+          On Windows PowerShell before launching Eden:
+
+          ```powershell
+          $env:EDEN_ADRENO_PROFILE="1"
+          $env:EDEN_ADRENO_PROFILE_FRAMES="120"
+          ```
+
+          `EDEN_ADRENO_PROFILE_FRAMES` is optional and is clamped to 1..3600. The default is 120.
+          The profiler only activates when the Vulkan driver reports
+          `VK_DRIVER_ID_QUALCOMM_PROPRIETARY`.
+
+          ## Current counters
+
+          Each `[ADRENO-P0]` summary reports:
+
+          - render-pass begin, reuse, end and attachment counts,
+          - post-render-pass image barrier count,
+          - realized deferred clears,
+          - queue submits,
+          - synchronous `Finish()` wait count/time,
+          - `WaitWorker()` count/time,
+          - graphics/compute pipeline build count, failures and wall time,
+          - descriptor reservation count and entries,
+          - descriptor-buffer entries/binds,
+          - descriptor payload overflows.
+
+          ## Interpretation rules
+
+          - This pass is for locating expensive behavior, not changing it.
+          - Do not infer GPU execution time from CPU wall time around pipeline builds or waits.
+          - A high post-render-pass barrier count is a candidate for role-aware synchronization review,
+            not proof that a barrier is unnecessary.
+          - A high render-pass begin/end rate is a candidate for TBDR/GMEM locality review.
+          - Descriptor counts are pressure/churn indicators; they do not prove descriptor aliasing is safe.
+
+          ## Next instrumentation
+
+          P0.2 should add byte counts and reason tags for upload/readback/copy paths, plus render-pass
+          termination reasons. GPU timestamp instrumentation should remain targeted and opt-in so the
+          profiler itself does not materially perturb the workload.
+          '''
+          Path('LAB/P0_PROFILER.md').write_text(textwrap.dedent(p0_doc), encoding='utf-8')
+
+          Path('.github/workflows/p0-profiler-bootstrap.yml').unlink()
+          PY
+
+      - name: Commit profiler
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            src/video_core/CMakeLists.txt \
+            src/video_core/renderer_vulkan/vk_adreno_profiler.h \
+            src/video_core/renderer_vulkan/vk_adreno_profiler.cpp \
+            src/video_core/renderer_vulkan/renderer_vulkan.cpp \
+            src/video_core/renderer_vulkan/vk_scheduler.cpp \
+            src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp \
+            LAB/P0_PROFILER.md \
+            .github/workflows/p0-profiler-bootstrap.yml
+          git commit -m "perf(lab): add opt-in P0 Adreno profiler [skip ci]"
+          git push origin HEAD:lab/p0-adreno-profiler
