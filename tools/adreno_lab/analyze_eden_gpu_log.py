@@ -13,7 +13,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-TIMESTAMP = re.compile(r"^\[(?P<ts>[0-9]+(?:\.[0-9]+)?)\]")
+TIMESTAMP = re.compile(r"^\[\s*(?P<ts>[0-9]+(?:\.[0-9]+)?)\]")
 RENDERPASS_BEGIN = re.compile(r"\[RenderPass\] Begin: .*?numImages=(?P<images>\d+)")
 RENDERPASS_END = re.compile(r"\[RenderPass\] End")
 VULKAN_CALL = re.compile(r"\[Vulkan\].*?\s(?P<call>vk[A-Za-z0-9_]+)\(")
