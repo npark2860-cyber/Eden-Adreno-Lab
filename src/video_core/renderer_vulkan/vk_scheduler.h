@@ -33,6 +33,7 @@ class Device;
 class Framebuffer;
 class GraphicsPipeline;
 class StateTracker;
+enum class RenderPassEndReason : u8;
 
 struct QueryCacheParams;
 
@@ -291,7 +292,7 @@ private:
 
     void EndPendingOperations();
 
-    void EndRenderPass();
+    void EndRenderPass(RenderPassEndReason reason);
 
     void AcquireNewChunk();
 

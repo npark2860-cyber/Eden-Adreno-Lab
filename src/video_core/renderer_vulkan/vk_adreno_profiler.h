@@ -11,6 +11,15 @@
 
 namespace Vulkan {
 
+enum class RenderPassEndReason : u8 {
+    Unknown,
+    DeferredClear,
+    FramebufferChange,
+    OutsideOperation,
+    Submit,
+    FlushDeferredClear,
+};
+
 class AdrenoProfiler final {
 public:
     using Clock = std::chrono::steady_clock;
@@ -30,14 +39,14 @@ public:
 
     static u64 ElapsedNs(TimePoint start) noexcept {
         return static_cast<u64>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start)
-                .count());
+  std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start)
+      .count());
     }
 
     void FrameEnd();
     void RecordRenderPassBegin(u32 image_count);
     void RecordRenderPassReuse();
-    void RecordRenderPassEnd(u32 image_count);
+    void RecordRenderPassEnd(u32 image_count, RenderPassEndReason reason);
     void RecordPostRenderPassImageBarriers(u32 image_count);
     void RecordDeferredClear();
     void RecordSubmit();
@@ -48,6 +57,8 @@ public:
     void RecordDescriptorReservation(size_t entries, bool descriptor_buffer);
     void RecordDescriptorOverflow();
     void RecordDescriptorBufferBind();
+    void RecordStagingRequest(u64 bytes, bool download, bool deferred);
+    void RecordBufferCopy(u64 bytes, bool reordered_upload);
 
 private:
     AdrenoProfiler();
@@ -60,6 +71,12 @@ private:
         std::atomic<u64> render_pass_reuse{0};
         std::atomic<u64> render_pass_end{0};
         std::atomic<u64> render_pass_images{0};
+        std::atomic<u64> render_pass_end_unknown{0};
+        std::atomic<u64> render_pass_end_deferred_clear{0};
+        std::atomic<u64> render_pass_end_framebuffer_change{0};
+        std::atomic<u64> render_pass_end_outside_operation{0};
+        std::atomic<u64> render_pass_end_submit{0};
+        std::atomic<u64> render_pass_end_flush_deferred_clear{0};
         std::atomic<u64> post_render_pass_image_barriers{0};
         std::atomic<u64> deferred_clears{0};
         std::atomic<u64> submits{0};
@@ -78,6 +95,16 @@ private:
         std::atomic<u64> descriptor_buffer_entries{0};
         std::atomic<u64> descriptor_overflows{0};
         std::atomic<u64> descriptor_buffer_binds{0};
+        std::atomic<u64> staging_upload_requests{0};
+        std::atomic<u64> staging_upload_bytes{0};
+        std::atomic<u64> staging_download_requests{0};
+        std::atomic<u64> staging_download_bytes{0};
+        std::atomic<u64> staging_deferred_download_requests{0};
+        std::atomic<u64> staging_deferred_download_bytes{0};
+        std::atomic<u64> buffer_copy_calls{0};
+        std::atomic<u64> buffer_copy_bytes{0};
+        std::atomic<u64> reordered_upload_copy_calls{0};
+        std::atomic<u64> reordered_upload_copy_bytes{0};
     } counters;
 
     const bool requested;
