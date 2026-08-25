@@ -34,6 +34,17 @@ Each `[ADRENO-P0]` summary reports:
 - P0.2 buffer-copy calls/bytes plus reordered-upload subset,
 - P0.2 render-pass termination reason counts.
 
+## Analyze a capture
+
+Preserve the complete log and run:
+
+```powershell
+python tools/adreno_lab/analyze_eden_gpu_log.py "C:\path\to\log" --json
+```
+
+The analyzer aggregates every `[ADRENO-P0]` and `[ADRENO-P0.2]` report in the capture and also
+retains the original existing-log Vulkan baseline counters when present.
+
 ## Interpretation rules
 
 - This pass is for locating expensive behavior, not changing it.
@@ -46,7 +57,8 @@ Each `[ADRENO-P0]` summary reports:
 ## P0.2 status
 
 P0.2 adds transfer-pressure counters and render-pass termination reason tags without changing
-Vulkan command generation. See `LAB/P0_2_TRANSFER_AND_RP_REASONS.md` for counter semantics.
+Vulkan command generation. See `LAB/P0_2_TRANSFER_AND_RP_REASONS.md` for counter semantics,
+Windows ARM64 compile validation, and the fixed-scene capture protocol.
 
 GPU timestamp instrumentation remains a later targeted, opt-in step so the profiler itself does
 not materially perturb the workload.
