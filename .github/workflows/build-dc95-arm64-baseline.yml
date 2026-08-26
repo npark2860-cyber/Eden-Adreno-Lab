@@ -7,6 +7,7 @@ on:
       - lab/dc95-arm64-baseline
     paths:
       - .github/workflows/build-dc95-arm64-baseline.yml
+      - tools/adreno_lab/transplant_dc95_scheduler_profiler.py
 
 jobs:
   build:
@@ -68,7 +69,6 @@ jobs:
           PROF=318bb024cc06a0497d179d374b4680c8d57f767d
           for f in \
             src/video_core/CMakeLists.txt \
-            src/video_core/renderer_vulkan/vk_scheduler.cpp \
             src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
             src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
             src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
@@ -118,11 +118,10 @@ jobs:
           p.write_text(text, encoding='utf-8')
           PY
 
-      - name: Transplant profiler scheduler hooks
+      - name: Transplant profiler scheduler hooks for dc95
         if: matrix.variant == 'profiled'
         shell: bash
-        working-directory: eden
-        run: git apply --ignore-whitespace ../profiler-patches/vk_scheduler.cpp.patch
+        run: python lab/tools/adreno_lab/transplant_dc95_scheduler_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
 
       - name: Transplant profiler graphics-pipeline hooks
         if: matrix.variant == 'profiled'
@@ -151,6 +150,8 @@ jobs:
           grep -q 'vk_adreno_profiler.cpp' src/video_core/CMakeLists.txt
           grep -q 'AdrenoProfiler::Get().Initialize' src/video_core/renderer_vulkan/renderer_vulkan.cpp
           grep -q 'AdrenoProfiler::Get().FrameEnd' src/video_core/renderer_vulkan/renderer_vulkan.cpp
+          grep -q 'RecordRenderPassBegin' src/video_core/renderer_vulkan/vk_scheduler.cpp
+          grep -q 'RecordWorkerWait' src/video_core/renderer_vulkan/vk_scheduler.cpp
           git status --short
 
       - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
