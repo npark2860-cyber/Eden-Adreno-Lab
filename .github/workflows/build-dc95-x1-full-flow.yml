@@ -2,6 +2,11 @@ name: Build dc95 X1 Full Flow Profiler
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-full-flow-profiler
+    paths:
+      - .github/workflows/build-dc95-x1-full-flow.yml
 
 concurrency:
   group: dc95-x1-full-flow-${{ github.ref }}
