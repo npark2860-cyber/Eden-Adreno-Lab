@@ -3,12 +3,21 @@
 ## Canonical known-good source
 
 - Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
+- Source commit date: `2026-08-15T12:21:52Z`
+- Official Nightly repository: `eden-ci/nightly`
+- Official Nightly tag: `v1786904188.dc95cd09ee`
+- Official Nightly release: `Eden Nightly - Aug 16 2026`
+- Official Windows ARM64 Standard artifact: `Eden-Windows-dc95cd09ee-arm64-clang-standard.zip`
+- Official Windows ARM64 PGO artifact: `Eden-Windows-dc95cd09ee-arm64-clang-pgo.zip`
 - Target: Windows ARM64
 - Compiler path: MSYS2 `CLANGARM64` / Clang
-- Baseline mode: `standard`
 - CI scripts pinned from `Eden-CI/Workflow@afead830f3a444427f9fdfd841218f932465c03a`
 
-This is the reference point for Snapdragon / Adreno investigation. Do not substitute current `master` or the imported `0295dc5` tree when reproducing the known-good behavior.
+The user-confirmed working runtime log identifies `master-dc95cd09ee-master`, so this exact revision and its official ARM64 Standard/PGO pair are the canonical comparison point. Do not substitute current `master`, `xuen2008/eden-nightly`, or the imported `0295dc5` tree.
+
+## Why xuen2008/eden-nightly is not the dc95 source
+
+`xuen2008/eden-nightly` stopped updating in January 2026 and cannot have produced the August 2026 dc95 build. The authoritative August nightly artifacts are published by `eden-ci/nightly` on the Eden Forgejo instance.
 
 ## Why the previous Lab baseline is not canonical
 
@@ -22,7 +31,7 @@ Therefore `0295dc5` is kept as a comparison point, not used as the known-good ba
 ## Build-path correction
 
 The previous Lab Windows ARM64 workflow used `clang-cl` in an MSVC-oriented environment.
-The Eden nightly Windows ARM64 path uses an ARM64 Windows runner with MSYS2 `CLANGARM64` and Clang.
+The official Eden Nightly Windows ARM64 path uses an ARM64 Windows runner with MSYS2 `CLANGARM64` and Clang.
 
 For ARM64 the pinned Eden CI target logic uses:
 
@@ -30,20 +39,26 @@ For ARM64 the pinned Eden CI target logic uses:
 - `-mtune=generic`
 - `-O3`
 
-The baseline workflow is:
+The standard-baseline workflow is:
 
 `.github/workflows/build-dc95-arm64-baseline.yml`
 
-It checks out the exact dc95 source independently of the Lab branch contents and produces:
+It checks out exact dc95 independently of the Lab branch contents and produces:
 
 - `clean`: untouched dc95 source
 - `profiled`: dc95 plus semantically-neutral Adreno profiler instrumentation
+
+The exact-PGO workflow is:
+
+`.github/workflows/build-dc95-arm64-pgo.yml`
+
+It pins both the source and the PGO input rather than following a future `latest` profile.
 
 ## Exact PGO input for dc95 reproduction
 
 The pinned Eden CI enables PGO with `PGO_TARGET=pgo` and adds `-fprofile-use=<eden.profdata>` to the ARM64 Clang flags.
 
-The PGO release that was already the latest before dc95 and remains the latest is:
+The PGO release that predates dc95 and is the input used for this reproduction is:
 
 - Repository: `Eden-CI/PGO`
 - Tag: `v020525`
@@ -52,7 +67,7 @@ The PGO release that was already the latest before dc95 and remains the latest i
 - Size: `17925256` bytes
 - SHA-256: `777dd9aefb9427ed08a642b02998f32c5ac120e5d32611d8f21cf1f4e68cee57`
 
-Use this exact asset for Standard-vs-PGO A/B. Do not silently substitute a future `latest` profile.
+The PGO workflow rewrites the pinned dc95-era CI download URL to `v020525` and verifies this SHA-256 after configure. A future `latest` profile therefore cannot silently change the experiment.
 
 ## Profiler provenance
 
