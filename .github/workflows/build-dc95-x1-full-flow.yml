@@ -1,0 +1,263 @@
+name: Build dc95 X1 Full Flow Profiler
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-full-flow-profiler
+    paths:
+      - .github/workflows/build-dc95-x1-full-flow.yml
+      - src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+      - src/video_core/renderer_vulkan/vk_adreno_profiler.h
+      - src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+      - src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+      - src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+      - src/video_core/renderer_vulkan/vk_scheduler.cpp
+      - src/video_core/renderer_vulkan/vk_scheduler.h
+      - src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
+      - src/video_core/renderer_vulkan/vk_update_descriptor.cpp
+      - tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py
+      - tools/adreno_lab/transplant_dc95_logging_checkboxes.py
+      - tools/adreno_lab/transplant_dc95_full_flow_hooks.py
+      - tools/adreno_lab/analyze_x1_full_flow_log.py
+
+concurrency:
+  group: dc95-x1-full-flow-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: dc95 ARM64 / X1 full flow
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout Eden CI workflow used by dc95-era nightlies
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install dc95-era Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Prepare compile-validated P0.2 profiler patches
+        shell: bash
+        run: |
+          set -e
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          for f in \
+            src/video_core/renderer_vulkan/vk_buffer_cache.cpp \
+            src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_scheduler.cpp \
+            src/video_core/renderer_vulkan/vk_scheduler.h \
+            src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp \
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
+            test -s "$out"
+          done
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp \
+             eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h \
+             eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
+      - name: Apply P0.2 profiler source hooks
+        shell: bash
+        working-directory: eden
+        run: |
+          set -e
+          for p in \
+            ../profiler-patches/vk_buffer_cache.cpp.patch \
+            ../profiler-patches/vk_compute_pipeline.cpp.patch \
+            ../profiler-patches/vk_graphics_pipeline.cpp.patch \
+            ../profiler-patches/vk_scheduler.cpp.patch \
+            ../profiler-patches/vk_scheduler.h.patch \
+            ../profiler-patches/vk_staging_buffer_pool.cpp.patch \
+            ../profiler-patches/vk_update_descriptor.cpp.patch; do
+            git apply --ignore-whitespace "$p"
+          done
+
+      - name: Transplant descriptor-ring profiler
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+
+      - name: Transplant base diagnostic checkboxes
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+
+      - name: Transplant X1 full-flow controls and hooks
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+
+      - name: Verify full-flow instrumentation and checkbox-only enablement
+        shell: bash
+        run: |
+          set -e
+          git -C eden diff --check
+          grep -q 'vk_adreno_profiler.cpp' eden/src/video_core/CMakeLists.txt
+          grep -q 'AdrenoProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+          grep -q 'AdrenoProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+          grep -q 'RecordSchedulerWait' eden/src/video_core/renderer_vulkan/vk_scheduler.h
+          grep -q 'RecordPresentWait("free-frame"' eden/src/video_core/renderer_vulkan/vk_present_manager.cpp
+          grep -q 'RecordAcquire' eden/src/video_core/renderer_vulkan/vk_swapchain.cpp
+          grep -q 'RecordPresentCall' eden/src/video_core/renderer_vulkan/vk_swapchain.cpp
+          grep -q 'RecordShaderEmit("graphics-spirv"' eden/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+          grep -q 'RecordShaderEmit("compute-spirv"' eden/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+          grep -q 'RecordBarrier("buffer-pre-copy"' eden/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+          grep -q 'QcomEvent::DescriptorTilerPolicy' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
+          grep -q 'QcomEvent::CustomBorderColor' eden/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+          grep -q 'x1_scheduler_sync_log' eden/src/common/settings.h
+          grep -q 'x1_present_frame_log' eden/src/common/settings.h
+          grep -q 'x1_pipeline_shader_log' eden/src/common/settings.h
+          grep -q 'x1_upload_barrier_log' eden/src/common/settings.h
+          grep -q 'x1_qcom_workaround_log' eden/src/common/settings.h
+          grep -q 'X1 Log: Scheduler / Sync' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'X1 Log: Present / Frame Pacing' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'X1 Log: Pipeline / Shader' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'X1 Log: Upload / Barrier' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'X1 Log: QCOM Workaround Hits' eden/src/yuzu/configuration/configure_debug.cpp
+          if grep -q 'EDEN_ADRENO_PROFILE' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp; then
+            echo 'ERROR: legacy env var still controls full-flow profiler on/off' >&2
+            exit 1
+          fi
+          if grep -q 'EDEN_X1_DESCRIPTOR_PROFILE"' eden/src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.cpp; then
+            echo 'ERROR: env var still controls descriptor profiler on/off' >&2
+            exit 1
+          fi
+          git -C eden status --short
+
+      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure dc95 ARM64 standard build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+
+      - name: Build dc95 ARM64 X1 full-flow profiler
+        shell: msys2 {0}
+        working-directory: eden
+        run: cmake --build build
+
+      - name: Package with Eden CI Windows packager
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: dc95cd09ee-x1-full-flow
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Add launcher analyzers and metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force extras | Out-Null
+          Copy-Item lab/tools/adreno_lab/analyze_x1_full_flow_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_descriptor_ring_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_eden_gpu_log.py extras/ -Force
+          @'
+          $env:EDEN_X1_FLOW_PROFILE_FRAMES="120"
+          $env:EDEN_X1_FLOW_SLOW_US="1000"
+          $env:EDEN_X1_DESCRIPTOR_PROFILE_FRAMES="120"
+          $eden = Join-Path $PSScriptRoot "eden.exe"
+          if (-not (Test-Path $eden)) { throw "Place this script beside eden.exe" }
+          Write-Host "Settings > Debug > Logging: enable only the diagnostic categories needed for this run."
+          & $eden
+          '@ | Set-Content -Encoding UTF8 extras/RUN_X1_FULL_FLOW_PROFILE.ps1
+          @'
+          Experiment: X1 full-flow diagnostic build
+          Exact Eden source: dc95cd09eea9749250fe31a3072684d341d19417
+          Build: Windows ARM64 / MSYS2 CLANGARM64 / clang / standard
+          Immutable control: lab/dc95-arm64-baseline
+          Descriptor experiment preserved: exp/x1-descriptor-ring
+          Full-flow branch: exp/x1-full-flow-profiler
+
+          GUI log controls, all X1 categories default OFF:
+            GPU Log: Vulkan Calls
+            GPU Log: Memory Tracking
+            GPU Log: Driver Debug
+            X1 Log: Descriptor Ring
+            X1 Log: Scheduler / Sync
+            X1 Log: Present / Frame Pacing
+            X1 Log: Pipeline / Shader
+            X1 Log: Upload / Barrier
+            X1 Log: QCOM Workaround Hits
+            Dump SPIR-V Shaders
+
+          Common correlation fields for slow events:
+            frame / thread / reason / tick / aux / duration
+
+          Prefixes:
+            [X1-FLOW][SCHED]
+            [X1-FLOW][PRESENT]
+            [X1-FLOW][PIPE]
+            [X1-FLOW][UPLOAD]
+            [X1-FLOW][QCOM]
+            [X1-FLOW][DBUF]
+            [X1-DBUF]
+
+          Environment variables only change reporting cadence/slow-event threshold.
+          They do NOT enable a diagnostic category.
+          '@ | Set-Content -Encoding UTF8 extras/EXPERIMENT.txt
+          git -C eden diff -- src/common/settings.h src/yuzu/configuration/configure_debug.h src/yuzu/configuration/configure_debug.cpp src/video_core/CMakeLists.txt src/video_core/renderer_vulkan | Set-Content -Encoding UTF8 extras/FULL_FLOW_INSTRUMENTATION.diff
+
+      - name: List artifact files
+        shell: pwsh
+        run: Get-ChildItem -Recurse eden/artifacts,extras | Select-Object FullName,Length
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-dc95-X1-full-flow-profile
+          path: |
+            eden/artifacts/*
+            extras/*
+          if-no-files-found: error
+          retention-days: 14
