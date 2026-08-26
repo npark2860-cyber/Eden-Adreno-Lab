@@ -1,0 +1,138 @@
+name: Build dc95 ARM64 PGO
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - lab/dc95-arm64-baseline
+    paths:
+      - .github/workflows/build-dc95-arm64-pgo.yml
+
+jobs:
+  build:
+    name: dc95 ARM64 / clean-pgo
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: pgo
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "false"
+      ARCH: arm64-clang-pgo
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      EXPECTED_PROFDATA_SHA256: 777dd9aefb9427ed08a642b02998f32c5ac120e5d32611d8f21cf1f4e68cee57
+
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout Eden CI workflow used by dc95-era nightlies
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install pinned Eden CI and pin PGO release
+        shell: bash
+        run: |
+          set -e
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('eden/.ci/build/targets.sh')
+          text = p.read_text(encoding='utf-8')
+          old = 'releases/latest/download/${PROJECT_REPO}.profdata'
+          new = 'releases/download/v020525/${PROJECT_REPO}.profdata'
+          if text.count(old) != 1:
+              raise RuntimeError(f'expected one PGO download URL, got {text.count(old)}')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          grep -F 'releases/download/v020525/${PROJECT_REPO}.profdata' eden/.ci/build/targets.sh
+
+      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure dc95 ARM64 PGO build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./.ci/build/configure.sh
+
+      - name: Verify exact PGO profile
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -e
+          test -f eden.profdata
+          actual="$(sha256sum eden.profdata | awk '{print $1}')"
+          echo "eden.profdata sha256=$actual"
+          test "$actual" = "$EXPECTED_PROFDATA_SHA256"
+
+      - name: Build dc95 ARM64 PGO
+        shell: msys2 {0}
+        working-directory: eden
+        run: cmake --build build
+
+      - name: Package with Eden CI Windows packager
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: dc95cd09ee-clean-pgo
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Add provenance
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force extras | Out-Null
+          @'
+          Exact source baseline: dc95cd09eea9749250fe31a3072684d341d19417
+          Build path: Eden Nightly MSYS2 CLANGARM64 / clang / PGO
+          PGO release: Eden-CI/PGO v020525
+          eden.profdata SHA-256: 777dd9aefb9427ed08a642b02998f32c5ac120e5d32611d8f21cf1f4e68cee57
+          '@ | Set-Content -Encoding UTF8 extras/BASELINE_PGO.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-dc95-ARM64-clean-PGO
+          archive: false
+          path: |
+            eden/artifacts/*
+            extras/*
+          if-no-files-found: error
+          retention-days: 14
