@@ -1,6 +1,11 @@
 name: Build dc95 X1 Alias Sync Redundancy
 
 on:
+  push:
+    branches:
+      - exp/x1-alias-sync-redundancy
+    paths:
+      - .github/workflows/build-dc95-x1-alias-sync-redundancy.yml
   workflow_dispatch:
 
 concurrency:
