@@ -15,6 +15,7 @@ def main() -> int:
         raise SystemExit("usage: transplant_dc95_scheduler_profiler.py <vk_scheduler.cpp>")
 
     path = Path(sys.argv[1])
+    header = path.with_suffix(".h")
     text = path.read_text(encoding="utf-8")
 
     text = replace_once(
@@ -34,9 +35,10 @@ def main() -> int:
         '''    const u64 presubmit_tick = CurrentTick();
     SubmitExecution(signal_semaphore, wait_semaphore);
     auto& profiler = AdrenoProfiler::Get();
-    const auto wait_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};
+    const auto wait_start =
+        profiler.SchedulerEnabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};
     Wait(presubmit_tick);
-    if (profiler.Enabled()) {
+    if (profiler.SchedulerEnabled()) {
         profiler.RecordFinishWait(AdrenoProfiler::ElapsedNs(wait_start));
     }
     AllocateNewContext();''',
@@ -59,7 +61,8 @@ def main() -> int:
 }''',
         '''void Scheduler::WaitWorker() {
     auto& profiler = AdrenoProfiler::Get();
-    const auto wait_start = profiler.Enabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};
+    const auto wait_start =
+        profiler.SchedulerEnabled() ? AdrenoProfiler::Now() : AdrenoProfiler::TimePoint{};
     DispatchWork();
 
     // Ensure the queue is drained.
@@ -70,7 +73,7 @@ def main() -> int:
 
     // Now wait for execution to finish.
     std::scoped_lock el{execution_mutex};
-    if (profiler.Enabled()) {
+    if (profiler.SchedulerEnabled()) {
         profiler.RecordWorkerWait(AdrenoProfiler::ElapsedNs(wait_start));
     }
 }''',
@@ -105,20 +108,83 @@ def main() -> int:
         "RealizeDeferredClear",
     )
 
+    # Preserve exact dc95 behavior while tagging the reason for each pre-existing pass end.
+    text = replace_once(
+        text,
+        '''    const VkRenderPass renderpass = dc.framebuffer->RenderPassVariant(
+        dc.color_clear_mask, dc.depth_stencil, color_discard_mask);
+    EndRenderPass();
+    BeginRenderPassImpl(dc.framebuffer, renderpass, clear_values.data(), count);''',
+        '''    const VkRenderPass renderpass = dc.framebuffer->RenderPassVariant(
+        dc.color_clear_mask, dc.depth_stencil, color_discard_mask);
+    EndRenderPass(RenderPassEndReason::DeferredClear);
+    BeginRenderPassImpl(dc.framebuffer, renderpass, clear_values.data(), count);''',
+        "deferred clear end reason",
+    )
+
+    text = replace_once(
+        text,
+        '''    if (deferred_clear.framebuffer != nullptr && deferred_clear.framebuffer != framebuffer) {
+        RealizeDeferredClear();
+        EndRenderPass();
+    }
+    deferred_clear.framebuffer = framebuffer;
+    deferred_clear.color_clear_mask''',
+        '''    if (deferred_clear.framebuffer != nullptr && deferred_clear.framebuffer != framebuffer) {
+        RealizeDeferredClear();
+        EndRenderPass(RenderPassEndReason::DeferredClear);
+    }
+    deferred_clear.framebuffer = framebuffer;
+    deferred_clear.color_clear_mask''',
+        "color deferred end reason",
+    )
+
+    text = replace_once(
+        text,
+        '''    if (deferred_clear.framebuffer != nullptr && deferred_clear.framebuffer != framebuffer) {
+        RealizeDeferredClear();
+        EndRenderPass();
+    }
+    deferred_clear.framebuffer = framebuffer;
+    deferred_clear.depth_stencil''',
+        '''    if (deferred_clear.framebuffer != nullptr && deferred_clear.framebuffer != framebuffer) {
+        RealizeDeferredClear();
+        EndRenderPass(RenderPassEndReason::DeferredClear);
+    }
+    deferred_clear.framebuffer = framebuffer;
+    deferred_clear.depth_stencil''',
+        "depth deferred end reason",
+    )
+
     text = replace_once(
         text,
         '''    if (renderpass == state.renderpass && framebuffer_handle == state.framebuffer &&
         render_area.width == state.render_area.width &&
         render_area.height == state.render_area.height) {
         return;
-    }''',
+    }
+    // Ends any active pass and realizes a deferred clear
+    EndRenderPass();''',
         '''    if (renderpass == state.renderpass && framebuffer_handle == state.framebuffer &&
         render_area.width == state.render_area.width &&
         render_area.height == state.render_area.height) {
         AdrenoProfiler::Get().RecordRenderPassReuse();
         return;
-    }''',
-        "RequestRenderpass reuse",
+    }
+    // Ends any active pass and realizes a deferred clear
+    EndRenderPass(RenderPassEndReason::FramebufferChange);''',
+        "RequestRenderpass reuse/reason",
+    )
+
+    text = replace_once(
+        text,
+        '''void Scheduler::RequestOutsideRenderPassOperationContext() {
+    EndRenderPass();
+}''',
+        '''void Scheduler::RequestOutsideRenderPassOperationContext() {
+    EndRenderPass(RenderPassEndReason::OutsideOperation);
+}''',
+        "outside operation reason",
     )
 
     text = replace_once(
@@ -131,6 +197,17 @@ def main() -> int:
     AdrenoProfiler::Get().RecordDescriptorBufferBind();
     return true;''',
         "UpdateDescriptorBufferChunk",
+    )
+
+    barrier = (
+        "        upload_cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, "
+        "VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, WRITE_BARRIER);\n"
+    )
+    text = replace_once(
+        text,
+        barrier,
+        barrier + '        AdrenoProfiler::Get().RecordBarrier("submit-upload", 1);\n',
+        "submit upload barrier",
     )
 
     text = replace_once(
@@ -147,6 +224,25 @@ def main() -> int:
 
     text = replace_once(
         text,
+        '''void Scheduler::EndPendingOperations() {
+    query_cache->CounterReset(VideoCommon::QueryType::ZPassPixelCount64);
+    EndRenderPass();
+}
+
+void Scheduler::EndRenderPass()
+    {''',
+        '''void Scheduler::EndPendingOperations() {
+    query_cache->CounterReset(VideoCommon::QueryType::ZPassPixelCount64);
+    EndRenderPass(RenderPassEndReason::Submit);
+}
+
+void Scheduler::EndRenderPass(RenderPassEndReason reason)
+    {''',
+        "EndPendingOperations/EndRenderPass reason",
+    )
+
+    text = replace_once(
+        text,
         '''        if (!state.renderpass) {
             return;
         }
@@ -156,15 +252,31 @@ def main() -> int:
             return;
         }
 
-        AdrenoProfiler::Get().RecordRenderPassEnd(num_renderpass_images);
+        AdrenoProfiler::Get().RecordRenderPassEnd(num_renderpass_images, reason);
         AdrenoProfiler::Get().RecordPostRenderPassImageBarriers(num_renderpass_images);
 
         query_cache->CounterClose(VideoCommon::QueryType::StreamingByteCount);''',
-        "EndRenderPass",
+        "EndRenderPass metrics",
     )
 
     path.write_text(text, encoding="utf-8")
-    print(f"Transplanted dc95 scheduler profiler hooks into {path}")
+
+    htext = header.read_text(encoding="utf-8")
+    htext = replace_once(
+        htext,
+        'class StateTracker;\n\nstruct QueryCacheParams;\n',
+        'class StateTracker;\nenum class RenderPassEndReason : u8;\n\nstruct QueryCacheParams;\n',
+        "scheduler reason forward declaration",
+    )
+    htext = replace_once(
+        htext,
+        '    void EndRenderPass();\n',
+        '    void EndRenderPass(RenderPassEndReason reason);\n',
+        "scheduler EndRenderPass declaration",
+    )
+    header.write_text(htext, encoding="utf-8")
+
+    print(f"Transplanted exact dc95 scheduler full-flow profiler hooks into {path}")
     return 0
 
 
