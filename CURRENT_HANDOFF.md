@@ -213,28 +213,54 @@ The prepared build retains:
 
 The new alias request count must be compared with the established direct-route scope order of magnitude on a matched gameplay route.
 
-## Static/preflight design
+## Static/preflight state
 
-The prepared manual workflow verifies before configure:
+Direct preparation checks completed without starting Actions:
+
+- GitHub transplant blob `b353167fcf49831d89be2b920c60ae920698f38b` was reproduced byte-for-byte locally with the same `git hash-object`
+- that exact Python file passed `python -m py_compile`
+- the transplant was executed against a marker fixture matching the outputs of the preceding draw/texture/alias scripts
+- required bounded/report/Vulkan/OpenGL/source-tick/region-signature markers were generated
+- the existing `CopyImage(dst_id, src_id, copies)` call remained present
+- incremental generated diff passed `git diff --no-index --check` with no whitespace errors
+- incremental diff scan found no added copy skip/dedupe/batching, barrier/render-pass suppression, `modification_tick` assignment, or `MarkModification()` call
+- the new transplant contains no `vk_scheduler` source touch
+- a standalone C++20 compile probe for the fixed `std::array`/`std::atomic_flag` tracker pattern passed
+
+The prepared workflow additionally enforces before configure/build:
 
 - exact Eden checkout SHA is dc95
-- Python transplant syntax
-- `git diff --check` on transplanted Eden source
+- full transplanted-tree `git -C eden diff --check`
 - Draw origin and retained alias route markers
 - `[X1-ALIAS-SYNC]` marker
 - fixed 4,096-entry table and 32-probe cap
 - exact dc95 alias selection/tick semantic markers
 - region-signature source fields
 - Vulkan bridge and OpenGL no-op bridge
-- alias-sync-only diff contains no forbidden optimization/state mutation
-- new transplant contains no scheduler-source touch
-- existing exact-dc95 scheduler leak guards still pass
+- alias-sync-only forbidden optimization/state-mutation diff scan
+- no new scheduler-source touch
+- existing exact-dc95 scheduler leak guards
 
-Workflow trigger is manual-only:
+Those workflow gates have not executed yet because no ARM64 run has been authorized.
 
-`workflow_dispatch`
+## Workflow trigger state and GitHub constraint
 
-There is no `push` trigger on the prepared workflow.
+Prepared workflow trigger:
+
+`workflow_dispatch` only.
+
+There is no `push` trigger, and the current experiment branch has **0 Actions runs**.
+
+Repository default branch is `main`, and `.github/workflows/build-dc95-x1-alias-sync-redundancy.yml` does not exist on `main`. GitHub requires a `workflow_dispatch` workflow file to exist on the default branch before it can receive a manual dispatch. Therefore the branch-local manual-only file is intentionally non-running but is **not directly dispatchable as-is**.
+
+Do not modify/merge `main` merely to make this experiment dispatchable.
+
+For the future single authorized build, use the established main-preserving one-shot mechanism:
+
+1. after explicit authorization only, add a branch-scoped `push` trigger to this prepared workflow
+2. the trigger-enabling commit is the one authorized build attempt
+3. after that attempt completes, restore the workflow to `workflow_dispatch` only with a workflow-only commit; because the restoring commit no longer contains the `push` trigger, it does not create another build
+4. if the attempt fails, restore manual-only state before making any diagnostic fix; do not run the fix without another fresh authorization
 
 ## Instrumentation-only safety state
 
@@ -279,6 +305,7 @@ Do not force these into one root cause.
 ## What NOT to do next
 
 - do not start Actions without fresh explicit permission
+- do not modify `main` just to expose `workflow_dispatch`
 - do not split Vulkan `CopyImage()` again
 - do not suppress `RequestOutsideRenderPassOperationContext()`
 - do not skip a repeated alias copy before runtime evidence
@@ -292,10 +319,11 @@ The source/instrumentation/workflow preparation phase is complete.
 
 The next action is **only after fresh explicit user build authorization**:
 
-1. start exactly one ARM64 attempt of `.github/workflows/build-dc95-x1-alias-sync-redundancy.yml` on `exp/x1-alias-sync-redundancy`
+1. temporarily add the branch-scoped one-shot `push` trigger to `.github/workflows/build-dc95-x1-alias-sync-redundancy.yml`; that trigger-enabling commit is the single authorized ARM64 attempt
 2. if it succeeds, run the same matched TOTK 1.4.2 setup and collect `[X1-ALIAS-SYNC]` plus existing telemetry
-3. interpret redundancy only after runtime data
-4. if the build fails, diagnose/fix but do not rerun without another fresh authorization
+3. restore the workflow to `workflow_dispatch` only after the attempt without causing a second run
+4. interpret redundancy only after runtime data
+5. if the build fails, restore manual-only state and diagnose/fix, but do not run again without another fresh authorization
 
 ## Current build authorization state
 
