@@ -126,11 +126,22 @@ jobs:
           eden.profdata SHA-256: 777dd9aefb9427ed08a642b02998f32c5ac120e5d32611d8f21cf1f4e68cee57
           '@ | Set-Content -Encoding UTF8 extras/BASELINE_PGO.txt
 
+      - name: List packaged files
+        shell: pwsh
+        run: |
+          Write-Host "== eden/artifacts =="
+          if (Test-Path eden/artifacts) {
+            Get-ChildItem eden/artifacts -Recurse -File | Select-Object FullName, Length
+          } else {
+            Write-Error "eden/artifacts does not exist"
+          }
+          Write-Host "== extras =="
+          Get-ChildItem extras -Recurse -File | Select-Object FullName, Length
+
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
           name: Eden-dc95-ARM64-clean-PGO
-          archive: false
           path: |
             eden/artifacts/*
             extras/*
