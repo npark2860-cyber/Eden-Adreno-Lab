@@ -1,0 +1,156 @@
+name: Build dc95 ARM64 Baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - lab/dc95-arm64-baseline
+    paths:
+      - .github/workflows/build-dc95-arm64-baseline.yml
+
+jobs:
+  build:
+    name: dc95 ARM64 / ${{ matrix.variant }}
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [clean, profiled]
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout Eden CI workflow used by dc95-era nightlies
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install dc95-era Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Generate semantically-neutral profiler patch
+        if: matrix.variant == 'profiled'
+        shell: bash
+        run: |
+          git -C lab diff --binary \
+            a845b6eafe39faf0b9dd038639a5db385cf9d08f \
+            318bb024cc06a0497d179d374b4680c8d57f767d \
+            -- \
+            src/video_core/CMakeLists.txt \
+            src/video_core/renderer_vulkan/renderer_vulkan.cpp \
+            src/video_core/renderer_vulkan/vk_adreno_profiler.cpp \
+            src/video_core/renderer_vulkan/vk_adreno_profiler.h \
+            src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_scheduler.cpp \
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp \
+            > profiler.patch
+          test -s profiler.patch
+
+      - name: Apply profiler to dc95 source with three-way merge
+        if: matrix.variant == 'profiled'
+        shell: bash
+        run: |
+          cd eden
+          git apply --3way --ignore-whitespace ../profiler.patch
+          git diff --check
+          git status --short
+
+      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure dc95 ARM64 standard build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+
+      - name: Build dc95 ARM64
+        shell: msys2 {0}
+        working-directory: eden
+        run: cmake --build build
+
+      - name: Package with Eden CI Windows packager
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: dc95cd09ee-${{ matrix.variant }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Add profiler launcher and analyzer
+        if: matrix.variant == 'profiled'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force extras | Out-Null
+          Copy-Item lab/tools/adreno_lab/analyze_eden_gpu_log.py extras/ -Force
+          @'
+          $env:EDEN_ADRENO_PROFILE="1"
+          $env:EDEN_ADRENO_PROFILE_FRAMES="120"
+          $eden = Join-Path $PSScriptRoot "eden.exe"
+          if (-not (Test-Path $eden)) { throw "Place this script beside eden.exe" }
+          & $eden
+          '@ | Set-Content -Encoding UTF8 extras/RUN_DC95_PROFILE.ps1
+          @'
+          Exact source baseline: dc95cd09eea9749250fe31a3072684d341d19417
+          Build path: Eden Nightly MSYS2 CLANGARM64 / clang / standard
+          Profiler source: lab/p0-adreno-profiler @ 318bb024cc06a0497d179d374b4680c8d57f767d
+          '@ | Set-Content -Encoding UTF8 extras/BASELINE.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-dc95-ARM64-${{ matrix.variant }}
+          archive: false
+          path: |
+            eden/artifacts/*
+            extras/*
+          if-no-files-found: error
+          retention-days: 14
