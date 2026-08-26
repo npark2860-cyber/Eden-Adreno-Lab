@@ -32,6 +32,7 @@ Inside `GraphicsPipeline::ConfigureImpl()` the important non-BufferCategory regi
 - `texture_cache.FillImageViews(...)`
 - direct transform-feedback outside-render-pass request
 - `guest_descriptor_queue.Acquire(...)`
+- per-stage `PushImageDescriptors(...)`
 - `buffer_cache.runtime.PostCopyBarrier()` after BufferCache category scopes
 - `texture_cache.UpdateRenderTargets(false)`
 - `texture_cache.CheckFeedbackLoop(...)`
@@ -65,6 +66,7 @@ Reason buckets:
 - `other/texture-fill-image-views`
 - `other/transform-feedback-break`
 - `other/descriptor-acquire`
+- `other/push-image-descriptors`
 - `other/post-copy-barrier`
 - `other/update-render-targets`
 - `other/feedback-loop`
@@ -85,11 +87,13 @@ Exact dc95 TextureCache runtime contains multiple operations that can request an
 
 Rather than instrument every hot internal event, the experiment scopes the top-level Draw preparation calls. Existing upload/copy/outside/barrier telemetry will therefore aggregate under the top-level reason that caused the internal work.
 
-## 6. Query/cache reason
+## 6. Descriptor and query reasons
 
-The Vulkan query cache has conditional paths that request outside-render-pass operation contexts for query-pool reset/copy/resolve work. The ordinary Draw path usually only records query begin/end work, so query buckets are expected to be smaller, but they are separated to avoid leaving them mixed into residual `other`.
+`guest_descriptor_queue.Acquire(...)` and per-stage `PushImageDescriptors(...)` are separated because they execute after named BufferCache geometry/stage scopes and can otherwise remain in residual `other`.
 
-## 7. Instrumentation rule
+The Vulkan query cache also has conditional paths that request outside-render-pass operation contexts for query-pool reset/copy/resolve work. The ordinary Draw path usually only records query begin/end work, so query buckets are expected to be smaller, but they are separated to avoid leaving them mixed into residual `other`.
+
+## 7. Instrumentation rule and actual transplant order
 
 This experiment is instrumentation-only.
 
@@ -102,11 +106,13 @@ It does not:
 - change descriptor behavior
 - change BufferCache dirty tracking
 
-The new manual workflow applies, in order:
+Actual transplant provenance is important: `transplant_dc95_draw_dispatch_ab_controls.py` already runs both the A/B base transplant and `transplant_dc95_buffer_category_correlation.py` internally.
 
-`dc95 -> full-flow -> Draw/Dispatch correlation -> A/B controls -> BufferCategory correlation -> Draw other reasons`
+Therefore the new manual workflow applies exactly once, in order:
 
-This explicitly fixes the reproducibility problem in the inherited manual workflow, which did not currently call the BufferCategory transplant.
+`dc95 -> full-flow -> Draw/Dispatch correlation -> A/B wrapper (A/B base + BufferCategory) -> Draw other reasons`
+
+There is no second explicit BufferCategory transplant.
 
 ## 8. Decision after runtime
 
