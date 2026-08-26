@@ -110,6 +110,10 @@ jobs:
         shell: bash
         run: python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
 
+      - name: Transplant signature based Draw Dispatch AB controls
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
+
       - name: Verify full-flow and Draw Dispatch instrumentation
         shell: bash
         run: |
@@ -121,6 +125,7 @@ jobs:
             lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py \
             lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py \
             lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py \
+            lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py \
             lab/tools/adreno_lab/analyze_x1_full_flow_log.py \
             lab/tools/adreno_lab/analyze_x1_draw_dispatch_log.py
           git -C eden diff --check
@@ -160,15 +165,20 @@ jobs:
           grep -q 'x1_pipeline_shader_log{linkage, false' eden/src/common/settings.h
           grep -q 'x1_upload_barrier_log{linkage, false' eden/src/common/settings.h
           grep -q 'x1_qcom_workaround_log{linkage, false' eden/src/common/settings.h
+          grep -q 'x1_ab_skip_draw{linkage, false' eden/src/common/settings.h
+          grep -q 'x1_ab_skip_dispatch{linkage, false' eden/src/common/settings.h
           grep -q 'X1 Log: Scheduler / Sync' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'X1 Log: Present / Frame Pacing' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'X1 Log: Pipeline / Shader' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'X1 Log: Upload / Barrier' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'X1 Log: QCOM Workaround Hits' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'X1 A/B: Skip Matching Draw' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'X1 A/B: Skip Matching Dispatch' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'BeginWork(AdrenoProfiler::WorkOrigin::Draw)' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
           grep -q 'BeginWork(AdrenoProfiler::WorkOrigin::Dispatch)' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
           grep -q '\[X1-FLOW\]\[ORIGIN\]' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
           grep -q '\[X1-FLOW\]\[ORIGIN-CALL\]' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          grep -q '\[X1-FLOW\]\[AB\]' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
           if grep -q 'EDEN_ADRENO_PROFILE' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp; then
             echo 'ERROR: legacy env var still controls full-flow profiler on/off' >&2
             exit 1
@@ -235,23 +245,17 @@ jobs:
           & $eden
           '@ | Set-Content -Encoding UTF8 extras/RUN_X1_DRAW_DISPATCH_PROFILE.ps1
           @'
-          Experiment: X1 Draw / Dispatch cost-correlation build
+          Experiment: X1 Draw / Dispatch cost-correlation + signature A/B build
           Exact Eden source: dc95cd09eea9749250fe31a3072684d341d19417
           Build: Windows ARM64 / MSYS2 CLANGARM64 / clang / standard
           Parent diagnostic: exp/x1-full-flow-profiler
           Experiment branch: exp/x1-draw-dispatch-correlation
 
-          This pass is instrumentation-only. It does NOT skip, reorder, or alter Draw/Dispatch work.
+          DEFAULT MODE is instrumentation-only. Both behavioral A/B switches default OFF.
 
-          Enable these existing GUI checkboxes before game launch:
+          For correlation, enable these existing GUI checkboxes before game launch:
             X1 Log: Scheduler / Sync
             X1 Log: Upload / Barrier
-
-          Optional additional categories remain available:
-            X1 Log: Descriptor Ring
-            X1 Log: Present / Frame Pacing
-            X1 Log: Pipeline / Shader
-            X1 Log: QCOM Workaround Hits
 
           New correlation output:
             [X1-FLOW][ORIGIN]       120-frame Draw vs Dispatch aggregate
@@ -260,8 +264,14 @@ jobs:
           Per-origin costs:
             staging upload bytes / buffer-copy calls+bytes / outside-RP ends / barriers / Scheduler::Wait
 
-          The heavy-call signature is intended for the next controlled A/B step: target only the
-          recurring expensive Draw or Dispatch shapes instead of disabling broad rendering paths.
+          Runtime A/B controls in Settings > Debug:
+            X1 A/B: Skip Matching Draw      + Draw signature (hex)
+            X1 A/B: Skip Matching Dispatch  + Dispatch signature (hex)
+
+          Use the analyzer to identify a repeating expensive signature first. Then stop the game,
+          enter exactly that signature, enable only the matching A/B switch, and rerun the same scene.
+          This skips only the exact signature before its preparation path. It may cause missing
+          graphics or logic and is diagnostic evidence, not a production optimization.
           '@ | Set-Content -Encoding UTF8 extras/EXPERIMENT.txt
           git -C eden diff -- src/common/settings.h src/yuzu/configuration/configure_debug.h src/yuzu/configuration/configure_debug.cpp src/video_core/CMakeLists.txt src/video_core/renderer_vulkan | Set-Content -Encoding UTF8 extras/DRAW_DISPATCH_CORRELATION.diff
 
