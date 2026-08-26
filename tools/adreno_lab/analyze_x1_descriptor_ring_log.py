@@ -74,12 +74,10 @@ def main() -> int:
     )
 
     if totals.finish_count > 0:
-        verdict = "OPEN_STRONG: descriptor-frame exhaustion caused forced Scheduler::Finish"
-    elif totals.reuse_ms > 0.1 * totals.frames:
-        verdict = "OPEN: material frame-slot reuse wait; correlate with scheduler/GPU progress"
+        print("evidence=OPEN_STRONG: descriptor-frame exhaustion forced Scheduler::Finish")
     else:
-        verdict = "LOW_FOR_SCENE: no exhaustion and reuse-wait cost is small"
-    print(f"verdict={verdict}")
+        print("evidence=OPEN: no descriptor-frame exhaustion observed in captured reports")
+    print("reuse_wait_interpretation=requires clean-scene comparison and scheduler/GPU-progress context")
     return 0
 
 
