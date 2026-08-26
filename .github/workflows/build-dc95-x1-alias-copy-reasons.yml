@@ -2,11 +2,6 @@ name: Build dc95 X1 Alias Copy Reasons
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/x1-alias-copy-reasons
-    paths:
-      - tools/adreno_lab/X1_ALIAS_COPY_REASONS_BUILD_TRIGGER
 
 concurrency:
   group: dc95-x1-alias-copy-reasons-${{ github.ref }}
