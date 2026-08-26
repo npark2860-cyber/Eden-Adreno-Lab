@@ -8,8 +8,9 @@ Run after:
 
 This pass intentionally does not import later Eden behavior. It only:
   - restores the exact dc95 Scheduler::Wait pacing policy around the profiler timer,
-  - attributes actual async graphics/compute pipeline-ready blocking,
-  - makes runtime sampler-workaround counters explicitly Qualcomm-only.
+  - attributes actual async graphics/compute pipeline-ready blocking including mutex contention,
+  - makes runtime sampler-workaround counters explicitly Qualcomm-only,
+  - fixes the known dc95 Present-result instrumentation scope issue and shadow warning.
 
 Every edit is a strict single-anchor replacement. A source drift therefore fails
 before compilation instead of silently producing a partially instrumented build.
@@ -63,9 +64,9 @@ def main() -> int:
         raise RuntimeError("scheduler pacing finalizer: later spin_tail policy still present")
     scheduler_h.write_text(text, encoding="utf-8")
 
-    # 2) Directly attribute time spent blocked for asynchronous pipeline readiness.
-    #    The pending flag is read while holding the same mutex used by the builder;
-    #    only a genuinely pending condvar wait is counted. Control flow is unchanged.
+    # 2) Directly attribute all time blocked on asynchronous pipeline readiness.
+    #    Start the timer before acquiring build_mutex, because the builder can hold
+    #    that mutex while completing. The atomic pre-check does not change control flow.
     wait_block = '''        scheduler.Record([this](vk::CommandBuffer) {
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
@@ -75,15 +76,16 @@ def main() -> int:
     graphics = vulkan / "vk_graphics_pipeline.cpp"
     text = graphics.read_text(encoding="utf-8")
     graphics_wait = '''        scheduler.Record([this](vk::CommandBuffer) {
-            auto& profiler = AdrenoProfiler::Get();
-            std::unique_lock lock{build_mutex};
-            const bool pending = !is_built.load(std::memory_order::relaxed);
-            const auto wait_start = pending && profiler.PipelineEnabled()
+            auto& x1_wait_profiler = AdrenoProfiler::Get();
+            const bool profile_wait = x1_wait_profiler.PipelineEnabled();
+            const bool was_pending = !is_built.load(std::memory_order::relaxed);
+            const auto wait_start = was_pending && profile_wait
                                         ? AdrenoProfiler::Now()
                                         : AdrenoProfiler::TimePoint{};
+            std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
-            if (pending && profiler.PipelineEnabled()) {
-                profiler.RecordPipelineWait(false, AdrenoProfiler::ElapsedNs(wait_start));
+            if (was_pending && profile_wait) {
+                x1_wait_profiler.RecordPipelineWait(false, AdrenoProfiler::ElapsedNs(wait_start));
             }
         });
 '''
@@ -93,15 +95,16 @@ def main() -> int:
     compute = vulkan / "vk_compute_pipeline.cpp"
     text = compute.read_text(encoding="utf-8")
     compute_wait = '''        scheduler.Record([this](vk::CommandBuffer) {
-            auto& profiler = AdrenoProfiler::Get();
-            std::unique_lock lock{build_mutex};
-            const bool pending = !is_built.load(std::memory_order_relaxed);
-            const auto wait_start = pending && profiler.PipelineEnabled()
+            auto& x1_wait_profiler = AdrenoProfiler::Get();
+            const bool profile_wait = x1_wait_profiler.PipelineEnabled();
+            const bool was_pending = !is_built.load(std::memory_order_relaxed);
+            const auto wait_start = was_pending && profile_wait
                                         ? AdrenoProfiler::Now()
                                         : AdrenoProfiler::TimePoint{};
-            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order_relaxed); });
-            if (pending && profiler.PipelineEnabled()) {
-                profiler.RecordPipelineWait(true, AdrenoProfiler::ElapsedNs(wait_start));
+            std::unique_lock lock{build_mutex};
+            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+            if (was_pending && profile_wait) {
+                x1_wait_profiler.RecordPipelineWait(true, AdrenoProfiler::ElapsedNs(wait_start));
             }
         });
 '''
@@ -136,7 +139,74 @@ def main() -> int:
     text = replace_once(text, old_swizzle, new_swizzle, "QCOM border-swizzle gating")
     texture.write_text(text, encoding="utf-8")
 
-    # 4) Guard against known later scheduler behavior accidentally leaking into the
+    # 4) Fix the exact compile failure seen in the previous ARM64 attempt.
+    #    The instrumentation hoists Present()'s VkResult out of the switch initializer,
+    #    so both error branches must reference present_result. Also avoid shadowing
+    #    AcquireNextImage()'s profiler variable inside its pacing lambda.
+    swapchain = vulkan / "vk_swapchain.cpp"
+    text = swapchain.read_text(encoding="utf-8")
+
+    pacing_start_old = '''    auto& profiler = AdrenoProfiler::Get();
+    const auto pacing_start = profiler.PresentEnabled() ? AdrenoProfiler::Now()
+                                                        : AdrenoProfiler::TimePoint{};
+'''
+    pacing_start_new = '''    auto& pacing_profiler = AdrenoProfiler::Get();
+    const auto pacing_start = pacing_profiler.PresentEnabled() ? AdrenoProfiler::Now()
+                                                               : AdrenoProfiler::TimePoint{};
+'''
+    text = replace_once(text, pacing_start_old, pacing_start_new, "swapchain pacing profiler name")
+
+    pacing_end_old = '''    if (profiler.PresentEnabled()) {
+        profiler.RecordPresentWait("swapchain-resource-pacing",
+                                   AdrenoProfiler::ElapsedNs(pacing_start));
+    }
+'''
+    pacing_end_new = '''    if (pacing_profiler.PresentEnabled()) {
+        pacing_profiler.RecordPresentWait("swapchain-resource-pacing",
+                                          AdrenoProfiler::ElapsedNs(pacing_start));
+    }
+'''
+    text = replace_once(text, pacing_end_old, pacing_end_new, "swapchain pacing profiler use")
+
+    present_switch_old = '''    switch (present_result) {
+    case VK_SUCCESS:
+        break;
+    case VK_SUBOPTIMAL_KHR:
+        LOG_DEBUG(Render_Vulkan, "Suboptimal swapchain");
+        break;
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        is_outdated = true;
+        break;
+    case VK_ERROR_SURFACE_LOST_KHR:
+        vk::Check(result);
+        break;
+    default:
+        LOG_CRITICAL(Render_Vulkan, "Failed to present with error {}", string_VkResult(result));
+        break;
+    }
+'''
+    present_switch_new = '''    switch (present_result) {
+    case VK_SUCCESS:
+        break;
+    case VK_SUBOPTIMAL_KHR:
+        LOG_DEBUG(Render_Vulkan, "Suboptimal swapchain");
+        break;
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        is_outdated = true;
+        break;
+    case VK_ERROR_SURFACE_LOST_KHR:
+        vk::Check(present_result);
+        break;
+    default:
+        LOG_CRITICAL(Render_Vulkan, "Failed to present with error {}",
+                     string_VkResult(present_result));
+        break;
+    }
+'''
+    text = replace_once(text, present_switch_old, present_switch_new, "swapchain present result scope")
+    swapchain.write_text(text, encoding="utf-8")
+
+    # 5) Guard against known later scheduler behavior accidentally leaking into the
     #    exact dc95 diagnostic branch.
     scheduler_cpp = (vulkan / "vk_scheduler.cpp").read_text(encoding="utf-8")
     forbidden = {
@@ -148,7 +218,10 @@ def main() -> int:
         if token in scheduler_cpp:
             raise RuntimeError(f"exact dc95 guard failed: found {label}: {token}")
 
-    print("Finalized exact dc95 X1 full-flow diagnostic hooks without behavioral pacing changes")
+    print(
+        "Finalized exact dc95 X1 full-flow diagnostic hooks: pacing preserved, "
+        "pipeline waits attributed, swapchain scope fixed"
+    )
     return 0
 
 
