@@ -2,6 +2,7 @@
 "Instrument exact-dc95 Draw category=other with concrete reason buckets."
 
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -19,8 +20,16 @@ def main() -> int:
     root = Path(sys.argv[1])
     vulkan = root / "src/video_core/renderer_vulkan"
 
-    # Extend the existing BufferCategory enum without changing numeric values 1..8.
+    # This reason-level pass depends on the existing BufferCategory profiler. Keep the
+    # workflow robust if its explicit BufferCategory step is absent: apply it exactly once.
     header = vulkan / "vk_adreno_profiler.h"
+    if "enum class BufferCategory" not in header.read_text(encoding="utf-8"):
+        category_transplant = Path(__file__).with_name(
+            "transplant_dc95_buffer_category_correlation.py"
+        )
+        subprocess.run([sys.executable, str(category_transplant), str(root)], check=True)
+
+    # Extend the existing BufferCategory enum without changing numeric values 1..8.
     text = header.read_text(encoding="utf-8")
     old = '''        TransformFeedback,\n        Indirect,\n        Count,\n'''
     new = '''        TransformFeedback,\n        Indirect,\n        OtherTextureSyncDescriptors,\n        OtherTextureFillImageViews,\n        OtherTransformFeedbackBreak,\n        OtherDescriptorAcquire,\n        OtherPushImageDescriptors,\n        OtherPostCopyBarrier,\n        OtherUpdateRenderTargets,\n        OtherFeedbackLoop,\n        OtherConfigureDraw,\n        OtherFlushWork,\n        OtherFlushCaching,\n        OtherDynamicStates,\n        OtherQuerySegment,\n        OtherTransformFeedback,\n        OtherQueryCounter,\n        OtherDrawCommand,\n        Count,\n'''
