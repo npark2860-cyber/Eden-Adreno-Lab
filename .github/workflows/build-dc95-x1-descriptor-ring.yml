@@ -10,6 +10,10 @@ on:
       - .github/workflows/build-dc95-x1-descriptor-ring.yml
       - tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py
 
+concurrency:
+  group: dc95-x1-descriptor-ring-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: dc95 ARM64 / X1 descriptor ring
