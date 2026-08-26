@@ -1,198 +1,172 @@
-# CURRENT HANDOFF — Eden Adreno X1 alias CopyImage reasons
+# CURRENT HANDOFF — Eden Adreno X1 alias synchronization
 
 Updated: 2026-08-27 KST
 
 ## Fixed baseline
 
+- Repository: `npark2860-cyber/Eden-Adreno-Lab`
 - Exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
 - Immutable control: `lab/dc95-arm64-baseline`
-- Previous experiment: `exp/x1-texture-fill-reasons`
-- Current experiment: `exp/x1-alias-copy-reasons`
-- No ARM64 build may be started or re-run without fresh explicit user permission. One permission = one attempt.
+- Completed texture experiment: `exp/x1-texture-fill-reasons`
+- Completed alias-route experiment: `exp/x1-alias-copy-reasons`
+- Recommended next branch: `exp/x1-alias-sync-redundancy`
 
-## Previous build — SUCCESS
+**No ARM64 build may be started or re-run without fresh explicit user permission. One permission = one attempt.**
 
-Texture Fill/RT diagnostic:
+## Latest successful diagnostic build
 
-- workflow: `Build dc95 X1 Texture Fill Reasons`
-- run: `33013428678`
-- job: `98325342539`
-- build head: `ce92e665baa277cc6a99c52dee35504832a1cf1b`
-- result: success
-- exact source: dc95
+Alias Copy Reasons:
 
-The user ran this build with TOTK 1.4.2 on Qualcomm Adreno X1-85, driver 512.863.0 and uploaded `eden_log(7).txt`. Draw/Dispatch skip were both false.
+- workflow: `Build dc95 X1 Alias Copy Reasons`
+- workflow file: `.github/workflows/build-dc95-x1-alias-copy-reasons.yml`
+- run: `33019025980`
+- job: `98344461231`
+- build head: `eaec1e760057cd284fe379d5fd1bd0009805432d`
+- result: **success**
+- all transplant/preflight/configure/build/package/upload steps: success
+- artifact: `Eden-dc95-X1-alias-copy-reasons`
+- artifact id: `9626369486`
+- size: 31,298,049 bytes
+- SHA-256: `653b232e91aa2a120239106ac991e8b3308b5f95651b6ac0414eda38f2647aef`
 
-## What `eden_log(7).txt` proved
+The one-shot push trigger was removed immediately after launch. The workflow is back to `workflow_dispatch` only.
 
-Across the complete 1920-frame sample, attributed Draw outside-RP totaled 54,175:
+## Latest runtime contract
 
-- `other/texture/alias-copy`: **35,017 = 64.64%**
-- `other/post-copy-barrier`: 7,383
-- `vertex`: 4,842
-- `other/texture/refresh-standard`: 2,819
-- `uniform`: 1,521
-- `index`: 1,369
-- `storage`: 1,048
+User tested the successful build with:
 
-This is persistent in steady gameplay. Across report windows 1080–1920:
-
-- alias-copy: **30,062 / 46,356 = 64.85%**
-- post-copy-barrier: 6,586
-- vertex: 4,597
-- refresh-standard: 1,843
-
-Representative rows:
-
-- frame 1200: alias-copy outside 4,149; refresh-standard outside 11 / 4.115 MiB upload
-- frame 1560: alias-copy outside 3,747; refresh-standard outside 344 / 106.767 MiB upload
-- frame 1920: alias-copy outside 3,756; refresh-standard outside 131 / 31.883 MiB upload
-
-RT find/color/depth/scale scopes were large but had zero outside-RP, so they are not the current render-pass-break target.
-
-Separate axes remain:
-
-- persistent tiny Uniform uploads remain a normal ~20 FPS ceiling candidate
-- PostCopyBarrier remains the Draw barrier owner
-- severe dips can combine alias-copy, texture refresh, and Vertex/Index bursts
-
-Do not collapse these into one cause.
-
-## Exact source map
-
-### Generic route
-
-`TextureCache<P>::CopyImage` in `src/video_core/texture_cache/texture_cache.h` routes:
-
-1. same SurfaceType -> `runtime.CopyImage`
-2. different type + `ShouldReinterpret` -> `runtime.ReinterpretImage`
-3. otherwise -> `runtime.ConvertImage`
-
-### Attribution hazard — CONFIRMED
-
-Generic `CopyImage()` is not exclusive to `SynchronizeAliases()`. Exact dc95 also calls it from image joining/overlap maintenance.
-
-Therefore new route instrumentation is **parent-gated**: it activates only when the current BufferCategory is the existing `OtherTextureAliasCopy` parent. Calls from JoinImages or unrelated texture maintenance remain outside the new alias child buckets.
-
-Profiler API added:
-
-`PushBufferCategoryOverrideIf(expected, category)`
-
-### Vulkan direct route
-
-Exact `TextureCacheRuntime::CopyImage` additionally does:
-
-1. `InvalidateResolveShadow`
-2. if BytesPerBlock differs -> Windows linear guard or `ReinterpretImage` fallback
-3. otherwise -> `RequestOutsideRenderPassOperationContext` + barriers + `vkCmdCopyImage`
-
-`ReinterpretImage` uses a temporary buffer and explicitly requests outside-RP context.
-
-## Prepared alias child buckets
-
-Generic routes:
-
-- `other/texture/alias-copy/direct-route`
-- `other/texture/alias-copy/reinterpret-route`
-- `other/texture/alias-copy/convert-route`
-
-Direct-route internals:
-
-- `other/texture/alias-copy/direct-resolve-invalidate`
-- `other/texture/alias-copy/direct-bpb-reinterpret`
-- `other/texture/alias-copy/direct-vk-copy`
-
-The existing `other/texture/alias-copy` parent remains residual accounting.
-
-## Prepared files
-
-Branch:
-
-`exp/x1-alias-copy-reasons`
-
-Files:
-
-- `tools/adreno_lab/transplant_dc95_alias_copy_reasons.py`
-- `.github/workflows/build-dc95-x1-alias-copy-reasons.yml`
-- `ALIAS_COPY_REASON_MAP.md`
-- `CURRENT_HANDOFF.md`
-
-Important commits in preparation sequence:
-
-- `68c8dfe228ee3b7be7e00fc768210009d92b6e0e` — initial alias route split
-- `4cf02e6d1fc119c889396db5507aa165f78f3ff3` — gate child routes to alias parent
-- `b29f504aff6570803400af637b3ac190af0fccd0` — keep shared generic TextureCache backend-safe with OpenGL no-op bridge
-- `d6af758e664b2fe67562633db9006a7b7c79b3fb` — update workflow preflight for parent-gated hooks
-- `b14ff40d25b072d6c5ee2eff8dd281484b23fb3d` — document parent-gated attribution
-
-## Backend safety
-
-Shared generic TextureCache is instantiated for Vulkan and OpenGL.
-
-- Vulkan TextureCacheParams exposes real conditional profiler hooks.
-- OpenGL TextureCacheParams gets no-op conditional hooks returning false.
-
-This keeps generic template code compile-safe while ensuring only Vulkan X1 diagnostics produce new category data.
-
-## Workflow
-
-`.github/workflows/build-dc95-x1-alias-copy-reasons.yml`
-
-Expected artifact:
-
-`Eden-dc95-X1-alias-copy-reasons`
-
-The workflow is intended to stay `workflow_dispatch` only until an explicit build authorization.
-
-Pre-configure verification checks:
-
-- Python transplant syntax
-- `git diff --check`
-- all six alias bucket names
-- conditional profiler API
-- Vulkan + OpenGL conditional bridges
-- exact generic parent-gated route markers `29 -> 35/36/37`
-- Vulkan direct child enum uses
-- existing exact-dc95 scheduler leak guards
-
-## Runtime contract after successful build
-
+- TOTK 1.4.2
+- Qualcomm Adreno X1-85
+- Qualcomm driver 512.863.0
+- Vulkan 1.3.295
+- Windows 11 25H2 build 26220.9223
 - `X1 Log: Scheduler / Sync` = ON
 - `X1 Log: Upload / Barrier` = ON
 - `X1 A/B Skip Draw` = OFF
 - `X1 A/B Skip Dispatch` = OFF
-- same TOTK 1.4.2 field route / comparable gameplay window
 
-Interpretation priority:
+Runtime log: `eden_log(8).txt`.
 
-1. direct-vk-copy
-2. direct-bpb-reinterpret
-3. reinterpret-route
-4. convert-route
-5. direct-resolve-invalidate
-6. parent alias-copy residual
+## What `eden_log(8).txt` proved — CONFIRMED
+
+Alias child whole-log totals:
+
+| Bucket | Scopes | Outside-RP |
+| --- | ---: | ---: |
+| `other/texture/alias-copy/direct-route` | **100,021** | 0 |
+| `other/texture/alias-copy/direct-resolve-invalidate` | **100,021** | 0 |
+| `other/texture/alias-copy/direct-vk-copy` | **100,021** | **24,806** |
+| `other/texture/alias-copy/reinterpret-route` | 0 | 0 |
+| `other/texture/alias-copy/convert-route` | 0 | 0 |
+| `other/texture/alias-copy/direct-bpb-reinterpret` | 0 | 0 |
+
+Whole-log attributed Draw outside-RP: **39,017**.
+
+`direct-vk-copy`: **24,806 / 39,017 = 63.58%**.
+
+Previous texture-fill runtime had broad `other/texture/alias-copy` at **35,017 / 54,175 = 64.64%**. The near-match strongly cross-validates the child attribution.
+
+Representative latest windows:
+
+- frame 1080: direct-route scopes 16,009; direct-vk-copy outside 4,027; resolve invalidation outside 0
+- frame 1320: direct-vk-copy outside about 3,696
+- frame 1560: direct-route scopes 14,871; direct-vk-copy outside 3,740; resolve invalidation outside 0
+
+## Exact resolved path
+
+The dominant alias outside-RP chain is now:
+
+`Draw Configure`
+-> `FillImageViews`
+-> `PrepareImage`
+-> `SynchronizeAliases`
+-> `CopyImage`
+-> generic direct route
+-> `TextureCacheRuntime::CopyImage`
+-> `scheduler.RequestOutsideRenderPassOperationContext()`
+-> `vkCmdCopyImage`
+
+This is no longer a hypothesis.
+
+## Ruled-out alias route hypotheses
+
+For the matched `eden_log(8).txt` runtime:
+
+- generic `ReinterpretImage` route: inactive
+- generic `ConvertImage` route: inactive
+- direct BytesPerBlock reinterpret fallback: inactive
+- `InvalidateResolveShadow`: called but produced zero measured outside-RP events
+
+Do not repeat these splits unless new evidence from a materially different runtime requires it.
+
+## Other confirmed/active performance axes
+
+Keep these separate:
+
+### Draw barriers — CONFIRMED
+
+`other/post-copy-barrier` owns the reason-level Draw barriers.
+
+It is not the dominant alias outside-RP owner.
+
+### Persistent Uniform pressure — STRONG
+
+The latest 960–1560 windows still showed roughly:
+
+- 8,666,347 Uniform upload requests
+- 3,516.7 MiB
+- ~425 bytes/request
+- ~12,037 requests/frame
+
+Tiny Uniform traffic remains a separate normal ~20 FPS ceiling candidate.
+
+### Severe dips — COMPOSITE
+
+The slowest windows still add bulk staging upload, Vertex/Index copy spikes and texture refresh activity on top of the persistent Uniform + alias-copy burdens.
+
+Do not force these into one root cause.
+
+## What NOT to do next
+
+- do not split Vulkan `CopyImage()` further
+- do not blindly suppress `RequestOutsideRenderPassOperationContext()`
+- do not skip alias copies based only on intuition
+- do not change alias dirty/up-to-date state without runtime evidence
+- do not alter `modification_tick`
+- do not combine the Uniform investigation with the next alias experiment
+- do not start an ARM64 build during source preparation without fresh permission
+
+`vkCmdCopyImage` must execute outside a render pass, so the next opportunity is likely reducing unnecessary **copy requests**, not deleting a required render-pass transition around a necessary copy.
 
 ## NEXT ACTION
 
-Do not start GitHub Actions until the user gives a fresh explicit build permission.
+Follow `NEXT_ACTION_ALIAS_SYNC_REDUNDANCY.md`.
 
-On the next explicit build permission, start exactly one ARM64 build attempt of:
+High-level objective:
 
-`.github/workflows/build-dc95-x1-alias-copy-reasons.yml`
+**Determine whether `SynchronizeAliases()` repeatedly requests the same direct image copy without new source content.**
 
-on:
+Next task should:
 
-`exp/x1-alias-copy-reasons`
+1. create `exp/x1-alias-sync-redundancy` from the completed alias-copy branch
+2. inspect exact dc95 alias/modification semantics before coding
+3. add passive bounded telemetry around alias-copy requests only
+4. measure unique/repeated src-dst pairs, same-frame/same-Draw repetition, source modification state and copy-region signatures
+5. retain the proven direct-vk-copy categories for cross-checking
+6. prepare a manual-only ARM64 workflow and static/preflight validation
+7. update this handoff
+8. stop **before running Actions**
 
-If direct workflow dispatch is unavailable, use a one-shot push trigger restricted to a unique marker file path, create exactly one marker commit, then immediately restore the workflow to manual-only without modifying that marker path.
-
-If the build fails, diagnose/fix but do not re-run until another fresh explicit permission.
+Only after the user gives a fresh explicit build permission may exactly one ARM64 attempt be started.
 
 ## Current safety state
 
-- Gameplay behavior changes: none
-- Copies skipped: none
-- Barriers suppressed: none
-- Render-pass requests suppressed: none
-- Optimization A/B selected: none
-- Alias workflow build attempts: 0
+- current completed experiment: `exp/x1-alias-copy-reasons`
+- successful alias workflow attempts: 1
+- additional alias build attempts after success: 0
+- gameplay behavior change: none
+- copies skipped: none
+- barriers suppressed: none
+- render-pass requests suppressed: none
+- optimization A/B selected: none
+- next diagnostic build authorization: **not granted**
