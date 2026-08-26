@@ -9,6 +9,7 @@ on:
     paths:
       - .github/workflows/build-dc95-x1-descriptor-ring.yml
       - tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py
+      - tools/adreno_lab/transplant_dc95_logging_checkboxes.py
 
 concurrency:
   group: dc95-x1-descriptor-ring-${{ github.ref }}
@@ -62,7 +63,11 @@ jobs:
         shell: bash
         run: python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
 
-      - name: Verify descriptor-ring instrumentation
+      - name: Transplant diagnostic logging checkboxes
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+
+      - name: Verify descriptor-ring instrumentation and log controls
         shell: bash
         run: |
           set -e
@@ -73,6 +78,16 @@ jobs:
           grep -q 'RecordFrameReuseWait' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
           grep -q 'RecordChunkSwitch' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
           grep -q 'RecordExhaustionFinish' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
+          grep -q 'x1_descriptor_ring_log' eden/src/common/settings.h
+          grep -q 'GPU Log: Vulkan Calls' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'GPU Log: Memory Tracking' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'GPU Log: Driver Debug' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'X1 Log: Descriptor Ring' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'Settings::values.x1_descriptor_ring_log.GetValue' eden/src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.cpp
+          if grep -q 'EDEN_X1_DESCRIPTOR_PROFILE"' eden/src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.cpp; then
+            echo 'ERROR: env var still controls profiler on/off' >&2
+            exit 1
+          fi
           git -C eden status --short
 
       - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
@@ -118,10 +133,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force extras | Out-Null
           @'
-          $env:EDEN_X1_DESCRIPTOR_PROFILE="1"
           $env:EDEN_X1_DESCRIPTOR_PROFILE_FRAMES="120"
           $eden = Join-Path $PSScriptRoot "eden.exe"
           if (-not (Test-Path $eden)) { throw "Place this script beside eden.exe" }
+          Write-Host "Before launching a game: Settings > Debug > Logging > check 'X1 Log: Descriptor Ring'"
           & $eden
           '@ | Set-Content -Encoding UTF8 extras/RUN_X1_DESCRIPTOR_PROFILE.ps1
           @'
@@ -131,9 +146,15 @@ jobs:
           Control branch remains: lab/dc95-arm64-baseline
           Experimental branch: exp/x1-descriptor-ring
 
-          Enable:
-            EDEN_X1_DESCRIPTOR_PROFILE=1
-            EDEN_X1_DESCRIPTOR_PROFILE_FRAMES=120
+          Log controls (Settings > Debug > Logging):
+            GPU Log: Vulkan Calls          checkbox
+            GPU Log: Memory Tracking       checkbox
+            GPU Log: Driver Debug          checkbox
+            X1 Log: Descriptor Ring        checkbox (default OFF)
+            Dump SPIR-V Shaders            existing checkbox
+
+          X1 descriptor profiler enable/disable is controlled only by the checkbox.
+          EDEN_X1_DESCRIPTOR_PROFILE_FRAMES=120 changes report cadence only.
 
           Log prefix:
             [X1-DBUF]
@@ -144,7 +165,7 @@ jobs:
             chunk switch count
             descriptor-frame exhaustion Finish count and total time
           '@ | Set-Content -Encoding UTF8 extras/EXPERIMENT.txt
-          git -C eden diff -- src/video_core/CMakeLists.txt src/video_core/renderer_vulkan/renderer_vulkan.cpp src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.cpp src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.h | Set-Content -Encoding UTF8 extras/DESCRIPTOR_RING_INSTRUMENTATION.diff
+          git -C eden diff -- src/common/settings.h src/yuzu/configuration/configure_debug.h src/yuzu/configuration/configure_debug.cpp src/video_core/CMakeLists.txt src/video_core/renderer_vulkan/renderer_vulkan.cpp src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.cpp src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.h | Set-Content -Encoding UTF8 extras/DESCRIPTOR_RING_INSTRUMENTATION.diff
 
       - name: List artifact files
         shell: pwsh
