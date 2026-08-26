@@ -58,32 +58,99 @@ jobs:
           rm -rf eden/.ci
           cp -a ci/.ci eden/.ci
 
-      - name: Generate semantically-neutral profiler patch
+      - name: Prepare dc95 profiler transplant
         if: matrix.variant == 'profiled'
         shell: bash
         run: |
-          git -C lab diff --binary \
-            a845b6eafe39faf0b9dd038639a5db385cf9d08f \
-            318bb024cc06a0497d179d374b4680c8d57f767d \
-            -- \
+          set -e
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          PROF=318bb024cc06a0497d179d374b4680c8d57f767d
+          for f in \
             src/video_core/CMakeLists.txt \
-            src/video_core/renderer_vulkan/renderer_vulkan.cpp \
-            src/video_core/renderer_vulkan/vk_adreno_profiler.cpp \
-            src/video_core/renderer_vulkan/vk_adreno_profiler.h \
+            src/video_core/renderer_vulkan/vk_scheduler.cpp \
             src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
             src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
-            src/video_core/renderer_vulkan/vk_scheduler.cpp \
-            src/video_core/renderer_vulkan/vk_update_descriptor.cpp \
-            > profiler.patch
-          test -s profiler.patch
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" "$PROF" -- "$f" > "$out"
+            test -s "$out"
+          done
+          git -C lab show "$PROF:src/video_core/renderer_vulkan/vk_adreno_profiler.cpp" > eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          git -C lab show "$PROF:src/video_core/renderer_vulkan/vk_adreno_profiler.h" > eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
 
-      - name: Apply profiler to dc95 source with three-way merge
+      - name: Transplant profiler CMake registration
+        if: matrix.variant == 'profiled'
+        shell: bash
+        working-directory: eden
+        run: git apply --ignore-whitespace ../profiler-patches/CMakeLists.txt.patch
+
+      - name: Transplant profiler renderer hooks for dc95
         if: matrix.variant == 'profiled'
         shell: bash
         run: |
-          cd eden
-          git apply --3way --ignore-whitespace ../profiler.patch
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp')
+          text = p.read_text(encoding='utf-8')
+
+          def once(old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f'renderer_vulkan.cpp: expected 1 match, got {count}: {old[:120]!r}')
+              text = text.replace(old, new, 1)
+
+          once(
+              '#include "video_core/renderer_vulkan/renderer_vulkan.h"\n',
+              '#include "video_core/renderer_vulkan/renderer_vulkan.h"\n'
+              '#include "video_core/renderer_vulkan/vk_adreno_profiler.h"\n')
+          once(
+              '    , rasterizer(render_window, gpu, device_memory, device, memory_allocator, state_tracker, scheduler) {\n\n'
+              '    if (Settings::values.renderer_force_max_clock.GetValue() && device.ShouldBoostClocks()) {',
+              '    , rasterizer(render_window, gpu, device_memory, device, memory_allocator, state_tracker, scheduler) {\n\n'
+              '    AdrenoProfiler::Get().Initialize(\n'
+              '        device.GetDriverID() == VK_DRIVER_ID_QUALCOMM_PROPRIETARY);\n\n'
+              '    if (Settings::values.renderer_force_max_clock.GetValue() && device.ShouldBoostClocks()) {')
+          once(
+              '    gpu.RendererFrameEndNotify();\n    rasterizer.TickFrame();\n}',
+              '    gpu.RendererFrameEndNotify();\n    rasterizer.TickFrame();\n    AdrenoProfiler::Get().FrameEnd();\n}')
+          p.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Transplant profiler scheduler hooks
+        if: matrix.variant == 'profiled'
+        shell: bash
+        working-directory: eden
+        run: git apply --ignore-whitespace ../profiler-patches/vk_scheduler.cpp.patch
+
+      - name: Transplant profiler graphics-pipeline hooks
+        if: matrix.variant == 'profiled'
+        shell: bash
+        working-directory: eden
+        run: git apply --ignore-whitespace ../profiler-patches/vk_graphics_pipeline.cpp.patch
+
+      - name: Transplant profiler compute-pipeline hooks
+        if: matrix.variant == 'profiled'
+        shell: bash
+        working-directory: eden
+        run: git apply --ignore-whitespace ../profiler-patches/vk_compute_pipeline.cpp.patch
+
+      - name: Transplant profiler descriptor hooks
+        if: matrix.variant == 'profiled'
+        shell: bash
+        working-directory: eden
+        run: git apply --ignore-whitespace ../profiler-patches/vk_update_descriptor.cpp.patch
+
+      - name: Verify profiler transplant
+        if: matrix.variant == 'profiled'
+        shell: bash
+        working-directory: eden
+        run: |
           git diff --check
+          grep -q 'vk_adreno_profiler.cpp' src/video_core/CMakeLists.txt
+          grep -q 'AdrenoProfiler::Get().Initialize' src/video_core/renderer_vulkan/renderer_vulkan.cpp
+          grep -q 'AdrenoProfiler::Get().FrameEnd' src/video_core/renderer_vulkan/renderer_vulkan.cpp
           git status --short
 
       - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
@@ -109,8 +176,7 @@ jobs:
         working-directory: eden
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
-        run: |
-          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+        run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
 
       - name: Build dc95 ARM64
         shell: msys2 {0}
