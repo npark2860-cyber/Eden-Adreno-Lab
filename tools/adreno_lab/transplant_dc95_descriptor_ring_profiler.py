@@ -100,8 +100,8 @@ u64 Take(std::atomic<u64>& value) {
     return value.exchange(0, std::memory_order_relaxed);
 }
 
-double PerFrame(u64 value, u64 frames) {
-    return frames == 0 ? 0.0 : static_cast<double>(value) / static_cast<double>(frames);
+double PerFrame(double value, u64 frames) {
+    return frames == 0 ? 0.0 : value / static_cast<double>(frames);
 }
 
 double ToMs(u64 nanoseconds) {
@@ -184,7 +184,8 @@ void DescriptorRingProfiler::FrameEnd() {
              "{:.3f}ms | chunkSwitch={} ({:.2f}/f) | exhaustionFinish={} {:.3f}ms",
              frames, allocations, allocation_bytes, PerFrame(ToKiB(allocation_bytes), frames),
              frame_reuse_waits, ToMs(frame_reuse_wait_ns), chunk_switches,
-             PerFrame(chunk_switches, frames), exhaustion_finishes, ToMs(exhaustion_finish_ns));
+             PerFrame(static_cast<double>(chunk_switches), frames), exhaustion_finishes,
+             ToMs(exhaustion_finish_ns));
 }
 
 void DescriptorRingProfiler::RecordAllocation(u64 bytes) {
