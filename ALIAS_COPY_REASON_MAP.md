@@ -2,7 +2,7 @@
 
 Updated: 2026-08-27 KST
 
-Status: **runtime attribution complete / experiment closed**
+Status: **runtime attribution complete / route experiment closed / redundancy follow-up prepared**
 
 Exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
 
@@ -43,6 +43,7 @@ Prepared child buckets were:
 - run: `33019025980`
 - job: `98344461231`
 - build head: `eaec1e760057cd284fe379d5fd1bd0009805432d`
+- run attempt: 1
 - result: success
 - artifact: `Eden-dc95-X1-alias-copy-reasons`
 - artifact id: `9626369486`
@@ -86,6 +87,8 @@ The measured alias outside-RP path is:
 
 `SynchronizeAliases -> CopyImage -> TextureCacheRuntime::CopyImage -> RequestOutsideRenderPassOperationContext -> vkCmdCopyImage`
 
+Do not reopen these eliminated route hypotheses in the current redundancy diagnostic.
+
 ## Performance interpretation
 
 This path is persistent even in ~20 FPS report windows, so it is a steady burden but not the only cause of severe dips.
@@ -99,10 +102,46 @@ The current multi-axis model remains:
 
 Do not collapse these into one root cause.
 
-## Next question
+## Follow-up source semantics — VERIFIED
 
-Do **not** split `TextureCacheRuntime::CopyImage` further and do **not** suppress `RequestOutsideRenderPassOperationContext()` blindly. `vkCmdCopyImage` must execute outside a render pass.
+The next diagnostic moved upward to `SynchronizeAliases()` rather than splitting Vulkan `CopyImage` again.
 
-The next diagnostic must move upward to `SynchronizeAliases()` and determine **why so many direct copies are requested and whether copies are redundant**.
+Exact dc95 shows:
 
-See `NEXT_ACTION_ALIAS_SYNC_REDUNDANCY.md`.
+- `AliasedImage` holds only alias `ImageId` plus `ImageCopy` regions; no per-alias freshness bit exists
+- `MarkModification()` advances `modification_tick` when GPU modification is marked
+- `SynchronizeAliases()` selects only sources whose `modification_tick` is newer than the destination's tick at selection time
+- the destination tick is advanced to the most recent selected source tick
+- selected sources are sorted by source tick before copies
+- the actual request is `CopyImage(dst=image_id, src=aliased->id, copies=aliased->copies)`
+
+`modification_tick` is therefore treated as Eden recency/version state, not a content hash.
+
+## Prepared redundancy diagnostic
+
+Branch:
+
+`exp/x1-alias-sync-redundancy`
+
+Prepared passive telemetry measures:
+
+- total alias-copy requests
+- unique src/dst pairs
+- same-frame / same-Draw / consecutive-frame repeats
+- source tick same / advanced / regressed
+- copy-region counts and stable region signature
+- same pair + same source tick + same signature repeats
+
+The pair tracker is fixed-size (4,096 entries, 32-probe cap), rotates at the existing report boundary and emits no per-copy log.
+
+Existing alias route buckets remain enabled for runtime cross-checking.
+
+See `ALIAS_SYNC_REDUNDANCY_MAP.md` and `NEXT_ACTION_ALIAS_SYNC_REDUNDANCY.md`.
+
+## Safety boundary
+
+The redundancy branch is instrumentation-only. It does not skip/deduplicate/batch copies, suppress barriers/render-pass requests, alter alias/tick state or reorder Draw work.
+
+No ARM64 build has been started for the redundancy experiment.
+
+Fresh explicit user authorization is required before exactly one build attempt.
