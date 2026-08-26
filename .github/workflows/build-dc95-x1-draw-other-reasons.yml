@@ -2,11 +2,6 @@ name: Build dc95 X1 Draw Other Reasons
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/x1-draw-other-reasons
-    paths:
-      - .github/workflows/build-dc95-x1-draw-other-reasons.yml
 
 concurrency:
   group: dc95-x1-draw-other-reasons-${{ github.ref }}
