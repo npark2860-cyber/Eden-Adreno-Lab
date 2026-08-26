@@ -59,8 +59,17 @@ def main() -> int:
     text = vk_header.read_text(encoding="utf-8")
     old = '''    static void EndX1TextureSubcategory() {\n        AdrenoProfiler::Get().PopBufferCategoryOverride();\n    }\n\n    using Runtime = Vulkan::TextureCacheRuntime;\n'''
     new = '''    static void EndX1TextureSubcategory() {\n        AdrenoProfiler::Get().PopBufferCategoryOverride();\n    }\n\n    static bool BeginX1TextureSubcategoryIf(u32 expected, u32 category) {\n        return AdrenoProfiler::Get().PushBufferCategoryOverrideIf(\n            static_cast<AdrenoProfiler::BufferCategory>(expected),\n            static_cast<AdrenoProfiler::BufferCategory>(category));\n    }\n\n    using Runtime = Vulkan::TextureCacheRuntime;\n'''
-    text = replace_once(text, old, new, "conditional TextureCacheParams bridge")
+    text = replace_once(text, old, new, "conditional Vulkan TextureCacheParams bridge")
     vk_header.write_text(text, encoding="utf-8")
+
+    # Generic TextureCache is instantiated for OpenGL too. Give that backend a no-op bridge so
+    # the shared route code remains compile-safe while still activating only on Vulkan.
+    gl_header = root / "src/video_core/renderer_opengl/gl_texture_cache.h"
+    text = gl_header.read_text(encoding="utf-8")
+    old = '''struct TextureCacheParams {\n    static constexpr bool ENABLE_VALIDATION = true;\n    static constexpr bool FRAMEBUFFER_BLITS = true;\n    static constexpr bool HAS_EMULATED_COPIES = true;\n    static constexpr bool HAS_DEVICE_MEMORY_INFO = true;\n    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;\n\n    using Runtime = OpenGL::TextureCacheRuntime;\n'''
+    new = '''struct TextureCacheParams {\n    static constexpr bool ENABLE_VALIDATION = true;\n    static constexpr bool FRAMEBUFFER_BLITS = true;\n    static constexpr bool HAS_EMULATED_COPIES = true;\n    static constexpr bool HAS_DEVICE_MEMORY_INFO = true;\n    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;\n\n    static bool BeginX1TextureSubcategoryIf(u32, u32) {\n        return false;\n    }\n\n    static void EndX1TextureSubcategory() {}\n\n    using Runtime = OpenGL::TextureCacheRuntime;\n'''
+    text = replace_once(text, old, new, "OpenGL no-op alias bridge")
+    gl_header.write_text(text, encoding="utf-8")
 
     # Category 29 is the existing OtherTextureAliasCopy parent from the texture-fill pass.
     # New appended categories are 35 direct, 36 reinterpret, 37 convert.
