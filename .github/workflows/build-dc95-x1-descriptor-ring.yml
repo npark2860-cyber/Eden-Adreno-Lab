@@ -1,0 +1,157 @@
+name: Build dc95 X1 Descriptor Ring Profiler
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-descriptor-ring
+    paths:
+      - .github/workflows/build-dc95-x1-descriptor-ring.yml
+      - tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py
+
+jobs:
+  build:
+    name: dc95 ARM64 / X1 descriptor ring
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout Eden CI workflow used by dc95-era nightlies
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install dc95-era Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Transplant minimal descriptor-ring profiler
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+
+      - name: Verify descriptor-ring instrumentation
+        shell: bash
+        run: |
+          set -e
+          git -C eden diff --check
+          grep -q 'vk_descriptor_ring_profiler.cpp' eden/src/video_core/CMakeLists.txt
+          grep -q 'DescriptorRingProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+          grep -q 'DescriptorRingProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+          grep -q 'RecordFrameReuseWait' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
+          grep -q 'RecordChunkSwitch' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
+          grep -q 'RecordExhaustionFinish' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
+          git -C eden status --short
+
+      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure dc95 ARM64 standard build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+
+      - name: Build dc95 ARM64 descriptor profiler
+        shell: msys2 {0}
+        working-directory: eden
+        run: cmake --build build
+
+      - name: Package with Eden CI Windows packager
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: dc95cd09ee-x1-dbuf-profile
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Add launcher and experiment metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force extras | Out-Null
+          @'
+          $env:EDEN_X1_DESCRIPTOR_PROFILE="1"
+          $env:EDEN_X1_DESCRIPTOR_PROFILE_FRAMES="120"
+          $eden = Join-Path $PSScriptRoot "eden.exe"
+          if (-not (Test-Path $eden)) { throw "Place this script beside eden.exe" }
+          & $eden
+          '@ | Set-Content -Encoding UTF8 extras/RUN_X1_DESCRIPTOR_PROFILE.ps1
+          @'
+          Experiment: X1 descriptor-ring instrumentation only
+          Exact Eden source: dc95cd09eea9749250fe31a3072684d341d19417
+          Build: Windows ARM64 / MSYS2 CLANGARM64 / clang / standard
+          Control branch remains: lab/dc95-arm64-baseline
+          Experimental branch: exp/x1-descriptor-ring
+
+          Enable:
+            EDEN_X1_DESCRIPTOR_PROFILE=1
+            EDEN_X1_DESCRIPTOR_PROFILE_FRAMES=120
+
+          Log prefix:
+            [X1-DBUF]
+
+          Metrics:
+            alloc / bytes / KiB per frame
+            frame-slot reuse Wait count and total time
+            chunk switch count
+            descriptor-frame exhaustion Finish count and total time
+          '@ | Set-Content -Encoding UTF8 extras/EXPERIMENT.txt
+          git -C eden diff -- src/video_core/CMakeLists.txt src/video_core/renderer_vulkan/renderer_vulkan.cpp src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.cpp src/video_core/renderer_vulkan/vk_descriptor_ring_profiler.h | Set-Content -Encoding UTF8 extras/DESCRIPTOR_RING_INSTRUMENTATION.diff
+
+      - name: List artifact files
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse eden/artifacts,extras | Select-Object FullName,Length
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-dc95-X1-descriptor-ring-profile
+          path: |
+            eden/artifacts/*
+            extras/*
+          if-no-files-found: error
+          retention-days: 14
