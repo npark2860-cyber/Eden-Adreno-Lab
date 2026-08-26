@@ -125,6 +125,23 @@ The current branch does not:
 - move copies across Draw boundaries
 - change Draw/Dispatch A/B defaults
 
+## Direct static validation — COMPLETE
+
+Without starting GitHub Actions:
+
+- GitHub transplant blob SHA: `b353167fcf49831d89be2b920c60ae920698f38b`
+- local validation file matched that exact Git blob SHA
+- exact file passed `python -m py_compile`
+- marker-compatible fixture transplant succeeded
+- fixed table/report/Vulkan/OpenGL/source-tick/region-signature markers were generated
+- existing `CopyImage(dst_id, src_id, copies)` remained present
+- incremental generated diff passed `git diff --no-index --check` with no whitespace errors
+- forbidden optimization/state mutation scan passed
+- new transplant scheduler-touch scan passed (`vk_scheduler` absent)
+- standalone C++20 fixed-array/atomic-flag tracker compile probe passed
+
+The prepared workflow retains a full exact-dc95 `git -C eden diff --check` plus scheduler/source marker guards before configure. Those workflow gates are intentionally not executed until the single future authorized ARM64 attempt.
+
 ## Workflow — PREPARED, NOT RUN
 
 Workflow:
@@ -135,22 +152,28 @@ Artifact:
 
 `Eden-dc95-X1-alias-sync-redundancy`
 
-Trigger:
+Current trigger:
 
 `workflow_dispatch` only.
 
-The workflow checks out exact dc95 and has pre-configure checks for:
+There is no `push` trigger.
 
-- exact source SHA
-- Python syntax
-- `git diff --check`
-- exact alias semantic markers
-- bounded table markers
-- required report marker and region-signature markers
-- retained direct-route/direct-vk-copy instrumentation
-- alias-sync-only forbidden optimization/state-mutation diff scan
-- no new scheduler-source touch
-- existing exact-dc95 scheduler leak guards
+Current Actions runs on `exp/x1-alias-sync-redundancy`: **0**.
+
+### GitHub default-branch constraint
+
+Repository default branch is `main`. The prepared workflow is intentionally only on `exp/x1-alias-sync-redundancy` and does not exist on `main`.
+
+GitHub only accepts `workflow_dispatch` when the workflow file exists on the default branch. Therefore this branch-local manual-only workflow is safe/non-running but cannot be dispatched as-is.
+
+Do **not** merge or modify `main` merely to expose the experiment workflow.
+
+For a future authorized build, use the established one-shot branch trigger mechanism:
+
+1. only after fresh explicit build authorization, add `push` restricted to `exp/x1-alias-sync-redundancy`
+2. the trigger-enabling commit itself is the single authorized build attempt
+3. after the attempt, restore the workflow to `workflow_dispatch` only with a workflow-only commit; that restoring commit contains no `push` trigger and creates no second run
+4. if the build failed, restore manual-only state before source/workflow fixes; no fix may be run without a new authorization
 
 ## BUILD AUTHORIZATION BOUNDARY
 
@@ -161,8 +184,6 @@ One authorization = one build attempt.
 Current ARM64 attempts for `exp/x1-alias-sync-redundancy`: **0**.
 
 Current authorization: **not granted**.
-
-If a future authorized attempt fails, diagnose and fix the source/workflow but do not run again until another fresh authorization.
 
 ## Runtime contract after a future successful build
 
@@ -205,4 +226,4 @@ Source preparation is complete.
 
 **Stop here until fresh explicit build authorization.**
 
-After authorization, start exactly one attempt of `Build dc95 X1 Alias Sync Redundancy` on `exp/x1-alias-sync-redundancy`.
+After authorization, add the branch-scoped one-shot `push` trigger; that trigger-enabling commit is exactly one ARM64 attempt. Do not run again without a new authorization.
