@@ -1,0 +1,1 @@
+Authorized ARM64 texture-fill diagnostic retry, 2026-08-27 KST.
