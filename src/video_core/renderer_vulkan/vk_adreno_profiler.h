@@ -85,6 +85,7 @@ public:
     void RecordAcquire(u64 nanoseconds, int result);
     void RecordPresentCall(u64 nanoseconds, int result);
     void RecordShaderEmit(const char* kind, u64 nanoseconds, u64 bytes);
+    void RecordPipelineWait(bool compute, u64 nanoseconds);
     void RecordBarrier(const char* reason, u64 count);
     void RecordQcomHit(QcomEvent event);
     void RecordDescriptorStall(const char* reason, u64 tick, u64 nanoseconds);
@@ -125,9 +126,13 @@ private:
         std::atomic<u64> graphics_pipeline_builds{0};
         std::atomic<u64> graphics_pipeline_failures{0};
         std::atomic<u64> graphics_pipeline_build_ns{0};
+        std::atomic<u64> graphics_pipeline_waits{0};
+        std::atomic<u64> graphics_pipeline_wait_ns{0};
         std::atomic<u64> compute_pipeline_builds{0};
         std::atomic<u64> compute_pipeline_failures{0};
         std::atomic<u64> compute_pipeline_build_ns{0};
+        std::atomic<u64> compute_pipeline_waits{0};
+        std::atomic<u64> compute_pipeline_wait_ns{0};
         std::atomic<u64> shader_emits{0};
         std::atomic<u64> shader_emit_ns{0};
         std::atomic<u64> shader_bytes{0};
