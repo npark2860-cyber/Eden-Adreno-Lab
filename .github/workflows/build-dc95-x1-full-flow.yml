@@ -12,13 +12,12 @@ on:
       - src/video_core/renderer_vulkan/vk_buffer_cache.cpp
       - src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
       - src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-      - src/video_core/renderer_vulkan/vk_scheduler.cpp
-      - src/video_core/renderer_vulkan/vk_scheduler.h
       - src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
       - src/video_core/renderer_vulkan/vk_update_descriptor.cpp
       - tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py
       - tools/adreno_lab/transplant_dc95_logging_checkboxes.py
       - tools/adreno_lab/transplant_dc95_full_flow_hooks.py
+      - tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py
       - tools/adreno_lab/analyze_x1_full_flow_log.py
 
 concurrency:
@@ -69,7 +68,7 @@ jobs:
           rm -rf eden/.ci
           cp -a ci/.ci eden/.ci
 
-      - name: Prepare compile-validated P0.2 profiler patches
+      - name: Prepare compile-validated P0.2 non-scheduler patches
         shell: bash
         run: |
           set -e
@@ -79,8 +78,6 @@ jobs:
             src/video_core/renderer_vulkan/vk_buffer_cache.cpp \
             src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
             src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
-            src/video_core/renderer_vulkan/vk_scheduler.cpp \
-            src/video_core/renderer_vulkan/vk_scheduler.h \
             src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp \
             src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
             out="profiler-patches/$(basename "$f").patch"
@@ -92,7 +89,7 @@ jobs:
           cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h \
              eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
 
-      - name: Apply P0.2 profiler source hooks
+      - name: Apply P0.2 non-scheduler source hooks
         shell: bash
         working-directory: eden
         run: |
@@ -101,8 +98,6 @@ jobs:
             ../profiler-patches/vk_buffer_cache.cpp.patch \
             ../profiler-patches/vk_compute_pipeline.cpp.patch \
             ../profiler-patches/vk_graphics_pipeline.cpp.patch \
-            ../profiler-patches/vk_scheduler.cpp.patch \
-            ../profiler-patches/vk_scheduler.h.patch \
             ../profiler-patches/vk_staging_buffer_pool.cpp.patch \
             ../profiler-patches/vk_update_descriptor.cpp.patch; do
             git apply --ignore-whitespace "$p"
@@ -116,9 +111,13 @@ jobs:
         shell: bash
         run: python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
 
-      - name: Transplant X1 full-flow controls and hooks
+      - name: Transplant X1 full-flow controls and non-scheduler hooks
         shell: bash
         run: python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+
+      - name: Transplant exact dc95 scheduler flow hooks
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
 
       - name: Verify full-flow instrumentation and checkbox-only enablement
         shell: bash
@@ -129,12 +128,15 @@ jobs:
           grep -q 'AdrenoProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
           grep -q 'AdrenoProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
           grep -q 'RecordSchedulerWait' eden/src/video_core/renderer_vulkan/vk_scheduler.h
+          grep -q 'EndRenderPass(RenderPassEndReason::Submit)' eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+          grep -q 'EndRenderPass(RenderPassEndReason::FramebufferChange)' eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
           grep -q 'RecordPresentWait("free-frame"' eden/src/video_core/renderer_vulkan/vk_present_manager.cpp
           grep -q 'RecordAcquire' eden/src/video_core/renderer_vulkan/vk_swapchain.cpp
           grep -q 'RecordPresentCall' eden/src/video_core/renderer_vulkan/vk_swapchain.cpp
           grep -q 'RecordShaderEmit("graphics-spirv"' eden/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
           grep -q 'RecordShaderEmit("compute-spirv"' eden/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
           grep -q 'RecordBarrier("buffer-pre-copy"' eden/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+          grep -q 'RecordBarrier("submit-upload"' eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
           grep -q 'QcomEvent::DescriptorTilerPolicy' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
           grep -q 'QcomEvent::CustomBorderColor' eden/src/video_core/renderer_vulkan/vk_texture_cache.cpp
           grep -q 'x1_scheduler_sync_log' eden/src/common/settings.h
