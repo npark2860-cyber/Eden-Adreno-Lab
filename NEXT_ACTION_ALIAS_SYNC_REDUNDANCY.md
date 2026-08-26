@@ -2,13 +2,13 @@
 
 Updated: 2026-08-27 KST
 
-Status: **next experiment specification / no build authorized**
+Status: **source/instrumentation/workflow prepared / no build authorized / no runtime yet**
 
-## Starting point
+## Fixed starting point
 
 Repository: `npark2860-cyber/Eden-Adreno-Lab`
 
-Exact Eden source must remain:
+Exact Eden source remains:
 
 `dc95cd09eea9749250fe31a3072684d341d19417`
 
@@ -16,149 +16,157 @@ Completed diagnostic branch:
 
 `exp/x1-alias-copy-reasons`
 
-Recommended next branch:
+Current prepared branch:
 
 `exp/x1-alias-sync-redundancy`
 
-Create the next branch from the completed alias-copy branch so the proven telemetry chain remains available. Do not change the upstream Eden source SHA.
+The current branch was created from completed alias-route HEAD:
 
-## Proven fact that motivates this experiment
+`26728e59c31c36a20ba1dc9d11e8a84e8d67cb74`
 
-`eden_log(8).txt` resolved the dominant alias outside-RP path:
+## Proven motivation
 
-`SynchronizeAliases -> CopyImage -> TextureCacheRuntime::CopyImage -> RequestOutsideRenderPassOperationContext -> vkCmdCopyImage`
-
-Whole-log alias child totals:
+Matched alias-route runtime (`eden_log(8).txt`) established:
 
 - `direct-route`: 100,021 scopes
 - `direct-resolve-invalidate`: 100,021 scopes / outside 0
-- `direct-vk-copy`: 100,021 scopes / outside **24,806**
+- `direct-vk-copy`: 100,021 scopes / outside 24,806
 - `reinterpret-route`: 0
 - `convert-route`: 0
 - `direct-bpb-reinterpret`: 0
+- whole-log attributed Draw outside-RP: 39,017
+- direct-vk-copy share: **63.58%**
 
-Whole-log attributed Draw outside-RP: **39,017**.
+Resolved chain:
 
-`direct-vk-copy` share: **63.58%**.
+`SynchronizeAliases -> CopyImage -> TextureCacheRuntime::CopyImage -> RequestOutsideRenderPassOperationContext -> vkCmdCopyImage`
 
-Do not spend another experiment splitting the Vulkan `CopyImage` implementation. The implementation path is already known.
+Do not reopen Vulkan route attribution in this experiment.
 
-## Diagnostic question
+## Source-first work — COMPLETE
 
-Determine **why `SynchronizeAliases()` requests so many direct image copies** and whether a significant fraction are redundant.
+Exact dc95 was inspected before instrumentation.
 
-The first pass is telemetry-only. It must not skip, merge, delay, suppress or reorder any copy.
+Confirmed:
 
-## Source-first work
+1. `AliasedImage` contains an alias `ImageId` plus `ImageCopy` regions; no per-alias dirty/up-to-date bit exists.
+2. `ImageFlagBits::Alias` is not the synchronization freshness gate.
+3. `MarkModification()` sets `GpuModified` and advances the image's `modification_tick` from the cache-global counter.
+4. Exact dc95 can propagate existing modification ticks through image maintenance/copy paths.
+5. `SynchronizeAliases()` selects a source only when its tick is newer than the destination tick at selection time.
+6. The destination tick is advanced to the maximum selected source tick before the copy loop.
+7. Selected sources are sorted by source tick.
+8. The actual alias request is `CopyImage(dst=image_id, src=aliased->id, copies=aliased->copies)`.
+9. `AddImageAlias()` builds the copy regions from source/destination subresources, offsets and extents.
 
-Before modifying code, inspect exact dc95 definitions and semantics for:
+Therefore `modification_tick` is used only as Eden's recency/version state. It is not interpreted as a byte-content hash.
 
-- `TextureCache<P>::SynchronizeAliases()`
-- `TextureCache<P>::CopyImage()`
-- `AliasedImage`
-- `Image::modification_tick`
-- any existing alias up-to-date / dirty / overlap state
-- frame tick / Draw work serials already available to the profiler
+See `ALIAS_SYNC_REDUNDANCY_MAP.md`.
 
-Do not assume `modification_tick` means “contents identical” until its write/update semantics are verified from source.
+## Passive instrumentation — PREPARED
 
-## Required passive measurements
+Transplant:
 
-Instrument only the alias-copy requests issued from `SynchronizeAliases()`; do not count unrelated `CopyImage()` users.
+`tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py`
 
-At minimum collect bounded aggregate telemetry for each reporting interval:
+The hook is attached only to alias-copy requests issued by the existing `SynchronizeAliases()` alias-copy wrapper.
 
-1. **total alias copy requests**
-2. **unique `(dst ImageId, src ImageId)` pairs**
-3. **same pair repeated within one frame**
-4. **same pair repeated within one Draw work scope**, if a stable Draw serial can be obtained without changing behavior
-5. **same pair repeated across consecutive frames**
-6. **source `modification_tick` relation**
-   - current source tick
-   - last source tick seen when that same pair was copied
-   - count same-tick repeats vs advanced-tick repeats
-7. **copy-region signature**
-   - number of regions
-   - stable hash/signature from src/dst offsets, subresources and extents
-   - count identical-signature repeats for the same pair
-8. **copy volume**, only if exact dc95 exposes a safe existing helper to calculate it correctly
-   - do not invent a byte formula for compressed/block formats
+New aggregate marker:
 
-## Logging design
+`[X1-ALIAS-SYNC]`
 
-Prefer one bounded summary line per existing 120-frame report interval, for example:
+Measured at the existing report interval, default 120 frames:
 
-`[X1-ALIAS-SYNC] frame=... copies=... uniquePairs=... sameFrame=... sameDraw=... consecutiveFrame=... sameSrcTick=... advancedSrcTick=... sameSignature=...`
+- total alias-copy requests
+- unique `(dst ImageId, src ImageId)` pairs
+- same-frame pair repeats
+- same-Draw pair repeats
+- consecutive-frame pair repeats
+- same / advanced / regressed source `modification_tick`
+- total and max copy-region count
+- stable region signature from src/dst subresources, offsets and extents
+- same pair + same signature repeats
+- same pair + same source tick + same signature repeats (`sameStateSignature`)
+- bounded tracker overflow
 
-Optional: emit a small fixed top-N list of the most repeated pairs at report time.
+No copy-volume formula was added.
 
-Do **not** log every alias copy. Per-copy logging would perturb the hot path and contaminate timing.
+No per-copy logging was added.
 
-Any pair-tracking table must be bounded and cleared/rotated at a defined interval. Do not create unbounded runtime memory growth.
+## Bounded-state contract
 
-## Preserve existing telemetry
+- fixed capacity: 4,096 pair entries
+- probe limit: 32
+- no unbounded map/table growth
+- state cleared/rotated at each report boundary
+- overflow is counted explicitly
 
-The next build must retain the currently proven categories so the new diagnostic can be cross-checked against the previous runtime:
+## Existing telemetry retained
+
+The prepared diagnostic preserves:
 
 - `other/texture/alias-copy`
 - `other/texture/alias-copy/direct-route`
 - `other/texture/alias-copy/direct-vk-copy`
 - `other/post-copy-barrier`
-- existing Uniform / Vertex / Index / refresh counters
+- Uniform / Vertex / Index / refresh counters
 
-A successful run should still show approximately the same order of magnitude for direct alias-copy scopes and outside-RP events on a comparable gameplay route.
+## Instrumentation-only safety contract
 
-## Safety constraints
+The current branch does not:
 
-First diagnostic build is **instrumentation-only**.
-
-Do not:
-
-- skip a repeated copy
+- skip or deduplicate a copy
 - cache a copy result
 - alter `modification_tick`
-- mark aliases up to date artificially
+- force alias state up to date
 - suppress `RequestOutsideRenderPassOperationContext()`
 - suppress barriers
 - batch `vkCmdCopyImage`
 - move copies across Draw boundaries
-- change render-pass policy
 - change Draw/Dispatch A/B defaults
 
-Draw/Dispatch skip must remain OFF.
+## Workflow — PREPARED, NOT RUN
 
-## Build/workflow preparation
+Workflow:
 
-Prepare a new transplant script and a manual-only ARM64 workflow, following the exact dc95 build chain used by the successful alias-copy diagnostic.
+`.github/workflows/build-dc95-x1-alias-sync-redundancy.yml`
 
-Recommended names:
+Artifact:
 
-- `tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py`
-- `.github/workflows/build-dc95-x1-alias-sync-redundancy.yml`
-- artifact: `Eden-dc95-X1-alias-sync-redundancy`
+`Eden-dc95-X1-alias-sync-redundancy`
 
-Add preflight checks for:
+Trigger:
 
-- exact profiler marker strings
-- bounded tracking state
+`workflow_dispatch` only.
+
+The workflow checks out exact dc95 and has pre-configure checks for:
+
+- exact source SHA
+- Python syntax
 - `git diff --check`
-- no scheduler behavior leakage
-- no skip/suppress optimization code
-- exact dc95 source SHA
+- exact alias semantic markers
+- bounded table markers
+- required report marker and region-signature markers
+- retained direct-route/direct-vk-copy instrumentation
+- alias-sync-only forbidden optimization/state-mutation diff scan
+- no new scheduler-source touch
+- existing exact-dc95 scheduler leak guards
 
 ## BUILD AUTHORIZATION BOUNDARY
 
-**Do not start or re-run an ARM64 GitHub Actions build while preparing this experiment.**
+**Do not start or re-run an ARM64 GitHub Actions build without fresh explicit user authorization.**
 
-A build requires a fresh explicit user authorization.
+One authorization = one build attempt.
 
-**One authorization = one build attempt only.**
+Current ARM64 attempts for `exp/x1-alias-sync-redundancy`: **0**.
 
-If a future authorized build fails, diagnose and fix the source/workflow but do not run again without another fresh permission.
+Current authorization: **not granted**.
+
+If a future authorized attempt fails, diagnose and fix the source/workflow but do not run again until another fresh authorization.
 
 ## Runtime contract after a future successful build
 
-Use the same matched setup:
+Use the matched setup:
 
 - TOTK 1.4.2
 - Qualcomm Adreno X1-85
@@ -167,34 +175,34 @@ Use the same matched setup:
 - `X1 Log: Upload / Barrier` = ON
 - `X1 A/B Skip Draw` = OFF
 - `X1 A/B Skip Dispatch` = OFF
-- comparable field route containing both normal ~20 FPS and slower sections when possible
+- comparable field route containing normal ~20 FPS and slower sections when possible
+
+Cross-check `[X1-ALIAS-SYNC]` against the retained direct alias-copy scopes/outside-RP counts before drawing a redundancy conclusion.
 
 ## Decision rules after runtime
 
 ### Strong redundancy evidence
 
-If the same pair is copied repeatedly with:
+High repeated-pair counts with unchanged source tick and identical copy-region signature, especially in the same frame or Draw, support a **separate** one-variable A/B experiment for only the proven redundant subset.
 
-- unchanged verified source modification state, and
-- identical copy-region signature,
-
-especially multiple times in one frame or one Draw, then prepare a **separate one-variable A/B experiment** that skips only the proven redundant subset. Do not implement that optimization in the diagnostic build itself.
+Do not implement that optimization in this diagnostic branch.
 
 ### Copies mostly justified by source changes
 
-If source state advances before most repeated copies, deduplication is not supported. Then investigate whether required copies can be coalesced/batched or scheduled with fewer render-pass transitions, but only in a later experiment.
+If source tick advances before most repeated pair copies, deduplication is not supported by this diagnostic.
 
 ### Many unique pairs, little repetition
 
-If most copies are unique pairs, the issue is alias-set churn rather than duplicate requests. Move the next diagnostic toward why so many aliases become synchronization candidates.
+If most copies are unique pairs, move the next diagnostic toward alias-set churn / why many aliases become synchronization candidates.
 
-## Completion criteria for this next task
+### Interpretation limit
 
-Before asking for build authorization, the next task should leave the repository with:
+Unchanged `modification_tick` means unchanged Eden version state for that source between observations. It does not independently prove byte-for-byte content identity.
 
-- a new experiment branch
-- source-verified passive instrumentation
-- static/preflight validation
-- manual-only workflow
-- updated `CURRENT_HANDOFF.md`
-- **zero new ARM64 runs**
+## NEXT ACTION
+
+Source preparation is complete.
+
+**Stop here until fresh explicit build authorization.**
+
+After authorization, start exactly one attempt of `Build dc95 X1 Alias Sync Redundancy` on `exp/x1-alias-sync-redundancy`.
