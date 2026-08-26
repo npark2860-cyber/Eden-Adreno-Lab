@@ -2,6 +2,11 @@ name: Build dc95 X1 Draw Dispatch Correlation
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-buffer-category-correlation
+    paths:
+      - .github/workflows/build-dc95-x1-full-flow.yml
 
 concurrency:
   group: dc95-x1-draw-dispatch-${{ github.ref }}
