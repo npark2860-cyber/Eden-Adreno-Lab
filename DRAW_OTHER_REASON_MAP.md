@@ -1,130 +1,114 @@
 # Draw `other` reason map — exact dc95
 
-Status: pre-build source analysis / instrumentation prepared
+Updated: 2026-08-27 KST
+
+Status: **runtime attribution complete / downstream chain resolved**
 
 Exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
 
-Experiment branch: `exp/x1-draw-other-reasons`
+Original experiment branch: `exp/x1-draw-other-reasons`
 
-## 1. Scope
+## Scope
 
-The existing BufferCategory profiler classifies Draw preparation as index / vertex / uniform / storage / texture-buffer / transform-feedback / indirect, with all work outside those scopes falling into `other`.
+The original Draw profiler left non-buffer preparation work in a broad `other` bucket. This experiment split that residual without changing guest-visible behavior.
 
-The latest runtime showed that `other` owns about 86% of Draw-side outside-render-pass endings and all currently attributed Draw barriers. The purpose of this experiment is to split that residual bucket without changing guest-visible behavior.
+Reason buckets included texture descriptor/fill work, PostCopyBarrier, UpdateRenderTargets, feedback-loop handling, dynamic states, queries, descriptor acquire/push, flush paths and final draw command work.
 
-## 2. Exact Draw path
+## Exact Draw path
 
-`RasterizerVulkan::PrepareDraw()` performs, in order:
+`RasterizerVulkan::PrepareDraw()` includes:
 
 1. `FlushWork()`
 2. `gpu_memory->FlushCaching()`
-3. graphics-pipeline lookup
-4. `GraphicsPipeline::Configure(is_indexed)`
-5. dynamic-state update
-6. query segment notification
-7. transform-feedback handling
-8. query-counter enable/update
-9. final Draw command recording
+3. graphics pipeline lookup/configure
+4. dynamic-state update
+5. query segment notification
+6. transform-feedback handling
+7. query-counter handling
+8. final Draw command
 
-Inside `GraphicsPipeline::ConfigureImpl()` the important non-BufferCategory regions include:
+Important `GraphicsPipeline::ConfigureImpl()` work includes:
 
 - `texture_cache.SynchronizeDescriptors(false)`
 - `texture_cache.FillImageViews(...)`
-- direct transform-feedback outside-render-pass request
-- `guest_descriptor_queue.Acquire(...)`
-- per-stage `PushImageDescriptors(...)`
-- `buffer_cache.runtime.PostCopyBarrier()` after BufferCache category scopes
+- descriptor acquire/push
+- `buffer_cache.runtime.PostCopyBarrier()` when a buffer upload occurred
 - `texture_cache.UpdateRenderTargets(false)`
 - `texture_cache.CheckFeedbackLoop(...)`
 - final `ConfigureDraw(...)`
 
-## 3. Strongest source-level candidate
+## Runtime result — first split
 
-### `other/post-copy-barrier`
+The Draw-other runtime established:
 
-When `buffer_cache.any_buffer_uploaded` is true, `GraphicsPipeline::ConfigureImpl()` calls `buffer_cache.runtime.PostCopyBarrier()` after the named BufferCache category scopes have ended.
+- **all reason-level Draw barriers -> `other/post-copy-barrier`**
+- dominant outside-RP source -> `other/texture-fill-image-views`
+- second outside-RP source -> `other/update-render-targets`
 
-Exact dc95 `BufferCacheRuntime::PostCopyBarrier()`:
+Across the analyzed 960–1680 windows:
 
-- calls `scheduler.RequestOutsideRenderPassOperationContext()`
-- records a transfer-write -> graphics/compute memory barrier
+- `other/texture-fill-image-views`: 16,570 outside-RP (~62.35% of reason outside)
+- `other/update-render-targets`: 6,693 (~25.19%)
+- `other/post-copy-barrier`: 3,311 (~12.46%)
 
-Therefore this one call is structurally capable of producing both symptoms that currently collapse into `other`:
+`other/post-copy-barrier` owned **100% of reason-level Draw barriers**, but it was not the dominant outside-RP owner.
 
-- outside-RP endings
-- barriers
+This invalidated the earlier source-only idea that PostCopyBarrier might explain both major symptoms by itself.
 
-This is the first reason bucket to test against runtime totals. It is a source-level candidate, not yet a proven performance cause.
+## Downstream texture result
 
-## 4. Other reason buckets
+The follow-up texture-fill experiment (`eden_log(7).txt`) moved the dominant texture parent one level deeper:
 
-The new passive instrumentation extends the existing BufferCategory enum after the original numeric categories, so existing category numbers remain unchanged.
+- `other/texture/alias-copy`: **35,017 / 54,175 = 64.64%** of whole-log attributed Draw outside-RP
+- `other/texture/refresh-standard`: staging/upload-heavy but much smaller outside-RP owner
+- RT find/scale paths: high scope counts but zero outside-RP in the sampled runtime
 
-Reason buckets:
+## Downstream alias result
 
-- `other/texture-sync-descriptors`
-- `other/texture-fill-image-views`
-- `other/transform-feedback-break`
-- `other/descriptor-acquire`
-- `other/push-image-descriptors`
-- `other/post-copy-barrier`
-- `other/update-render-targets`
-- `other/feedback-loop`
-- `other/configure-draw`
-- `other/flush-work`
-- `other/flush-caching`
-- `other/dynamic-states`
-- `other/query-segment`
-- `other/transform-feedback`
-- `other/query-counter`
-- `other/draw-command`
+The alias-copy experiment (`eden_log(8).txt`) then resolved the implementation route:
 
-Residual `cat=other` remains intentionally available. Any significant residual after the next runtime means another caller still needs isolation.
+- `direct-route`: 100,021 scopes
+- `direct-resolve-invalidate`: 100,021 scopes / outside 0
+- **`direct-vk-copy`: 100,021 scopes / outside 24,806**
+- `reinterpret-route`: 0
+- `convert-route`: 0
+- `direct-bpb-reinterpret`: 0
 
-## 5. Why TextureCache is split at top-level call boundaries
+Whole-log attributed Draw outside-RP was 39,017, so `direct-vk-copy` alone owned **63.58%**.
 
-Exact dc95 TextureCache runtime contains multiple operations that can request an outside-render-pass context for image copies, reinterpretation, resolve/shadow work, feedback handling, and buffer-to-image uploads. Texture upload staging also uses `StagingBufferPool::Request(..., MemoryUsage::Upload, ...)`.
+The current resolved outside-RP chain is therefore:
 
-Rather than instrument every hot internal event, the experiment scopes the top-level Draw preparation calls. Existing upload/copy/outside/barrier telemetry will therefore aggregate under the top-level reason that caused the internal work.
+`Draw Configure -> FillImageViews -> PrepareImage -> SynchronizeAliases -> CopyImage -> TextureCacheRuntime::CopyImage -> RequestOutsideRenderPassOperationContext -> vkCmdCopyImage`
 
-## 6. Descriptor and query reasons
+## Separate barrier chain
 
-`guest_descriptor_queue.Acquire(...)` and per-stage `PushImageDescriptors(...)` are separated because they execute after named BufferCache geometry/stage scopes and can otherwise remain in residual `other`.
+Keep the barrier result separate:
 
-The Vulkan query cache also has conditional paths that request outside-render-pass operation contexts for query-pool reset/copy/resolve work. The ordinary Draw path usually only records query begin/end work, so query buckets are expected to be smaller, but they are separated to avoid leaving them mixed into residual `other`.
+`Draw Configure -> buffer upload occurred -> PostCopyBarrier -> transfer-write memory barrier`
 
-## 7. Instrumentation rule and actual transplant order
+PostCopyBarrier remains the confirmed Draw barrier owner. It is not the dominant alias outside-RP path.
 
-This experiment is instrumentation-only.
+## Current bottleneck model
 
-It does not:
+Do not force one root cause:
 
-- skip Draws
-- suppress uploads
-- remove barriers
-- alter render-pass policy
-- change descriptor behavior
-- change BufferCache dirty tracking
+- persistent tiny Uniform upload traffic -> normal ~20 FPS ceiling candidate
+- persistent alias direct `vkCmdCopyImage` render-pass churn -> second steady burden
+- severe dips -> those burdens plus bulk staging upload, Vertex/Index copy spikes and texture refresh
 
-Actual transplant provenance is important: `transplant_dc95_draw_dispatch_ab_controls.py` already runs both the A/B base transplant and `transplant_dc95_buffer_category_correlation.py` internally.
+## What not to do next
 
-Therefore the new manual workflow applies exactly once, in order:
+- do not suppress `RequestOutsideRenderPassOperationContext()` blindly
+- do not remove `vkCmdCopyImage` synchronization semantics
+- do not re-test already eliminated reinterpret/convert/BPB fallback hypotheses
+- do not treat PostCopyBarrier as the sole outside-RP cause
 
-`dc95 -> full-flow -> Draw/Dispatch correlation -> A/B wrapper (A/B base + BufferCategory) -> Draw other reasons`
+## Next diagnostic
 
-There is no second explicit BufferCategory transplant.
+Move upward from the now-known Vulkan copy implementation to the **copy-request decision in `SynchronizeAliases()`**.
 
-## 8. Decision after runtime
+Determine whether the same src/dst pair, same source modification state, or same copy regions are being synchronized repeatedly without new source content.
 
-Use the next matched gameplay log to rank reason buckets by:
+See `NEXT_ACTION_ALIAS_SYNC_REDUNDANCY.md`.
 
-1. outside-RP count
-2. barrier count
-3. staging upload
-4. copy bytes
-5. scheduler wait
-6. correlation with the heavy 15-6 FPS windows versus normal ~20 FPS windows
-
-Only after one reason dominates should a one-variable semantic A/B be prepared.
-
-No ARM64 build has been started for this branch.
+No ARM64 build may be started without fresh explicit user authorization. One permission = one attempt.
