@@ -2,11 +2,6 @@ name: Build dc95 X1 Texture Fill Reasons
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/x1-texture-fill-reasons
-    paths:
-      - .github/x1-build-markers/texture-fill-retry-20260827-01.txt
 
 concurrency:
   group: dc95-x1-texture-fill-reasons-${{ github.ref }}
