@@ -2,23 +2,6 @@ name: Build dc95 X1 Full Flow Profiler
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/x1-full-flow-profiler
-    paths:
-      - .github/workflows/build-dc95-x1-full-flow.yml
-      - src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
-      - src/video_core/renderer_vulkan/vk_adreno_profiler.h
-      - src/video_core/renderer_vulkan/vk_buffer_cache.cpp
-      - src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
-      - src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-      - src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
-      - src/video_core/renderer_vulkan/vk_update_descriptor.cpp
-      - tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py
-      - tools/adreno_lab/transplant_dc95_logging_checkboxes.py
-      - tools/adreno_lab/transplant_dc95_full_flow_hooks.py
-      - tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py
-      - tools/adreno_lab/analyze_x1_full_flow_log.py
 
 concurrency:
   group: dc95-x1-full-flow-${{ github.ref }}
