@@ -109,8 +109,14 @@ def main() -> int:
         text,
         '            CopyImage(image_id, aliased->id, aliased->copies);\n',
         '            x1_alias_copy(image_id, aliased->id, aliased->copies);\n',
-        3,
-        "alias copy calls",
+        2,
+        "nested alias copy calls",
+    )
+    text = replace_once(
+        text,
+        '        CopyImage(image_id, aliased->id, aliased->copies);\n',
+        '        x1_alias_copy(image_id, aliased->id, aliased->copies);\n',
+        "final alias copy call",
     )
     text = replace_once(
         text,
