@@ -2,134 +2,107 @@
 
 Updated: 2026-08-27 KST
 
-## Runtime evidence
+Status: **runtime attribution complete / experiment closed**
 
-The successful texture-fill diagnostic used exact Eden `dc95cd09eea9749250fe31a3072684d341d19417`, TOTK 1.4.2, Adreno X1-85, driver 512.863.0, with Draw/Dispatch skip disabled.
+Exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
 
-Across the complete 1920-frame `eden_log(7).txt` sample, attributed Draw outside-RP totaled 54,175:
+Runtime target: TOTK 1.4.2 / Qualcomm Adreno X1-85 / driver 512.863.0 / Vulkan 1.3.295 / Draw+Dispatch skip OFF.
 
-- `other/texture/alias-copy`: **35,017 (64.64%)**
-- `other/post-copy-barrier`: 7,383
-- `vertex`: 4,842
-- `other/texture/refresh-standard`: 2,819
-- `uniform`: 1,521
-- `index`: 1,369
-- `storage`: 1,048
+## Why this experiment existed
 
-The signal persists in steady gameplay. Across report windows 1080–1920:
+The preceding texture-fill run (`eden_log(7).txt`) showed that `other/texture/alias-copy` accounted for **35,017 Draw outside-RP events, 64.64% of 54,175**. The question was which concrete `CopyImage` route owned that churn.
 
-- `other/texture/alias-copy`: **30,062 / 46,356 = 64.85%**
-- `other/post-copy-barrier`: 6,586
-- `vertex`: 4,597
-- `other/texture/refresh-standard`: 1,843
+The instrumentation was parent-gated so unrelated `CopyImage()` users such as image join/overlap maintenance could not contaminate the alias result.
 
-Representative windows:
+## Exact dc95 route map
 
-- frame 1200: alias-copy outside 4,149; refresh-standard outside 11 / 4.115 MiB upload
-- frame 1560: alias-copy outside 3,747; refresh-standard outside 344 / 106.767 MiB upload
-- frame 1920: alias-copy outside 3,756; refresh-standard outside 131 / 31.883 MiB upload
+Generic `TextureCache<P>::CopyImage` routes as:
 
-RT find/scale buckets had large scope counts but zero outside-RP, so they are not the current render-pass-break target.
+1. same `SurfaceType` -> `runtime.CopyImage`
+2. different type + `ShouldReinterpret` -> `runtime.ReinterpretImage`
+3. otherwise -> `runtime.ConvertImage`
 
-## Exact dc95 routing
+Vulkan `TextureCacheRuntime::CopyImage` then performs:
 
-### Generic `TextureCache<P>::CopyImage`
+1. optional `InvalidateResolveShadow`
+2. BytesPerBlock mismatch -> possible `ReinterpretImage` fallback
+3. otherwise -> `scheduler.RequestOutsideRenderPassOperationContext()` + barriers + `vkCmdCopyImage`
 
-`src/video_core/texture_cache/texture_cache.h`
-
-1. same `SurfaceType` -> normally `runtime.CopyImage(dst, src, copies)`
-2. different type + `runtime.ShouldReinterpret(dst, src)` -> `runtime.ReinterpretImage(...)`
-3. otherwise -> image/view setup + `runtime.ConvertImage(...)`
-
-### Important attribution hazard
-
-Generic `TextureCache<P>::CopyImage` is **not alias-exclusive**. Exact dc95 also calls it while joining/rebuilding overlapping images, outside `SynchronizeAliases()`.
-
-Therefore simply instrumenting the whole generic function would mix unrelated image-maintenance copies into the alias result.
-
-The prepared profiler solves this by activating the new generic route buckets only when the current parent category is exactly the existing:
-
-`OtherTextureAliasCopy` / `other/texture/alias-copy`
-
-The conditional API is:
-
-`PushBufferCategoryOverrideIf(expected, category)`
-
-If the current category does not equal the expected alias parent, it returns false and changes nothing.
-
-### Vulkan `TextureCacheRuntime::CopyImage`
-
-`src/video_core/renderer_vulkan/vk_texture_cache.cpp`
-
-The Vulkan direct route has a second decision layer:
-
-1. optional `InvalidateResolveShadow(dst.Handle())`
-2. if source/destination `BytesPerBlock` differ:
-   - Windows linear-image guard may return
-   - otherwise a full-image copy is sent through `ReinterpretImage(...)`
-3. otherwise:
-   - `scheduler.RequestOutsideRenderPassOperationContext()`
-   - barriers + `vkCmdCopyImage`
-
-The Vulkan child buckets are also gated on the generic `OtherTextureAliasDirectRoute` parent, preventing ordinary runtime image copies elsewhere from contaminating alias telemetry.
-
-### Vulkan `ReinterpretImage`
-
-Exact dc95 `ReinterpretImage`:
-
-- can invalidate resolve shadow
-- gets a temporary buffer
-- calls `scheduler.RequestOutsideRenderPassOperationContext()`
-- performs image-to-buffer / buffer-to-image transfer work with barriers
-
-Thus reinterpretation is structurally capable of producing the persistent outside-RP signal, but `eden_log(7)` cannot yet distinguish it from normal direct `vkCmdCopyImage` work.
-
-## Prepared buckets
-
-Existing parent:
-
-- `other/texture/alias-copy`
-
-Generic routes:
+Prepared child buckets were:
 
 - `other/texture/alias-copy/direct-route`
 - `other/texture/alias-copy/reinterpret-route`
 - `other/texture/alias-copy/convert-route`
-
-Vulkan direct-route internals:
-
 - `other/texture/alias-copy/direct-resolve-invalidate`
 - `other/texture/alias-copy/direct-bpb-reinterpret`
 - `other/texture/alias-copy/direct-vk-copy`
 
-Interpretation order:
+## Successful diagnostic build
 
-1. `direct-vk-copy` dominant outside-RP -> ordinary Vulkan image copy is the churn center.
-2. `direct-bpb-reinterpret` dominant -> same-type copies repeatedly fall back to temporary-buffer reinterpret due block-size mismatch.
-3. `reinterpret-route` dominant -> generic cross-type reinterpret path is the center.
-4. `convert-route` dominant -> format conversion/render-target conversion path is the center.
-5. `direct-resolve-invalidate` non-trivial -> resolve-shadow invalidation itself contributes render-pass breaks.
-6. parent `alias-copy` residual still large -> isolate remaining setup/prework instead of optimizing generically.
+- workflow: `Build dc95 X1 Alias Copy Reasons`
+- run: `33019025980`
+- job: `98344461231`
+- build head: `eaec1e760057cd284fe379d5fd1bd0009805432d`
+- result: success
+- artifact: `Eden-dc95-X1-alias-copy-reasons`
+- artifact id: `9626369486`
+- artifact SHA-256: `653b232e91aa2a120239106ac991e8b3308b5f95651b6ac0414eda38f2647aef`
 
-## Backend safety
+The workflow was restored to `workflow_dispatch` only after the one-shot trigger.
 
-The generic texture cache is instantiated for Vulkan and OpenGL. Vulkan receives the real conditional profiler bridge. OpenGL receives a no-op `BeginX1TextureSubcategoryIf` / `EndX1TextureSubcategory` bridge so the shared template remains compile-safe without changing OpenGL behavior.
+## `eden_log(8).txt` result — CONFIRMED
 
-## Instrumentation contract
+Whole-log alias child totals:
 
-- passive attribution only
-- no copy skipped
-- no barrier suppressed
-- no render-pass request suppressed
-- no guest work reordered
-- Draw/Dispatch skip A/B remains OFF
+| Bucket | Scopes | Outside-RP |
+| --- | ---: | ---: |
+| `direct-route` | **100,021** | 0 |
+| `direct-resolve-invalidate` | **100,021** | 0 |
+| `direct-vk-copy` | **100,021** | **24,806** |
+| `reinterpret-route` | 0 | 0 |
+| `convert-route` | 0 | 0 |
+| `direct-bpb-reinterpret` | 0 | 0 |
 
-## Runtime contract after successful build
+Whole-log attributed Draw outside-RP was **39,017**. `direct-vk-copy` alone contributed **24,806 = 63.58%**.
 
-- `X1 Log: Scheduler / Sync` = ON
-- `X1 Log: Upload / Barrier` = ON
-- `X1 A/B Skip Draw` = OFF
-- `X1 A/B Skip Dispatch` = OFF
-- same TOTK 1.4.2 field route / comparable window
+That almost exactly reproduces the previous broad `alias-copy` share of **64.64%**, strongly cross-validating the attribution.
 
-Existing `analyze_x1_draw_other_reasons.py` accepts arbitrary `other/*` rows, so no new parser is required.
+Representative windows:
+
+- frame 1080: direct-route scopes 16,009; `direct-vk-copy` outside 4,027; resolve invalidation outside 0
+- frame 1320: `direct-vk-copy` outside about 3,696
+- frame 1560: direct-route scopes 14,871; `direct-vk-copy` outside 3,740; resolve invalidation outside 0
+
+## What is now ruled out
+
+For this matched runtime:
+
+- generic cross-type reinterpretation is not the alias outside-RP cause
+- format conversion is not the alias outside-RP cause
+- BytesPerBlock reinterpret fallback is not the alias outside-RP cause
+- resolve-shadow invalidation is not the alias outside-RP cause
+
+The measured alias outside-RP path is:
+
+`SynchronizeAliases -> CopyImage -> TextureCacheRuntime::CopyImage -> RequestOutsideRenderPassOperationContext -> vkCmdCopyImage`
+
+## Performance interpretation
+
+This path is persistent even in ~20 FPS report windows, so it is a steady burden but not the only cause of severe dips.
+
+The current multi-axis model remains:
+
+- persistent tiny Uniform uploads: normal ceiling candidate
+- persistent alias direct `vkCmdCopyImage` render-pass churn: second steady burden
+- severe dips: the above plus bulk staging upload, Vertex/Index copy spikes, and texture refresh activity
+- `PostCopyBarrier`: Draw barrier owner, but not the dominant alias outside-RP owner
+
+Do not collapse these into one root cause.
+
+## Next question
+
+Do **not** split `TextureCacheRuntime::CopyImage` further and do **not** suppress `RequestOutsideRenderPassOperationContext()` blindly. `vkCmdCopyImage` must execute outside a render pass.
+
+The next diagnostic must move upward to `SynchronizeAliases()` and determine **why so many direct copies are requested and whether copies are redundant**.
+
+See `NEXT_ACTION_ALIAS_SYNC_REDUNDANCY.md`.
