@@ -2,6 +2,9 @@ name: Build dc95 X1 Draw Dispatch Correlation
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-draw-dispatch-correlation
 
 concurrency:
   group: dc95-x1-draw-dispatch-${{ github.ref }}
