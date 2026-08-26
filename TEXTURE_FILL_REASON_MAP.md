@@ -1,75 +1,39 @@
 # X1 Texture Fill / Render-Target Reason Map
 
-## Status
+Updated: 2026-08-27 KST
 
-Branch: `exp/x1-texture-fill-reasons`
+Status: **runtime attribution complete / superseded by alias-copy analysis**
 
-Exact Eden source under test: `dc95cd09eea9749250fe31a3072684d341d19417`
+Branch used for this stage: `exp/x1-texture-fill-reasons`
 
-This experiment is instrumentation-only. It does not skip Draw/Dispatch work, reorder guest work, or alter Vulkan synchronization semantics.
+Exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
 
-## Evidence from `eden_log(6).txt`
+## Starting evidence
 
-The previous `exp/x1-draw-other-reasons` runtime run split the old Draw `other` bucket enough to establish two separate facts:
+The preceding Draw-other experiment established:
 
-1. Draw barriers are attributed to `other/post-copy-barrier`.
-2. Draw outside-render-pass events are dominated by texture work, especially `other/texture-fill-image-views`, with `other/update-render-targets` second.
+- Draw barrier owner: `other/post-copy-barrier`
+- dominant Draw outside-RP parent: `other/texture-fill-image-views`
+- secondary outside-RP parent: `other/update-render-targets`
 
-Across the sampled steady/heavy reporting windows used in the analysis, `other/texture-fill-image-views` contributed the largest share of texture-side outside-RP events. In the heaviest observed reporting window around frame 1680 it reached 6,590 outside-RP events while `other/post-copy-barrier` remained the barrier owner rather than the dominant outside-RP owner.
+The texture-fill experiment therefore split the common texture-cache work beneath `FillImageViews()` / `UpdateRenderTargets()`.
 
-Therefore the next passive question is not whether `FillImageViews()` is involved; it is which internal texture-cache operation performed during `FillImageViews()` / `UpdateRenderTargets()` causes the RP breaks and staging traffic.
-
-## Exact dc95 call map
-
-### FillImageViews
-
-`TextureCache<P>::FillImageViews()` is a thin loop around:
+## Exact source map
 
 `FillImageViews -> VisitImageView -> PrepareImageView -> PrepareImage`
 
-`VisitImageView()` can also create a new cached image view:
+`PrepareImage()` can reach:
 
-`VisitImageView -> CreateImageView -> FindOrInsertImage -> InsertImage/JoinImages`
+- `RefreshContents(image, image_id)`
+- `SynchronizeAliases(image_id)`
 
-`PrepareImage()` then performs the main existing-content work:
+`RefreshContents()` performs the synchronous upload path.
 
-- `RefreshContents(image, image_id)` when the image is CPU-modified.
-- `SynchronizeAliases(image_id)` when aliases exist.
+`SynchronizeAliases()` can perform scale operations and `CopyImage`.
 
-`RefreshContents()` performs the synchronous upload path as:
+`UpdateRenderTargets(false)` shares `PrepareImageView()` and can additionally perform render-target find/rescale work.
 
-`UploadStagingBuffer -> UploadImageContents -> Image::UploadMemory / AccelerateImageUpload`
-
-`SynchronizeAliases()` may perform:
-
-- `ScaleUp` / `ScaleDown`
-- `CopyImage`
-- runtime copy / reinterpret / conversion paths beneath `CopyImage`
-
-The `FillImageViews()` blacklist path can also call `ScaleDown()` directly.
-
-### UpdateRenderTargets
-
-`TextureCache<P>::UpdateRenderTargets(false)` calls `PrepareImageView()` on active color/depth render targets. When render targets are dirty it first calls `RescaleRenderTargets()`.
-
-`RescaleRenderTargets()` can perform:
-
-- `FindColorBuffer(index)`
-- `FindDepthBuffer()`
-- `ScaleUp()` / `ScaleDown()`
-
-After that, `UpdateRenderTargets()` again reaches the same `PrepareImageView -> PrepareImage -> RefreshContents / SynchronizeAliases` path used by FillImageViews.
-
-This shared path is why the new experiment instruments common texture-cache operations rather than treating FillImageViews and UpdateRenderTargets as unrelated problems.
-
-## New passive subreason buckets
-
-The existing parent buckets remain active:
-
-- `other/texture-fill-image-views`
-- `other/update-render-targets`
-
-The new experiment temporarily overrides the current category only while concrete internal work is executing, then restores the parent category. New rows are:
+## Instrumented subreasons
 
 - `other/texture/create-view`
 - `other/texture/refresh-standard`
@@ -82,36 +46,59 @@ The new experiment temporarily overrides the current category only while concret
 - `other/texture/rt-find-depth`
 - `other/texture/rt-scale`
 
-Parent rows therefore become residual accounting: events remaining on `texture-fill-image-views` or `update-render-targets` were not captured by one of the concrete internal scopes above.
+## `eden_log(7).txt` result — CONFIRMED
 
-## Interpretation order
+Across the complete 1920-frame sample, attributed Draw outside-RP totaled **54,175**.
 
-1. **refresh-standard / converted / accelerated**
-   - If these own most outside-RP and staging upload, the dominant problem is image refresh/upload rather than descriptor lookup itself.
-2. **alias-copy**
-   - Large outside/copy traffic points to alias synchronization and image copy/reinterpret paths.
-3. **alias-scale / blacklist-scale / rt-scale**
-   - Large outside counts here point to resolution-scale blits and rescale churn.
-4. **create-view / rt-find-color / rt-find-depth**
-   - Large counts here point to image creation/find/join work triggered by new descriptors or dirty RT discovery.
-5. **parent residual**
-   - If substantial outside-RP remains on the parent bucket, add one more scope only around the unclassified portion; do not perturb behavior yet.
+Major rows:
 
-## Build workflow
+- `other/texture/alias-copy`: **35,017 = 64.64%**
+- `other/post-copy-barrier`: 7,383
+- `vertex`: 4,842
+- `other/texture/refresh-standard`: 2,819
+- `uniform`: 1,521
+- `index`: 1,369
+- `storage`: 1,048
 
-Manual-only workflow:
+Across report windows 1080–1920, alias-copy remained **30,062 / 46,356 = 64.85%** of attributed Draw outside-RP.
 
-`.github/workflows/build-dc95-x1-texture-fill-reasons.yml`
+Representative windows:
 
-Expected artifact:
+- frame 1200: alias-copy outside 4,149; refresh-standard outside 11 / 4.115 MiB upload
+- frame 1560: alias-copy outside 3,747; refresh-standard outside 344 / 106.767 MiB upload
+- frame 1920: alias-copy outside 3,756; refresh-standard outside 131 / 31.883 MiB upload
 
-`Eden-dc95-X1-texture-fill-reasons`
+## What this stage proved
 
-Runtime settings remain passive/default-safe:
+1. **`SynchronizeAliases -> CopyImage` is the dominant texture-side outside-RP path.**
+2. `refresh-standard` is important for staging/upload volume but is not the dominant render-pass-break owner.
+3. RT find/color/depth/scale paths can have very high scope counts while producing zero outside-RP in the sampled runtime.
+4. create-view / converted refresh / accelerated refresh / alias-scale / blacklist-scale were not the main outside-RP explanation.
 
-- `X1 Log: Scheduler / Sync` = ON
-- `X1 Log: Upload / Barrier` = ON
-- `X1 A/B Skip Draw` = OFF
-- `X1 A/B Skip Dispatch` = OFF
+This closed the question of which texture-cache operation owns most of the `FillImageViews` churn and led directly to `ALIAS_COPY_REASON_MAP.md`.
 
-No ARM64 run should be started without a fresh explicit authorization.
+## Follow-up result
+
+The next alias-copy experiment (`eden_log(8).txt`) further proved that the alias copies in this runtime all take the direct Vulkan copy route, and that `other/texture/alias-copy/direct-vk-copy` owns **24,806 / 39,017 = 63.58%** of whole-log attributed Draw outside-RP.
+
+Thus the current chain is:
+
+`FillImageViews / PrepareImage -> SynchronizeAliases -> CopyImage -> direct Vulkan vkCmdCopyImage`
+
+## Current interpretation
+
+Keep three performance axes separate:
+
+- tiny Uniform uploads: persistent normal-ceiling candidate
+- alias direct `vkCmdCopyImage` render-pass churn: persistent steady burden
+- bulk texture refresh + Vertex/Index copies: severe-dip contributors
+
+`PostCopyBarrier` remains the Draw barrier owner but is not the dominant alias outside-RP source.
+
+## Next action
+
+Do not perturb render-pass requirements yet. The next passive experiment should test whether `SynchronizeAliases()` repeatedly copies unchanged/repeated src-dst alias pairs.
+
+See `NEXT_ACTION_ALIAS_SYNC_REDUNDANCY.md`.
+
+No ARM64 build may be started without fresh explicit user authorization. One permission = one attempt.
