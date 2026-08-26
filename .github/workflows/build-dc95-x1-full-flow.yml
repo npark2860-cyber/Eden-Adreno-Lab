@@ -1,15 +1,15 @@
-name: Build dc95 X1 Full Flow Profiler
+name: Build dc95 X1 Draw Dispatch Correlation
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: dc95-x1-full-flow-${{ github.ref }}
+  group: dc95-x1-draw-dispatch-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: dc95 ARM64 / X1 full flow
+    name: dc95 ARM64 / X1 draw-dispatch correlation
     runs-on: windows-11-arm
     timeout-minutes: 180
 
@@ -106,7 +106,11 @@ jobs:
         shell: bash
         run: python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
 
-      - name: Verify full-flow instrumentation and checkbox-only enablement
+      - name: Transplant Draw Dispatch cost correlation
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
+
+      - name: Verify full-flow and Draw Dispatch instrumentation
         shell: bash
         run: |
           set -e
@@ -116,7 +120,9 @@ jobs:
             lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py \
             lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py \
             lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py \
-            lab/tools/adreno_lab/analyze_x1_full_flow_log.py
+            lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py \
+            lab/tools/adreno_lab/analyze_x1_full_flow_log.py \
+            lab/tools/adreno_lab/analyze_x1_draw_dispatch_log.py
           git -C eden diff --check
           grep -q 'vk_adreno_profiler.cpp' eden/src/video_core/CMakeLists.txt
           grep -q 'AdrenoProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
@@ -159,6 +165,10 @@ jobs:
           grep -q 'X1 Log: Pipeline / Shader' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'X1 Log: Upload / Barrier' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'X1 Log: QCOM Workaround Hits' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'BeginWork(AdrenoProfiler::WorkOrigin::Draw)' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+          grep -q 'BeginWork(AdrenoProfiler::WorkOrigin::Dispatch)' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+          grep -q '\[X1-FLOW\]\[ORIGIN\]' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          grep -q '\[X1-FLOW\]\[ORIGIN-CALL\]' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
           if grep -q 'EDEN_ADRENO_PROFILE' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp; then
             echo 'ERROR: legacy env var still controls full-flow profiler on/off' >&2
             exit 1
@@ -194,7 +204,7 @@ jobs:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
 
-      - name: Build dc95 ARM64 X1 full-flow profiler
+      - name: Build dc95 ARM64 X1 draw-dispatch correlation
         shell: msys2 {0}
         working-directory: eden
         run: cmake --build build
@@ -203,7 +213,7 @@ jobs:
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: dc95cd09ee-x1-full-flow
+          ARTIFACT_REF: dc95cd09ee-x1-draw-dispatch
           MSYS_TOOLCHAIN: CLANGARM64
         run: ./.ci/package/windows.sh
 
@@ -212,6 +222,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force extras | Out-Null
           Copy-Item lab/tools/adreno_lab/analyze_x1_full_flow_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_draw_dispatch_log.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_descriptor_ring_log.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_eden_gpu_log.py extras/ -Force
           @'
@@ -220,48 +231,39 @@ jobs:
           $env:EDEN_X1_DESCRIPTOR_PROFILE_FRAMES="120"
           $eden = Join-Path $PSScriptRoot "eden.exe"
           if (-not (Test-Path $eden)) { throw "Place this script beside eden.exe" }
-          Write-Host "Settings > Debug > Logging: enable only the diagnostic categories needed for this run."
+          Write-Host "Settings > Debug > Logging: enable Scheduler / Sync and Upload / Barrier for Draw/Dispatch correlation."
           & $eden
-          '@ | Set-Content -Encoding UTF8 extras/RUN_X1_FULL_FLOW_PROFILE.ps1
+          '@ | Set-Content -Encoding UTF8 extras/RUN_X1_DRAW_DISPATCH_PROFILE.ps1
           @'
-          Experiment: X1 full-flow diagnostic build
+          Experiment: X1 Draw / Dispatch cost-correlation build
           Exact Eden source: dc95cd09eea9749250fe31a3072684d341d19417
           Build: Windows ARM64 / MSYS2 CLANGARM64 / clang / standard
-          Immutable control: lab/dc95-arm64-baseline
-          Descriptor experiment preserved: exp/x1-descriptor-ring
-          Full-flow branch: exp/x1-full-flow-profiler
+          Parent diagnostic: exp/x1-full-flow-profiler
+          Experiment branch: exp/x1-draw-dispatch-correlation
 
-          GUI log controls, all X1 categories default OFF:
-            GPU Log: Vulkan Calls
-            GPU Log: Memory Tracking
-            GPU Log: Driver Debug
-            X1 Log: Descriptor Ring
+          This pass is instrumentation-only. It does NOT skip, reorder, or alter Draw/Dispatch work.
+
+          Enable these existing GUI checkboxes before game launch:
             X1 Log: Scheduler / Sync
+            X1 Log: Upload / Barrier
+
+          Optional additional categories remain available:
+            X1 Log: Descriptor Ring
             X1 Log: Present / Frame Pacing
             X1 Log: Pipeline / Shader
-            X1 Log: Upload / Barrier
             X1 Log: QCOM Workaround Hits
-            Dump SPIR-V Shaders
 
-          Pipeline diagnostics include both build time and actual async ready-wait time.
-          Scheduler profiling preserves the exact dc95 frame-pacing sleep/yield policy.
+          New correlation output:
+            [X1-FLOW][ORIGIN]       120-frame Draw vs Dispatch aggregate
+            [X1-FLOW][ORIGIN-CALL]  heavy individual command preparation with signature
 
-          Common correlation fields for slow events:
-            frame / thread / reason / tick / aux / duration
+          Per-origin costs:
+            staging upload bytes / buffer-copy calls+bytes / outside-RP ends / barriers / Scheduler::Wait
 
-          Prefixes:
-            [X1-FLOW][SCHED]
-            [X1-FLOW][PRESENT]
-            [X1-FLOW][PIPE]
-            [X1-FLOW][UPLOAD]
-            [X1-FLOW][QCOM]
-            [X1-FLOW][DBUF]
-            [X1-DBUF]
-
-          Environment variables only change reporting cadence/slow-event threshold.
-          They do NOT enable a diagnostic category.
+          The heavy-call signature is intended for the next controlled A/B step: target only the
+          recurring expensive Draw or Dispatch shapes instead of disabling broad rendering paths.
           '@ | Set-Content -Encoding UTF8 extras/EXPERIMENT.txt
-          git -C eden diff -- src/common/settings.h src/yuzu/configuration/configure_debug.h src/yuzu/configuration/configure_debug.cpp src/video_core/CMakeLists.txt src/video_core/renderer_vulkan | Set-Content -Encoding UTF8 extras/FULL_FLOW_INSTRUMENTATION.diff
+          git -C eden diff -- src/common/settings.h src/yuzu/configuration/configure_debug.h src/yuzu/configuration/configure_debug.cpp src/video_core/CMakeLists.txt src/video_core/renderer_vulkan | Set-Content -Encoding UTF8 extras/DRAW_DISPATCH_CORRELATION.diff
 
       - name: List artifact files
         shell: pwsh
@@ -270,7 +272,7 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-dc95-X1-full-flow-profile
+          name: Eden-dc95-X1-draw-dispatch-correlation
           path: |
             eden/artifacts/*
             extras/*
