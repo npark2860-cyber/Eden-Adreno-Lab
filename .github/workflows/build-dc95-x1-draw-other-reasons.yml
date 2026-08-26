@@ -110,13 +110,9 @@ jobs:
         shell: bash
         run: python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
 
-      - name: Transplant signature based Draw Dispatch AB controls
+      - name: Transplant signature based Draw Dispatch AB controls and BufferCategory correlation
         shell: bash
         run: python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
-
-      - name: Transplant BufferCategory correlation
-        shell: bash
-        run: python lab/tools/adreno_lab/transplant_dc95_buffer_category_correlation.py eden
 
       - name: Transplant Draw other reason buckets
         shell: bash
@@ -143,6 +139,7 @@ jobs:
           grep -q 'cat={}' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
           grep -q 'other/post-copy-barrier' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
           grep -q 'OtherPostCopyBarrier' eden/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+          grep -q 'OtherPushImageDescriptors' eden/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
           grep -q 'OtherUpdateRenderTargets' eden/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
           grep -q 'OtherFeedbackLoop' eden/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
           grep -q 'OtherFlushWork' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
@@ -222,6 +219,7 @@ jobs:
             other/texture-sync-descriptors
             other/texture-fill-image-views
             other/descriptor-acquire
+            other/push-image-descriptors
             other/configure-draw
             other/flush-work
             other/flush-caching
