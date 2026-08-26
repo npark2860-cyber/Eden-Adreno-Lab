@@ -102,31 +102,58 @@ jobs:
         shell: bash
         run: python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
 
+      - name: Finalize exact dc95 diagnostic behavior
+        shell: bash
+        run: python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
+
       - name: Verify full-flow instrumentation and checkbox-only enablement
         shell: bash
         run: |
           set -e
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py \
+            lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py \
+            lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py \
+            lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py \
+            lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py \
+            lab/tools/adreno_lab/analyze_x1_full_flow_log.py
           git -C eden diff --check
           grep -q 'vk_adreno_profiler.cpp' eden/src/video_core/CMakeLists.txt
           grep -q 'AdrenoProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
           grep -q 'AdrenoProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/renderer_vulkan.cpp
           grep -q 'RecordSchedulerWait' eden/src/video_core/renderer_vulkan/vk_scheduler.h
+          grep -q 'sleep_time > std::chrono::milliseconds(15)' eden/src/video_core/renderer_vulkan/vk_scheduler.h
+          if grep -q 'spin_tail' eden/src/video_core/renderer_vulkan/vk_scheduler.h; then
+            echo 'ERROR: non-dc95 frame-pacing spin_tail policy leaked into diagnostic source' >&2
+            exit 1
+          fi
           grep -q 'EndRenderPass(RenderPassEndReason::Submit)' eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
           grep -q 'EndRenderPass(RenderPassEndReason::FramebufferChange)' eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+          for forbidden in MarkResolveShadowsUpToDate FlushDeferredClear depth_stencil_discard; do
+            if grep -q "$forbidden" eden/src/video_core/renderer_vulkan/vk_scheduler.cpp; then
+              echo "ERROR: later scheduler behavior leaked into exact dc95 diagnostic: $forbidden" >&2
+              exit 1
+            fi
+          done
           grep -q 'RecordPresentWait("free-frame"' eden/src/video_core/renderer_vulkan/vk_present_manager.cpp
           grep -q 'RecordAcquire' eden/src/video_core/renderer_vulkan/vk_swapchain.cpp
           grep -q 'RecordPresentCall' eden/src/video_core/renderer_vulkan/vk_swapchain.cpp
           grep -q 'RecordShaderEmit("graphics-spirv"' eden/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
           grep -q 'RecordShaderEmit("compute-spirv"' eden/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+          grep -q 'RecordPipelineWait(false' eden/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+          grep -q 'RecordPipelineWait(true' eden/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+          grep -q 'gfxWait=' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          grep -q 'computeWait=' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
           grep -q 'RecordBarrier("buffer-pre-copy"' eden/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
           grep -q 'RecordBarrier("submit-upload"' eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
           grep -q 'QcomEvent::DescriptorTilerPolicy' eden/src/video_core/renderer_vulkan/vk_descriptor_buffer.cpp
           grep -q 'QcomEvent::CustomBorderColor' eden/src/video_core/renderer_vulkan/vk_texture_cache.cpp
-          grep -q 'x1_scheduler_sync_log' eden/src/common/settings.h
-          grep -q 'x1_present_frame_log' eden/src/common/settings.h
-          grep -q 'x1_pipeline_shader_log' eden/src/common/settings.h
-          grep -q 'x1_upload_barrier_log' eden/src/common/settings.h
-          grep -q 'x1_qcom_workaround_log' eden/src/common/settings.h
+          test "$(grep -c 'device.GetDriverID() == VK_DRIVER_ID_QUALCOMM_PROPRIETARY' eden/src/video_core/renderer_vulkan/vk_texture_cache.cpp)" -ge 2
+          grep -q 'x1_scheduler_sync_log{linkage, false' eden/src/common/settings.h
+          grep -q 'x1_present_frame_log{linkage, false' eden/src/common/settings.h
+          grep -q 'x1_pipeline_shader_log{linkage, false' eden/src/common/settings.h
+          grep -q 'x1_upload_barrier_log{linkage, false' eden/src/common/settings.h
+          grep -q 'x1_qcom_workaround_log{linkage, false' eden/src/common/settings.h
           grep -q 'X1 Log: Scheduler / Sync' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'X1 Log: Present / Frame Pacing' eden/src/yuzu/configuration/configure_debug.cpp
           grep -q 'X1 Log: Pipeline / Shader' eden/src/yuzu/configuration/configure_debug.cpp
@@ -215,6 +242,9 @@ jobs:
             X1 Log: Upload / Barrier
             X1 Log: QCOM Workaround Hits
             Dump SPIR-V Shaders
+
+          Pipeline diagnostics include both build time and actual async ready-wait time.
+          Scheduler profiling preserves the exact dc95 frame-pacing sleep/yield policy.
 
           Common correlation fields for slow events:
             frame / thread / reason / tick / aux / duration
