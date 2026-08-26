@@ -174,9 +174,13 @@ void AdrenoProfiler::FrameEnd() {
     const u64 gfx_builds = Take(counters.graphics_pipeline_builds);
     const u64 gfx_failures = Take(counters.graphics_pipeline_failures);
     const u64 gfx_build_ns = Take(counters.graphics_pipeline_build_ns);
+    const u64 gfx_waits = Take(counters.graphics_pipeline_waits);
+    const u64 gfx_wait_ns = Take(counters.graphics_pipeline_wait_ns);
     const u64 compute_builds = Take(counters.compute_pipeline_builds);
     const u64 compute_failures = Take(counters.compute_pipeline_failures);
     const u64 compute_build_ns = Take(counters.compute_pipeline_build_ns);
+    const u64 compute_waits = Take(counters.compute_pipeline_waits);
+    const u64 compute_wait_ns = Take(counters.compute_pipeline_wait_ns);
     const u64 shader_emits = Take(counters.shader_emits);
     const u64 shader_emit_ns = Take(counters.shader_emit_ns);
     const u64 shader_bytes = Take(counters.shader_bytes);
@@ -227,10 +231,12 @@ void AdrenoProfiler::FrameEnd() {
 
     if (PipelineEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "[X1-FLOW][PIPE] frame={} frames={} gfx={} fail={} {:.3f}ms compute={} fail={} "
-                 "{:.3f}ms shaderEmit={} {:.3f}ms bytes={}",
-                 frame, frames, gfx_builds, gfx_failures, ToMs(gfx_build_ns), compute_builds,
-                 compute_failures, ToMs(compute_build_ns), shader_emits, ToMs(shader_emit_ns),
+                 "[X1-FLOW][PIPE] frame={} frames={} gfx={} fail={} {:.3f}ms gfxWait={} {:.3f}ms "
+                 "compute={} fail={} {:.3f}ms computeWait={} {:.3f}ms shaderEmit={} {:.3f}ms "
+                 "bytes={}",
+                 frame, frames, gfx_builds, gfx_failures, ToMs(gfx_build_ns), gfx_waits,
+                 ToMs(gfx_wait_ns), compute_builds, compute_failures, ToMs(compute_build_ns),
+                 compute_waits, ToMs(compute_wait_ns), shader_emits, ToMs(shader_emit_ns),
                  shader_bytes);
     }
 
@@ -484,6 +490,21 @@ void AdrenoProfiler::RecordShaderEmit(const char* kind, u64 nanoseconds, u64 byt
     counters.shader_emit_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
     counters.shader_bytes.fetch_add(bytes, std::memory_order_relaxed);
     LogSlow("PIPE", kind, nanoseconds, 0, bytes);
+}
+
+void AdrenoProfiler::RecordPipelineWait(bool compute, u64 nanoseconds) {
+    if (!PipelineEnabled()) {
+        return;
+    }
+    if (compute) {
+        counters.compute_pipeline_waits.fetch_add(1, std::memory_order_relaxed);
+        counters.compute_pipeline_wait_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
+        LogSlow("PIPE", "compute-ready-wait", nanoseconds);
+    } else {
+        counters.graphics_pipeline_waits.fetch_add(1, std::memory_order_relaxed);
+        counters.graphics_pipeline_wait_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
+        LogSlow("PIPE", "graphics-ready-wait", nanoseconds);
+    }
 }
 
 void AdrenoProfiler::RecordBarrier(const char*, u64 count) {
