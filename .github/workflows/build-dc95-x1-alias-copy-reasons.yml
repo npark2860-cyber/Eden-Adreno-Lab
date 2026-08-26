@@ -153,9 +153,12 @@ jobs:
           grep -q 'other/texture/alias-copy/direct-resolve-invalidate' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
           grep -q 'other/texture/alias-copy/direct-bpb-reinterpret' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
           grep -q 'other/texture/alias-copy/direct-vk-copy' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
-          grep -q 'BeginX1TextureSubcategory(35)' eden/src/video_core/texture_cache/texture_cache.h
-          grep -q 'BeginX1TextureSubcategory(36)' eden/src/video_core/texture_cache/texture_cache.h
-          grep -q 'BeginX1TextureSubcategory(37)' eden/src/video_core/texture_cache/texture_cache.h
+          grep -q 'PushBufferCategoryOverrideIf' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          grep -q 'BeginX1TextureSubcategoryIf' eden/src/video_core/renderer_vulkan/vk_texture_cache.h
+          grep -q 'BeginX1TextureSubcategoryIf' eden/src/video_core/renderer_opengl/gl_texture_cache.h
+          grep -q 'BeginX1TextureSubcategoryIf(29, 35)' eden/src/video_core/texture_cache/texture_cache.h
+          grep -q 'BeginX1TextureSubcategoryIf(29, 36)' eden/src/video_core/texture_cache/texture_cache.h
+          grep -q 'BeginX1TextureSubcategoryIf(29, 37)' eden/src/video_core/texture_cache/texture_cache.h
           grep -q 'OtherTextureAliasDirectResolveInvalidate' eden/src/video_core/renderer_vulkan/vk_texture_cache.cpp
           grep -q 'OtherTextureAliasDirectBpbReinterpret' eden/src/video_core/renderer_vulkan/vk_texture_cache.cpp
           grep -q 'OtherTextureAliasDirectVkCopy' eden/src/video_core/renderer_vulkan/vk_texture_cache.cpp
