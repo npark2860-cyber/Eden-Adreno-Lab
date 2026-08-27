@@ -1,0 +1,106 @@
+name: Import Eden upstream baseline
+
+on:
+  push:
+    branches:
+      - lab/import-eden-0295dc5
+    paths:
+      - .github/workflows/import-eden-upstream.yml
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: https://github.com/eden-emulator/mirror.git
+      UPSTREAM_COMMIT: 0295dc5fff9b2977e753e7c126cc870abb07ee3f
+    steps:
+      - name: Checkout lab branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fetch exact Eden baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          git init "$tmp/eden"
+          git -C "$tmp/eden" remote add origin "$UPSTREAM_REPO"
+          git -C "$tmp/eden" fetch --depth=1 origin "$UPSTREAM_COMMIT"
+          git -C "$tmp/eden" checkout --detach FETCH_HEAD
+          test "$(git -C "$tmp/eden" rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+
+          tar -C "$tmp/eden" --exclude=.git -cf - . | tar -xf -
+
+          mkdir -p LAB
+          cat > LAB/UPSTREAM_BASELINE.md <<EOF
+          # Upstream baseline
+
+          - Repository: eden-emulator/mirror
+          - Branch at selection time: master
+          - Commit: $UPSTREAM_COMMIT
+          - Purpose: fixed known-good Eden baseline for Qualcomm Adreno X1-85 profiling and A/B optimization experiments.
+
+          Do not silently advance this baseline. Update it only in a dedicated baseline-refresh change with before/after measurements.
+          EOF
+
+          cat > LAB/README.md <<'EOF'
+          # Eden Adreno Lab
+
+          This repository is an experimental fork of Eden focused on Qualcomm Adreno X1-85 Vulkan behavior and performance.
+
+          ## Method
+
+          1. Keep the upstream baseline reproducible.
+          2. Instrument before optimizing.
+          3. Change one Qualcomm workaround or Vulkan path at a time.
+          4. Test the same game, save, scene, settings, driver and cache state.
+          5. Record FPS, frametime, correctness and crashes for every A/B run.
+
+          ## Initial investigation targets
+
+          - Qualcomm optimal-image readback / CopyImageToBuffer path
+          - scaled vertex format emulation
+          - descriptor aliasing workaround
+          - color write enable workaround
+          - shader atomic int64 workaround
+          - workgroup memory explicit layout workaround
+          - reported binding-limit override
+          - graphics/compute pipeline creation and cache behavior
+          - queue submit, fence and synchronization stalls
+
+          The first goal is not to remove workarounds. It is to measure their real cost and determine which ones are still required on the X1-85 Windows driver.
+          EOF
+
+          cat > LAB/EXPERIMENTS.md <<'EOF'
+          # Experiment log
+
+          | ID | Change | Game / scene | Driver | Baseline FPS | Test FPS | Correctness | Result |
+          |---|---|---|---|---:|---:|---|---|
+          | E000 | Baseline | TBD | 512.863.0 | TBD | TBD | TBD | Baseline |
+
+          ## Rules
+
+          - One functional change per experiment.
+          - Re-run baseline when cache, driver, game version or settings change.
+          - A performance win is not accepted if rendering, stability or determinism regresses.
+          EOF
+
+      - name: Commit imported source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git ls-files -m -o --exclude-standard -z | xargs -0 -r git add --
+          if git diff --cached --quiet; then
+            echo "No import changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: import Eden baseline 0295dc5 [skip ci]"
+          git push origin HEAD:lab/import-eden-0295dc5
