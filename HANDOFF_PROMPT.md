@@ -18,9 +18,10 @@ Do not reconstruct state from old chat. First read these GitHub documents and tr
 
 1. `CURRENT_HANDOFF.md`
 2. `DEBUG_HISTORY.md`
-3. `LAB_BOOTSTRAP.md`
-4. `NEXT_ACTION_FRAME_BUILD_ATTRIBUTION.md`
-5. `HANDOFF_PROMPT.md`
+3. `DEBUG_HISTORY_20260827_CONTINUED.md`
+4. `LAB_BOOTSTRAP.md`
+5. `NEXT_ACTION_FRAME_BUILD_ATTRIBUTION.md`
+6. `HANDOFF_PROMPT.md`
 
 Then verify actual branch HEAD and Actions state against the documents before doing anything else.
 
