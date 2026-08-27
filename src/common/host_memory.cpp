@@ -121,6 +121,38 @@ static void GetFuncAddress(Common::DynamicLibrary& dll, const char* name, T& pfn
     }
 }
 
+static DWORD GetWindowsProtection(bool read, bool write, bool execute) {
+    if (write && !read) {
+        UNIMPLEMENTED_MSG("Protection flag combination read={} write={} execute={}", read, write,
+                          execute);
+        return PAGE_NOACCESS;
+    }
+
+    if (execute) {
+        if (read && write) {
+            return PAGE_EXECUTE_READWRITE;
+        }
+        if (read) {
+            return PAGE_EXECUTE_READ;
+        }
+        return PAGE_EXECUTE;
+    }
+
+    if (read && write) {
+        return PAGE_READWRITE;
+    }
+    if (read) {
+        return PAGE_READONLY;
+    }
+    return PAGE_NOACCESS;
+}
+
+static DWORD GetWindowsProtection(MemoryPermission perms) {
+    return GetWindowsProtection(True(perms & MemoryPermission::Read),
+                                True(perms & MemoryPermission::Write),
+                                True(perms & MemoryPermission::Execute));
+}
+
 class HostMemory::Impl {
 public:
     explicit Impl(size_t backing_size_, size_t virtual_size_)
@@ -145,8 +177,11 @@ public:
             return false;
         }
 
-        // Allocate backing file map
-        backing_handle = pfn_CreateFileMapping2(INVALID_HANDLE_VALUE, nullptr, FILE_MAP_WRITE | FILE_MAP_READ, PAGE_READWRITE, SEC_COMMIT, backing_size, nullptr, nullptr, 0);
+        // Allocate backing file map. The section must permit executable views, while each view
+        // still receives the exact requested page protection.
+        backing_handle = pfn_CreateFileMapping2(
+            INVALID_HANDLE_VALUE, nullptr, FILE_MAP_WRITE | FILE_MAP_READ | FILE_MAP_EXECUTE,
+            PAGE_EXECUTE_READWRITE, SEC_COMMIT, backing_size, nullptr, nullptr, 0);
         if (!backing_handle) {
             LOG_CRITICAL(HW_Memory, "Failed to allocate {} MiB of backing memory", backing_size >> 20);
             return false;
@@ -187,7 +222,12 @@ public:
         ASSERT(placeholders.find({virtual_offset, virtual_offset + length}) == placeholders.end());
         TrackPlaceholder(virtual_offset, host_offset, length);
 
-        MapView(virtual_offset, host_offset, length);
+        const DWORD protection = GetWindowsProtection(perms);
+        MapView(virtual_offset, host_offset, length, protection);
+        if (True(perms & MemoryPermission::Execute) &&
+            !FlushInstructionCache(process, virtual_base + virtual_offset, length)) {
+            LOG_CRITICAL(HW_Memory, "Failed to flush instruction cache after executable mapping");
+        }
     }
 
     void Unmap(size_t virtual_offset, size_t length) {
@@ -199,16 +239,7 @@ public:
     }
 
     void Protect(size_t virtual_offset, size_t length, bool read, bool write, bool execute) {
-        DWORD new_flags{};
-        if (read && write) {
-            new_flags = PAGE_READWRITE;
-        } else if (read && !write) {
-            new_flags = PAGE_READONLY;
-        } else if (!read && !write) {
-            new_flags = PAGE_NOACCESS;
-        } else {
-            UNIMPLEMENTED_MSG("Protection flag combination read={} write={}", read, write);
-        }
+        const DWORD new_flags = GetWindowsProtection(read, write, execute);
         const size_t virtual_end = virtual_offset + length;
 
         std::scoped_lock lock{placeholder_mutex};
@@ -219,6 +250,10 @@ public:
             DWORD old_flags{};
             if (!VirtualProtect(virtual_base + offset, protect_length, new_flags, &old_flags)) {
                 LOG_CRITICAL(HW_Memory, "Failed to change virtual memory protect rules");
+            } else if (execute &&
+                       !FlushInstructionCache(process, virtual_base + offset, protect_length)) {
+                LOG_CRITICAL(HW_Memory,
+                             "Failed to flush instruction cache after executable protection");
             }
             ++it;
         }
@@ -338,9 +373,10 @@ private:
         return true;
     }
 
-    void MapView(size_t virtual_offset, size_t host_offset, size_t length) {
+    void MapView(size_t virtual_offset, size_t host_offset, size_t length,
+                 DWORD protection = PAGE_READWRITE) {
         if (!pfn_MapViewOfFile3(backing_handle, process, virtual_base + virtual_offset, host_offset,
-                                length, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, nullptr, 0)) {
+                                length, MEM_REPLACE_PLACEHOLDER, protection, nullptr, 0)) {
             LOG_CRITICAL(HW_Memory, "Failed to map placeholder");
         }
     }
