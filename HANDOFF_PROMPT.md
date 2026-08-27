@@ -1,4 +1,4 @@
-# Handoff Prompt — Eden Adreno X1 swap-interval cadence result
+# Handoff Prompt — Eden Adreno X1 swap interval 3 -> 2 A/B
 
 Use this prompt when continuing in a new tab.
 
@@ -12,14 +12,14 @@ GitHub repository:
 
 Current experiment branch:
 
-`exp/x1-frame-cadence-attribution`
+`exp/x1-swap-interval-3-to-2-ab`
 
 Do not reconstruct state from old chat. First read these GitHub documents and treat them as source of truth:
 
 1. `CURRENT_HANDOFF.md`
 2. `DEBUG_HISTORY.md`
 3. `LAB_BOOTSTRAP.md`
-4. `NEXT_ACTION_SWAP_INTERVAL_3_AB.md`
+4. `NEXT_ACTION_SWAP_INTERVAL_3_TO_2_AB.md`
 5. `HANDOFF_PROMPT.md`
 
 Then verify actual branch HEAD and Actions state against the documents before doing anything else.
@@ -40,60 +40,70 @@ Retain these confirmed facts:
 - alias direct CopyImage/outside-RP traffic is not trivial unchanged-state duplication; simple alias dedupe is closed
 - exact dc95 Vulkan `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`
 - adaptive small-Uniform fast path is mapped staging re-stream, not payload reuse
-- gameplay fast Uniform selection was almost entirely adaptive `fastSkip`; `fastAlignment=0`
-- classic cached Uniform path is mostly clean
-- sampled repeated fast Uniform payloads were 97%+ same fingerprint; same-frame classified repeats were 99%+ same fingerprint
+- gameplay fast Uniform selection is almost entirely adaptive `fastSkip`; `fastAlignment=0`
 - Uniform classic-cache fallback A/B did not break the gameplay ceiling and moved cost into copy/outside-RP/synchronization
 
-Frame-cadence build — SUCCESS, exactly one authorized attempt:
+Frame-cadence build succeeded in exactly one authorized attempt:
 
-- workflow `Build dc95 X1 Frame Cadence Attribution`
 - run `33060773960`
 - job `98478699166`
-- attempt 1
 - build HEAD `d49d5a20b17a4e6861aad036474600697ac14fc8`
 - artifact `Eden-dc95-X1-frame-cadence-attribution`
 - artifact id `9642483710`
 - SHA-256 `b9140318047ac09462751ad5c6dc1d598122cc82c2ea78bfe03a5c33fc91f870`
 
-Runtime log:
+Cadence runtime `eden_log(20260827-104943).txt` confirmed:
 
-`eden_log(20260827-104943).txt`
-
-CONFIRMED runtime result:
-
-- stable guest QueueBuffer frames 562-910 use `swap=2`
-- that regime has median queue interval 33.352 ms and effective rate ~29.42 FPS
-- stable guest QueueBuffer frames 911-1758 use `swap=3`
-- that regime has median queue interval 49.985 ms and effective rate ~17.48 FPS because additional 3-tick opportunities are missed
-- main acquire median follows the same pattern: ~33.506 ms for swap 2, ~50.044 ms for swap 3
-- VI compositor itself remains ~60 Hz: median ~16.6 ms
-- WaitForComposite is not the continuous missing interval; median 0 ms in gameplay and only four >1 ms events in the stable swap-3 segment
+- stable raw `swap=2` frames 562-910: median QueueBuffer 33.352 ms, ~29.42 FPS
+- stable raw `swap=3` frames 911-1758: median QueueBuffer 49.985 ms, ~17.48 FPS due additional misses
+- main acquire medians ~33.506 ms vs ~50.044 ms
+- VI compositor remains ~60 Hz
+- WaitForComposite median 0 ms in stable swap=3 gameplay
+- transition occurs at QueueBuffer frame 910 `swap=2` -> frame 911 `swap=3`
 
 Critical meaning:
 
-> The user's '30 FPS title / almost always <=20 FPS gameplay / rarely 22-23' observation is explained by the main guest BufferQueue raw swap interval changing from 2 to 3. swap 2 gives nominal 60/2=30 FPS opportunities; swap 3 gives nominal 60/3=20 FPS opportunities; misses only lower FPS further.
+> The discrete 30 -> <=20 cadence is explained by the main guest BufferQueue raw interval changing 2 -> 3. raw 2 gives nominal 60/2=30 FPS opportunities; raw 3 gives nominal 60/3=20 FPS opportunities; missed opportunities only lower FPS further.
 
-Exact dc95 source ownership is also confirmed:
+Exact source ownership:
 
-- `QueueBufferInput` contains `s32 swap_interval`
-- it is directly read from the guest `InputParcel` via `parcel.ReadFlattened(*this)`
-- `BufferQueueProducer::QueueBuffer()` assigns that value directly to `item.swap_interval`
-- HardwareComposer honors it for main-layer acquire spacing and release-frame bookkeeping
-- this raw 3 is therefore already present before host Vulkan Present; do not blame Qualcomm Vulkan, Mailbox, or Target_60 for creating the 20-FPS step
+- `QueueBufferInput` carries raw `s32 swap_interval` from guest `InputParcel`
+- `BufferQueueProducer::QueueBuffer()` stores it unchanged as `item.swap_interval`
+- HardwareComposer uses it for main acquire spacing and release-frame bookkeeping
+- Qualcomm Vulkan / Mailbox / Target_60 do not create the raw 3
 
-Still unknown:
+Current A/B static preparation is complete.
 
-- why TOTK selects/sends swap interval 3 in this runtime
-- whether it is purely a symptom of missing the 30-FPS budget
-- whether Eden's acquire/release policy helps create a feedback ceiling once raw 3 is active
+Checkbox:
+
+`X1 A/B: Clamp Main Swap Interval 3 To 2`
+
+Default OFF.
+
+ON behavior in the dedicated Windows ARM64 Vulkan X1 diagnostic build:
+
+- preserve raw guest parcel / `item.swap_interval`
+- preserve QUEUE raw swap logging
+- main non-overlay raw exactly 3 uses effective acquire/release interval 2
+- overlays unchanged
+- all other raw intervals unchanged
+- ACQUIRE log reports both `swap=<raw>` and `effective=<composer>`
+
+Prepared files:
+
+- `tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py`
+- updated `tools/adreno_lab/analyze_x1_frame_cadence.py`
+- `.github/workflows/build-dc95-x1-swap-interval-3-to-2-ab.yml`
+- `NEXT_ACTION_SWAP_INTERVAL_3_TO_2_AB.md`
+
+Workflow:
+
+`Build dc95 X1 Swap Interval 3 To 2 AB`
+
+It is `workflow_dispatch` only. Static safety checks preserve raw QueueBuffer producer, VI conductor, GPU, Vulkan swapchain/scheduler, nvhost_ctrl and buffer-cache paths.
 
 NEXT ACTION:
 
-Read `NEXT_ACTION_SWAP_INTERVAL_3_AB.md`.
+Read `NEXT_ACTION_SWAP_INTERVAL_3_TO_2_AB.md` and stop before Actions.
 
-The next diagnostic is **proposal only**: a main non-overlay A/B that preserves/logs raw guest interval 3 but, when enabled, uses an effective composer acquire/release interval 2 only for raw interval exactly 3.
-
-Purpose: distinguish `swap=3 is only a symptom` from `swap=3 also participates in a feedback ceiling`.
-
-Do not implement or build this A/B without fresh explicit user approval. No current ARM64 build authorization exists.
+A fresh explicit user authorization is required for exactly one ARM64 build attempt. No current build authorization exists.
