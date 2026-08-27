@@ -15,7 +15,7 @@ import sys
 
 QUEUE_RE = re.compile(
     r"\[X1-CADENCE\]\[QUEUE\] hostUs=(\d+) core=0x([0-9a-fA-F]+) frame=(\d+) "
-    r"slot=(-?\d+) swap=(-?\d+) qsize=(\d+)"
+    r"slot=(-?\d+) swap=(-?\d+)"
 )
 ACQUIRE_RE = re.compile(
     r"\[X1-CADENCE\]\[ACQUIRE\] hostUs=(\d+) tick=(\d+) consumer=(-?\d+) "
@@ -68,7 +68,7 @@ def main() -> int:
 
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if m := QUEUE_RE.search(line):
-            host_us, core, frame, _slot, swap, _qsize = m.groups()
+            host_us, core, frame, _slot, swap = m.groups()
             queue_by_core[core].append((int(host_us), int(frame), int(swap)))
             continue
         if m := ACQUIRE_RE.search(line):
