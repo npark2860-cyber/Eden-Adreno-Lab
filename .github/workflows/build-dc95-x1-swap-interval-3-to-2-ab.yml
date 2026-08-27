@@ -1,0 +1,265 @@
+name: Build dc95 X1 Swap Interval 3 To 2 AB
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dc95-x1-swap-interval-3-to-2-ab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: dc95 ARM64 / X1 swap interval 3 to 2 AB
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout Eden CI workflow used by dc95-era nightlies
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify exact dc95 checkout
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+
+      - name: Install dc95-era Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Prepare compile-validated P0.2 non-scheduler patches
+        shell: bash
+        run: |
+          set -e
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          for f in \
+            src/video_core/renderer_vulkan/vk_buffer_cache.cpp \
+            src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp \
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
+            test -s "$out"
+          done
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
+      - name: Apply P0.2 non-scheduler source hooks
+        shell: bash
+        working-directory: eden
+        run: |
+          set -e
+          for p in \
+            ../profiler-patches/vk_buffer_cache.cpp.patch \
+            ../profiler-patches/vk_compute_pipeline.cpp.patch \
+            ../profiler-patches/vk_graphics_pipeline.cpp.patch \
+            ../profiler-patches/vk_staging_buffer_pool.cpp.patch \
+            ../profiler-patches/vk_update_descriptor.cpp.patch; do
+            git apply --ignore-whitespace "$p"
+          done
+
+      - name: Recreate current diagnostic chain
+        shell: bash
+        run: |
+          set -e
+          python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+          python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+          python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+          python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_other_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_texture_fill_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_copy_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_payload_fingerprint.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_cache_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py eden
+
+      - name: Snapshot pre swap-clamp state
+        shell: bash
+        run: |
+          set -e
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py \
+            lab/tools/adreno_lab/analyze_x1_frame_cadence.py
+
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          grep -q '\[X1-CADENCE\]\[QUEUE\]' eden/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp
+          grep -q '\[X1-CADENCE\]\[ACQUIRE\]' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'item.swap_interval = swap_interval;' eden/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp
+          grep -q 'NormalizeSwapInterval(nullptr, fb_it->second.item.swap_interval)' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'NormalizeSwapInterval(nullptr, framebuffer.item.swap_interval)' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+
+          mkdir -p pre-swap-clamp/intended pre-swap-clamp/critical
+          cp eden/src/common/settings.h pre-swap-clamp/intended/
+          cp eden/src/yuzu/configuration/configure_debug.h pre-swap-clamp/intended/
+          cp eden/src/yuzu/configuration/configure_debug.cpp pre-swap-clamp/intended/
+          cp eden/src/core/hle/service/nvnflinger/hardware_composer.cpp pre-swap-clamp/intended/
+
+          sha256sum eden/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp > pre-swap-clamp/critical/producer.sha256
+          sha256sum eden/src/core/hle/service/vi/conductor.cpp > pre-swap-clamp/critical/conductor.sha256
+          sha256sum eden/src/video_core/gpu.cpp > pre-swap-clamp/critical/gpu.sha256
+          sha256sum eden/src/video_core/renderer_vulkan/vk_swapchain.cpp > pre-swap-clamp/critical/swapchain.sha256
+          sha256sum eden/src/video_core/renderer_vulkan/vk_scheduler.cpp > pre-swap-clamp/critical/scheduler.sha256
+          sha256sum eden/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp > pre-swap-clamp/critical/nvhost-ctrl.sha256
+          sha256sum eden/src/video_core/buffer_cache/buffer_cache.h > pre-swap-clamp/critical/buffer-cache.sha256
+          sha256sum eden/src/video_core/renderer_vulkan/vk_buffer_cache.cpp > pre-swap-clamp/critical/vk-buffer-cache.sha256
+
+      - name: Transplant X1 main swap interval 3 to 2 A/B
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py eden
+
+      - name: Verify swap-clamp A/B before configure
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+
+          grep -q 'x1_ab_clamp_main_swap_interval_3_to_2' eden/src/common/settings.h
+          grep -q 'X1 A/B: Clamp Main Swap Interval 3 To 2' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'X1EffectiveMainSwapInterval(fb_it->second.item.swap_interval)' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'X1EffectiveMainSwapInterval(framebuffer.item.swap_interval)' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'raw_swap_interval == 3' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'return 2;' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'effective={}' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'item.swap_interval = swap_interval;' eden/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp
+          grep -q 'nvdisp.WaitForComposite();' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'nvdisp.Composite(composition_stack);' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'm_frame_number += 1;' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+          grep -q 'return 1;' eden/src/core/hle/service/nvnflinger/hardware_composer.cpp
+
+          sha256sum -c pre-swap-clamp/critical/producer.sha256
+          sha256sum -c pre-swap-clamp/critical/conductor.sha256
+          sha256sum -c pre-swap-clamp/critical/gpu.sha256
+          sha256sum -c pre-swap-clamp/critical/swapchain.sha256
+          sha256sum -c pre-swap-clamp/critical/scheduler.sha256
+          sha256sum -c pre-swap-clamp/critical/nvhost-ctrl.sha256
+          sha256sum -c pre-swap-clamp/critical/buffer-cache.sha256
+          sha256sum -c pre-swap-clamp/critical/vk-buffer-cache.sha256
+
+          {
+            diff -u pre-swap-clamp/intended/settings.h eden/src/common/settings.h || true
+            diff -u pre-swap-clamp/intended/configure_debug.h eden/src/yuzu/configuration/configure_debug.h || true
+            diff -u pre-swap-clamp/intended/configure_debug.cpp eden/src/yuzu/configuration/configure_debug.cpp || true
+            diff -u pre-swap-clamp/intended/hardware_composer.cpp eden/src/core/hle/service/nvnflinger/hardware_composer.cpp || true
+          } > swap-clamp-only.diff
+          test -s swap-clamp-only.diff
+
+          if grep -E '^\+.*(sleep_for|sleep_until|WaitForSyncOperation\(|WaitHost\(|ScheduleLoopingEvent\(|RequestComposite\(|SetTarget|SpeedLimit|item\.swap_interval[[:space:]]*=|m_swap_interval[[:space:]]*=|use_vsync|frame_pacing_mode)' swap-clamp-only.diff; then
+            echo 'ERROR: unrelated timing/present/raw-swap behavior leaked into swap-clamp diff' >&2
+            exit 1
+          fi
+
+          if grep -E '^\+.*raw_swap_interval[[:space:]]*(<=|>=|<|>|==)[[:space:]]*(0|1|2|4|5|6|7|8|9)' swap-clamp-only.diff; then
+            echo 'ERROR: clamp broadened beyond raw swap interval 3' >&2
+            exit 1
+          fi
+
+          git -C eden status --short
+
+      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure dc95 ARM64 standard build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+
+      - name: Build dc95 ARM64 X1 swap interval 3 to 2 AB
+        shell: msys2 {0}
+        working-directory: eden
+        run: cmake --build build
+
+      - name: Package with Eden CI Windows packager
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: dc95cd09ee-x1-swap-interval-3-to-2-ab
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Add analyzers and metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force extras | Out-Null
+          Copy-Item lab/tools/adreno_lab/analyze_x1_full_flow_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_buffer_category_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_uniform_path.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_uniform_payload.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_frame_cadence.py extras/ -Force
+          @'
+          Experiment: X1 exact-dc95 main swap interval 3->2 attribution A/B
+          Exact Eden source: dc95cd09eea9749250fe31a3072684d341d19417
+          Branch: exp/x1-swap-interval-3-to-2-ab
+
+          Checkbox: X1 A/B: Clamp Main Swap Interval 3 To 2
+          OFF: raw guest/main-layer cadence is preserved.
+          ON: in this Windows ARM64 Vulkan X1 diagnostic build, raw main-layer swap=3 remains logged/stored,
+              but HardwareComposer uses effective acquire/release interval 2. Overlays and all other raw intervals are unchanged.
+          ACQUIRE logs report both raw swap= and effective=.
+          This is attribution-only, not a production fix.
+          '@ | Set-Content -Encoding UTF8 extras/EXPERIMENT.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-dc95-X1-swap-interval-3-to-2-ab
+          path: |
+            eden/artifacts/*
+            extras/*
+          if-no-files-found: error
+          retention-days: 14
