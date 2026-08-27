@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 '''Analyze [X1-CADENCE] records from an Eden log.
 
-The report intentionally separates producer QueueBuffer cadence from compositor acquisition cadence.
-It does not infer a cause when one side is missing.
+The report separates producer QueueBuffer cadence from compositor acquisition cadence and, when
+present, reports raw guest swap interval separately from the compositor effective interval used by
+the swap-3-to-2 A/B.
 '''
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ QUEUE_RE = re.compile(
 )
 ACQUIRE_RE = re.compile(
     r"\[X1-CADENCE\]\[ACQUIRE\] hostUs=(\d+) tick=(\d+) consumer=(-?\d+) "
-    r"overlay=(true|false|0|1) frame=(\d+) swap=(-?\d+)"
+    r"overlay=(true|false|0|1) frame=(\d+) swap=(-?\d+)(?: effective=(-?\d+))?"
 )
 VI_RE = re.compile(
     r"\[X1-CADENCE\]\[VI\] hostUs=(\d+) tick=(\d+) mainNew=(\d+) overlayNew=(\d+) "
@@ -63,7 +64,7 @@ def main() -> int:
 
     path = Path(sys.argv[1])
     queue_by_core: dict[str, list[tuple[int, int, int]]] = defaultdict(list)
-    acquire_by_consumer: dict[int, list[tuple[int, int, int, int]]] = defaultdict(list)
+    acquire_by_consumer: dict[int, list[tuple[int, int, int, int, int]]] = defaultdict(list)
     vi: list[tuple[int, int, int, int, int, int]] = []
 
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -72,10 +73,12 @@ def main() -> int:
             queue_by_core[core].append((int(host_us), int(frame), int(swap)))
             continue
         if m := ACQUIRE_RE.search(line):
-            host_us, tick, consumer, overlay, frame, swap = m.groups()
+            host_us, tick, consumer, overlay, frame, swap, effective = m.groups()
             if overlay in ("false", "0"):
+                raw = int(swap)
+                effective_value = raw if effective is None else int(effective)
                 acquire_by_consumer[int(consumer)].append(
-                    (int(host_us), int(tick), int(frame), int(swap))
+                    (int(host_us), int(tick), int(frame), raw, effective_value)
                 )
             continue
         if m := VI_RE.search(line):
@@ -103,13 +106,13 @@ def main() -> int:
             f"median={statistics.median(work_us)/1000.0:.3f}ms max={max(work_us)/1000.0:.3f}ms"
         )
 
-    print("\n[Producer QueueBuffer cadence by queue core]")
+    print("\n[Producer QueueBuffer cadence by queue core — raw guest swap]")
     for core, rows in sorted(queue_by_core.items(), key=lambda kv: len(kv[1]), reverse=True):
         times = [row[0] for row in rows]
         swaps = defaultdict(int)
         for _, _, swap in rows:
             swaps[swap] += 1
-        print(f"core=0x{core} queues={len(rows)} swaps={dict(swaps)}")
+        print(f"core=0x{core} queues={len(rows)} rawSwaps={dict(swaps)}")
         print("  wall cadence:", summarize_deltas(consecutive_deltas(times)))
 
     print("\n[Main-buffer acquisition cadence by consumer]")
@@ -120,18 +123,22 @@ def main() -> int:
         tick_buckets = defaultdict(int)
         for delta in tick_deltas:
             tick_buckets[delta if delta <= 4 else "5+"] += 1
-        swaps = defaultdict(int)
-        for _, _, _, swap in rows:
-            swaps[swap] += 1
-        print(f"consumer={consumer} acquires={len(rows)} swaps={dict(swaps)}")
+        raw_swaps = defaultdict(int)
+        effective_swaps = defaultdict(int)
+        for _, _, _, raw, effective in rows:
+            raw_swaps[raw] += 1
+            effective_swaps[effective] += 1
+        print(
+            f"consumer={consumer} acquires={len(rows)} rawSwaps={dict(raw_swaps)} "
+            f"effectiveSwaps={dict(effective_swaps)}"
+        )
         print("  host cadence:", summarize_deltas(consecutive_deltas(host_times)))
         print(f"  compositor tick deltas: {dict(tick_buckets)}")
 
-    print("\nInterpretation guide:")
-    print("- producer ~50ms AND acquire every 3 compositor ticks => cadence is already upstream/game-produced")
-    print("- producer ~33ms but acquire every 3 ticks => compositor/consumer side is dropping or delaying ready frames")
-    print("- VI tick wall cadence itself ~50ms or WaitForComposite has ~16/33ms waits => VI/composite hand-off is stalling")
-    print("- producer/acquire ~33ms while displayed FPS remains ~20 => investigate renderer/present after acquisition")
+    print("\nA/B interpretation guide:")
+    print("- ON + raw swap=3 + effective=2 but producer remains ~50ms => clamp does not create upstream frames; swap=3 is mainly a symptom")
+    print("- ON + raw swap=3 + effective=2 and producer shifts into 33-50ms / 21-29fps => compositor release/acquire timing participates in a feedback ceiling")
+    print("- any timing/render regression => reject the clamp as an optimization even if FPS rises")
     return 0
 
 
