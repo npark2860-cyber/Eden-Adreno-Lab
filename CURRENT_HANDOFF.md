@@ -1,4 +1,4 @@
-# CURRENT HANDOFF — Eden Adreno X1 frame-cadence attribution
+# CURRENT HANDOFF — Eden Adreno X1 swap-interval 3->2 A/B
 
 Updated: 2026-08-27 KST
 
@@ -7,7 +7,8 @@ Updated: 2026-08-27 KST
 - repository: `npark2860-cyber/Eden-Adreno-Lab`
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
-- current experiment branch: `exp/x1-frame-cadence-attribution`
+- current experiment branch: `exp/x1-swap-interval-3-to-2-ab`
+- predecessor HEAD: `exp/x1-frame-cadence-attribution@d32cf164b12260d6ab49fc7c3d965141d22af69f`
 
 Never change the exact Eden baseline without the explicit baseline-change procedure.
 
@@ -38,8 +39,6 @@ Do not blindly reuse old staging allocations or enable persistent Uniform bindin
 
 ## Uniform cache A/B — completed
 
-Branch: `exp/x1-uniform-cache-ab`
-
 Authorized build — SUCCESS:
 
 - workflow `Build dc95 X1 Uniform Cache AB`
@@ -51,51 +50,29 @@ Authorized build — SUCCESS:
 - artifact id `9636118096`
 - SHA-256 `b3ec51f770f5ea664a0d277bbc2ede3952f6e6cfea9fef0f14f52f98be84dd6e`
 
-ON runtime:
+ON result:
 
-- `x1_ab_disable_adaptive_uniform_fast_stream = true`
-- fast / fastSkip = 0
-- redirected classic-cache visits mostly clean (~94.33%)
-- gameplay remained ~18 FPS in the matched run
-- representative frame-1440: ~122.8k Uniform copies, ~484.7 MiB copied, ~87.9k Uniform outside-RP operations, scheduler wait ~6504 ms / 120 frames
+- adaptive fast / fastSkip = 0
+- redirected classic-cache visits ~94.33% clean
+- gameplay still ~18 FPS in matched run
+- representative frame-1440: ~122.8k Uniform copies, ~484.7 MiB, ~87.9k outside-RP Uniform operations, scheduler wait ~6504 ms / 120 frames
 
 Conclusion: wholesale classic-cache fallback is not an optimization.
 
-Paired OFF runtime then exposed a different pattern:
+## Frame cadence attribution — completed
 
-- title/light region ~30 FPS
-- gameplay nearly always <=20 FPS
-- intermediate 22-23 FPS unusually rare
-- Vulkan `Target_60` pacing totals only fractions of a millisecond / 120 frames
-
-That observation triggered the cadence attribution experiment.
-
-## Frame cadence attribution — BUILD SUCCESS
-
-Branch:
-
-`exp/x1-frame-cadence-attribution`
-
-Authorized build:
+Authorized build — SUCCESS:
 
 - workflow `Build dc95 X1 Frame Cadence Attribution`
 - run `33060773960`
 - job `98478699166`
 - attempt 1
 - build HEAD `d49d5a20b17a4e6861aad036474600697ac14fc8`
-- result: success
 - artifact `Eden-dc95-X1-frame-cadence-attribution`
 - artifact id `9642483710`
-- artifact size 31,305,699 bytes
+- size 31,305,699 bytes
 - SHA-256 `b9140318047ac09462751ad5c6dc1d598122cc82c2ea78bfe03a5c33fc91f870`
-- expires 2026-09-10
 - attempts 1, reruns 0
-
-Administrative cleanup after the build moved the branch HEAD beyond the build HEAD. Do not confuse branch HEAD with artifact build HEAD.
-
-The one build authorization is consumed. No further ARM64 build is authorized.
-
-## Frame cadence runtime — CONFIRMED RESULT
 
 Runtime log:
 
@@ -110,127 +87,183 @@ Matched environment:
 - Windows 11 25H2 build 26220.9223
 - exact Eden identification `HEAD-dc95cd09ee-HEAD`
 - `x1_present_frame_log = true`
-- `x1_ab_disable_adaptive_uniform_fast_stream = false`
+- Uniform cache A/B OFF
 
-Instrumentation records:
+### Stable raw swap=2 regime
 
-- `[X1-CADENCE][QUEUE]`: guest BufferQueueProducer QueueBuffer completion, raw swap interval
-- `[X1-CADENCE][ACQUIRE]`: compositor acquisition of a new main/overlay buffer and compositor tick
-- `[X1-CADENCE][VI]`: active composition tick, WaitForComposite duration and total composition work
-
-### Stable ~30-FPS / swap=2 regime
-
-Guest QueueBuffer frames 562-910:
+QueueBuffer frames 562-910:
 
 - 349 QueueBuffer records
 - duration 11.830372 s
-- effective QueueBuffer rate 29.416 FPS
+- queue rate 29.416 FPS
 - median QueueBuffer interval 33.352 ms
-- main-buffer acquire median 33.506 ms
-- adjacent main acquires: tick delta 2 for 344 / 348
+- main acquire median 33.506 ms
+- acquire tick delta 2 for 344 / 348 adjacent acquires
 - VI tick median ~16.609 ms
-- no `WaitForComposite > 1 ms` event in this stable segment
+- no `WaitForComposite > 1 ms` event in the stable segment
 
-### Stable gameplay / swap=3 regime
+### Stable raw swap=3 gameplay regime
 
-Guest QueueBuffer frames 911-1758:
+QueueBuffer frames 911-1758:
 
 - 848 QueueBuffer records
 - duration 48.44955 s
-- effective QueueBuffer rate 17.482 FPS because many nominal opportunities are additionally missed
+- queue rate 17.482 FPS because nominal 50-ms opportunities are additionally missed
 - median QueueBuffer interval 49.985 ms
-- main-buffer acquire median 50.044 ms
-- adjacent main acquires: tick delta 3 for 726, remainder mostly 4+ tick misses
+- main acquire median 50.044 ms
+- acquire tick delta 3 for 726 adjacent acquires; remainder mostly 4+ tick misses
 - VI tick median ~16.586 ms / mean ~16.667 ms
-- `WaitForComposite` median 0 ms; only 4 VI ticks exceeded 1 ms in the stable gameplay segment
+- `WaitForComposite` median 0 ms; only 4 VI ticks exceeded 1 ms
 
 Critical transition:
 
 - QueueBuffer frame 910: `swap=2`
 - QueueBuffer frame 911: `swap=3`
-- from frame 911 onward the final gameplay run remains `swap=3` through frame 1758
+- final gameplay remains raw `swap=3` through frame 1758
 
-Therefore the user's observed 30 -> <=20 staircase is no longer merely a hypothesis.
+CONFIRMED:
 
-### CONFIRMED cadence interpretation
+> raw main guest BufferQueue swap 2 creates nominal 60/2=30 FPS opportunities; raw swap 3 creates nominal 60/3=20 FPS opportunities. Misses only lower the rate further, explaining why 22-23 FPS is normally absent and gameplay feels pinned to <=20.
 
-> Main guest BufferQueue swap interval 2 provides nominal 60/2 = 30 FPS presentation opportunities. Main guest BufferQueue swap interval 3 provides nominal 60/3 = 20 FPS opportunities. When swap=3 is active, missed opportunities only reduce the observed FPS below 20; normal 22-23 FPS values are therefore absent.
+This is not a Qualcomm Vulkan driver hard cap and is not caused by Eden `Target_60` pacing sleep.
 
-This is why the gameplay feels 'pinned' to 20 or lower.
+## Exact dc95 swap ownership — confirmed
 
-This is **not** evidence of a Qualcomm Vulkan driver hard cap or Eden `Target_60` pacing sleep.
+`QueueBufferInput` contains `s32 swap_interval` and is read directly from guest `InputParcel` via `parcel.ReadFlattened(*this)`.
 
-## Exact dc95 swap-interval ownership — CONFIRMED
+`BufferQueueProducer::QueueBuffer()` deflates it and stores:
 
-`src/core/hle/service/nvnflinger/graphic_buffer_producer.h`
+`item.swap_interval = swap_interval`
 
-- `QueueBufferInput` contains `s32 swap_interval`
-- `Deflate()` returns that exact field
+No Vulkan/Adreno conversion occurs there.
 
-`src/core/hle/service/nvnflinger/graphic_buffer_producer.cpp`
+`HardwareComposer` honors the main-layer interval by:
 
-- `QueueBufferInput::QueueBufferInput(InputParcel& parcel)` directly calls `parcel.ReadFlattened(*this)`
+1. suppressing another main acquire while `frames_since_last_acquire < expected_interval`
+2. setting `release_frame_number = m_frame_number + swap_interval` after successful acquire
 
-`src/core/hle/service/nvnflinger/buffer_queue_producer.cpp`
+The VI/compositor itself still advances at ~60 Hz and `ComposeLocked()` returns 1.
 
-- `QueueBuffer()` deflates the input into local `swap_interval`
-- then writes `item.swap_interval = swap_interval`
-- no Vulkan/Adreno-derived conversion occurs at this point
+## Current experiment — static preparation complete
 
-Therefore the raw `swap=3` seen by the cadence logger is already present in the guest QueueBuffer request.
+Branch:
 
-`src/core/hle/service/nvnflinger/hardware_composer.cpp`
-
-- VI/compositor frame counter itself advances at 60 Hz
-- main-layer acquire is suppressed while `frames_since_last_acquire < NormalizeSwapInterval(item.swap_interval)`
-- successful main acquire sets `release_frame_number = m_frame_number + swap_interval`
-- `ComposeLocked()` still advances one compositor frame and returns 1
-- source comment explicitly notes that only 0/1/2 had been observed historically and says interval 3 would need special consideration for relatively-prime multi-layer handling
-
-For the single main-layer cadence observed here, raw interval 3 is clearly honored by acquire/release bookkeeping.
-
-## What is NOT yet known
-
-- why TOTK chooses/sends `swap_interval=3` in gameplay on this runtime
-- whether interval 3 is purely a symptom of missing the 30-FPS budget
-- whether an Eden timing/backpressure interaction helps keep the producer in the 3-tick regime once entered
-- whether forcing an effective interval 2 would reveal useful 21-29 FPS throughput or merely change presentation/release timing
-
-Do not claim that forcing 2 is a production fix.
-
-## NEXT ACTION
-
-Read:
-
-`NEXT_ACTION_SWAP_INTERVAL_3_AB.md`
-
-The proposed next diagnostic is an A/B control that would leave the raw guest `item.swap_interval` untouched/logged, but for the main non-overlay layer only use an effective composer acquire/release interval of 2 when the raw interval is exactly 3.
+`exp/x1-swap-interval-3-to-2-ab`
 
 Purpose:
 
-- distinguish `swap=3 is only an upstream symptom` from `swap=3 also creates a feedback ceiling`
+Determine whether raw guest `swap=3` is only a symptom of already-slow upstream frame production, or whether Eden's interval-3 main-layer acquire/release bookkeeping also participates in a feedback ceiling.
 
-This experiment is **proposal only**. It has not been implemented and no build is authorized.
+Checkbox:
 
-A fresh explicit user approval is required before implementing or building it.
+`X1 A/B: Clamp Main Swap Interval 3 To 2`
+
+Default: OFF.
+
+OFF:
+
+- preserve cadence-attribution behavior exactly
+
+ON in the dedicated Windows ARM64 Vulkan X1 diagnostic build:
+
+- preserve raw guest QueueBuffer parcel and `item.swap_interval`
+- preserve `[X1-CADENCE][QUEUE] swap=<raw>`
+- only for main non-overlay layer, when raw interval is exactly 3:
+  - effective acquire interval = 2
+  - effective release interval = 2
+- overlays unchanged
+- raw 0/1/2 and >=4 unchanged
+- `[X1-CADENCE][ACQUIRE]` reports both `swap=<raw>` and `effective=<value>`
+
+Important implementation boundary:
+
+HardwareComposer does not own Vulkan driver identity. Runtime guard is therefore Windows ARM64 + Vulkan + explicit checkbox, inside a dedicated X1/Qualcomm lab build. This is not a production Qualcomm-detection mechanism.
+
+Prepared files:
+
+- `tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py`
+- updated `tools/adreno_lab/analyze_x1_frame_cadence.py`
+- `.github/workflows/build-dc95-x1-swap-interval-3-to-2-ab.yml`
+- `NEXT_ACTION_SWAP_INTERVAL_3_TO_2_AB.md`
+
+Workflow:
+
+`Build dc95 X1 Swap Interval 3 To 2 AB`
+
+Trigger: `workflow_dispatch` only.
+
+Clamp pass may alter only the temporary Eden checkout files:
+
+- `src/common/settings.h`
+- `src/yuzu/configuration/configure_debug.h`
+- `src/yuzu/configuration/configure_debug.cpp`
+- `src/core/hle/service/nvnflinger/hardware_composer.cpp`
+
+Workflow hashes and requires no clamp change to:
+
+- `buffer_queue_producer.cpp`
+- VI conductor
+- GPU core
+- Vulkan swapchain
+- Vulkan scheduler
+- nvhost_ctrl
+- generic buffer cache
+- Vulkan buffer cache
+
+It also rejects newly-added sleeps, wait/schedule/composite requests, speed changes, present-mode changes, and raw `item.swap_interval` assignment changes.
+
+## Runtime interpretation after a future successful build
+
+A/B OFF:
+
+- expect raw/effective 3/3 in steady gameplay
+
+A/B ON:
+
+- verify raw/effective 3/2
+
+Interpretation:
+
+1. raw QueueBuffer remains ~50 ms with effective=2
+   - clamp cannot create upstream frames
+   - swap=3 is mainly a symptom/guest pacing decision
+
+2. raw QueueBuffer shifts into 33-50 ms and 21-29 FPS begins appearing
+   - Eden interval-3 acquire/release timing participates in a feedback ceiling
+
+3. timing/render regression
+   - reject clamp as optimization regardless of FPS
 
 ## What NOT to do
 
 - no ARM64 Actions without fresh explicit permission
-- no rerun of cadence build
-- do not call Qualcomm Vulkan / Mailbox / Target_60 the source of the 20-FPS step
-- do not rewrite raw guest QueueBuffer data casually
-- no VSync/speed-limiter/scheduler/fence/barrier/render-pass changes without a dedicated experiment
+- no rerun of prior cadence build
+- do not modify raw guest QueueBuffer data
+- no VSync/speed-limiter/Mailbox/Target_60/scheduler/fence/barrier/render-pass changes in this A/B
+- no clamp for intervals other than raw main-layer 3
 - no alias trivial dedupe
 - no blind persistent Uniform binding
 - no blind previous staging allocation reuse
 - do not treat intentional ForceStop as a crash
 
+## NEXT ACTION
+
+Read:
+
+`NEXT_ACTION_SWAP_INTERVAL_3_TO_2_AB.md`
+
+Static preparation is complete. **Stop before Actions.**
+
+A fresh explicit user authorization is required for exactly one attempt of:
+
+`Build dc95 X1 Swap Interval 3 To 2 AB`
+
+If it fails, stop. No retry without another fresh explicit authorization.
+
 ## Build authorization state
 
-- current branch: `exp/x1-frame-cadence-attribution`
-- frame-cadence build attempts: 1
-- successful attempts: 1
+- current branch: `exp/x1-swap-interval-3-to-2-ab`
+- swap-clamp build attempts: 0
 - reruns: 0
 - current ARM64 build authorization: **none**
 - gameplay optimization promoted: none
