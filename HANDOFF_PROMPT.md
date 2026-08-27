@@ -1,81 +1,98 @@
-# Handoff Prompt — Eden Adreno X1 Uniform cache A/B
+# Handoff Prompt — Eden Adreno X1 frame cadence attribution
 
-Use this prompt when continuing the work in a new tab.
+Use this prompt when continuing in a new tab.
 
 ---
 
-Eden Windows ARM64 / Snapdragon X / Adreno X1-85 구동분석 작업을 이어간다.
+Eden Windows ARM64 / Snapdragon X / Adreno X1-85 performance diagnosis를 이어간다.
 
-GitHub 저장소 `npark2860-cyber/Eden-Adreno-Lab`에서 현재 실험 브랜치 `exp/x1-uniform-cache-ab`의 실제 HEAD와 Actions 상태를 먼저 확인하고, 다음 문서를 기준 상태로 읽어라:
+GitHub repository:
+
+`npark2860-cyber/Eden-Adreno-Lab`
+
+Current experiment branch:
+
+`exp/x1-frame-cadence-attribution`
+
+Do not reconstruct state from old chat. First read these GitHub documents and treat them as source of truth:
 
 1. `CURRENT_HANDOFF.md`
 2. `DEBUG_HISTORY.md`
 3. `LAB_BOOTSTRAP.md`
-4. `NEXT_ACTION_UNIFORM_CACHE_AB.md`
+4. `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`
 5. `HANDOFF_PROMPT.md`
 
-이전 대화를 추측해서 복원하지 말고 위 문서와 실제 GitHub 상태를 source of truth로 삼아라.
+Then verify actual branch HEAD and Actions state against the documents before doing anything else.
 
-고정 Eden baseline은 절대 변경하지 마라:
+Fixed Eden baseline — never change without explicit baseline-change procedure:
 
 `eden-emulator/mirror`
 `dc95cd09eea9749250fe31a3072684d341d19417`
 
-이미 확정된 사실을 유지하라:
+Hard build rule:
 
-- alias direct copy 경로와 `RequestOutsideRenderPassOperationContext -> vkCmdCopyImage`는 필요한 동작이며 단순 제거 대상이 아니다.
-- alias 반복은 동일 region이더라도 source `modification_tick`이 매번 전진했고 same-state candidate가 0이므로 trivial alias dedupe는 닫혔다.
-- exact dc95 Vulkan은 `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`다.
-- classic cached Uniform path는 `SynchronizeBuffer()`를 통해 clean range면 physical upload 없이 끝날 수 있다.
-- adaptive small-Uniform fast path는 payload reuse가 아니라 mapped staging re-stream이다.
-- Uniform stream/reuse 런타임에서 gameplay fast path는 사실상 전부 `fastSkip`이었고 `fastAlignment=0`이었다.
-- classic cached path는 대부분 clean이었다.
-- payload fingerprint 런타임에서 sampled repeated Uniform key의 97%+가 동일 fingerprint였고 same-frame repeat는 99%+ 동일 fingerprint였다.
-- 따라서 이번 실험은 custom dedupe/reuse가 아니라 기존 classic cached path를 사용하는 policy A/B다.
+- never start or rerun ARM64 Actions without fresh explicit user authorization
+- one authorization = exactly one build attempt
+- if that attempt fails, stop; no retry without another explicit authorization
 
-`exp/x1-uniform-cache-ab`의 정적 준비는 이미 완료되어 있다. 다시 구현하지 마라.
+Retain these confirmed facts:
 
-추가된 핵심 파일:
+- alias direct CopyImage/outside-RP traffic is not trivial unchanged-state duplication; simple alias dedupe is closed
+- exact dc95 Vulkan `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`
+- adaptive small-Uniform fast path is mapped staging re-stream, not payload reuse
+- gameplay fast Uniform selection was almost entirely adaptive `fastSkip`; `fastAlignment=0`
+- classic cached Uniform path is mostly clean
+- sampled repeated fast Uniform payloads were 97%+ same fingerprint; same-frame classified repeats were 99%+ same fingerprint
+- the Uniform cache A/B build succeeded once and only once
+- A/B ON completely removed adaptive fast streams but did not break the ~20 FPS gameplay ceiling; cost migrated into classic buffer copy/outside-RP/synchronization
+- paired OFF runtime shows a distinct ~30 FPS light/title regime and ~19.5–19.6 FPS gameplay regime
+- do not call this a proven hardcoded 20-FPS cap yet
+- existing Vulkan swapchain Target_60 pacing time is tiny in the ~20 FPS regime, so do not blame that pacing path without new evidence
 
-- `tools/adreno_lab/transplant_dc95_uniform_cache_ab.py`
-- `.github/workflows/build-dc95-x1-uniform-cache-ab.yml`
+Exact dc95 frame-cadence source facts already checked:
 
-구현 의미:
+- VI `Conductor` is based on 60-Hz `FrameNs`
+- `HardwareComposer::ComposeLocked()` reads layer `item.swap_interval` but ends with `m_frame_number += 1; return 1;`
+- a host composite is requested only when a new framebuffer is acquired
+- `nvdisp_disp0::WaitForComposite()` delegates to `system.GPU().WaitForComposite()`
+- `nvdisp_disp0::Composite()` delegates to `system.GPU().RequestComposite(...)`
 
-- checkbox: `X1 A/B: Disable Adaptive Uniform Fast Stream`
-- default OFF
-- Qualcomm proprietary Vulkan에서만 활성
-- OFF: 기존 payload-fingerprint 동작 보존
-- ON: adaptive `fastSkip`만 mapped-stream 선택에서 제외하고 기존 classic cached `SynchronizeBuffer()` path로 fall-through
-- `needs_alignment_stream`은 그대로 fast mapped streaming을 강제
-- 설정값은 `BufferCacheRuntime` 생성 시 Qualcomm 여부와 함께 한 번만 확정하여 per-Uniform 설정 조회를 넣지 않음
+Current diagnostic purpose:
 
-건드리지 않은 범위:
+Find where the nominal ~50-ms gameplay cadence first appears by recording, on the same host steady clock:
 
-- scheduler
-- alias copy
-- barrier / render-pass request
-- dirty-state semantics
-- staging / descriptor lifetime
-- persistent Uniform binding
-- previous staging allocation reuse / payload dedupe
-- Vertex / Index / Storage 등 non-Uniform 경로
+- `[X1-CADENCE][QUEUE]`: successful guest QueueBuffer production
+- `[X1-CADENCE][ACQUIRE]`: new main/overlay framebuffer acquisition by Nvnflinger
+- `[X1-CADENCE][VI]`: each active compositor tick and WaitForComposite/ComposeLocked duration
 
-새 workflow는 `workflow_dispatch` 전용이며, 정적 준비 이후 아직 Actions 실행은 0회다.
+Prepared files:
 
-다음 행동은 **빌드 승인을 기다리는 것**이다. 사용자의 fresh explicit authorization 없이는 ARM64 GitHub Actions를 절대 시작하거나 재실행하지 마라. 한 번의 승인 = 정확히 한 번의 build attempt다.
+- `tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py`
+- `tools/adreno_lab/analyze_x1_frame_cadence.py`
+- `.github/workflows/build-dc95-x1-frame-cadence-attribution.yml`
+- `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`
 
-현재 최신 성공 runtime 기준 빌드는 payload diagnostic이다:
+Workflow:
 
-- workflow `Build dc95 X1 Uniform Payload Fingerprint`
-- run `33040377420`
-- job `98412364840`
-- attempt 1
-- build HEAD `9f1a916c7eaa72f3921cfa49233756dbbba5c3d9`
-- artifact `Eden-dc95-X1-uniform-payload-fingerprint`
-- artifact id `9634160587`
-- SHA-256 `de68710492c8c221a8936cef97bb6d876dd44f409cd2d75074cee18bcab6106f`
+`Build dc95 X1 Frame Cadence Attribution`
 
-새 탭에서는 먼저 실제 `exp/x1-uniform-cache-ab` HEAD와 Actions 0회 상태가 문서와 맞는지 확인한 뒤, 사용자가 빌드를 명시적으로 승인한 경우에만 `Build dc95 X1 Uniform Cache AB`를 정확히 1회 실행하라.
+It is `workflow_dispatch` only. Static preparation must have zero Actions runs before authorization.
 
-빌드 또는 런타임 결과가 생기면 `DEBUG_HISTORY.md`에 누적하고 `CURRENT_HANDOFF.md`를 최신 상태로 갱신하라.
+The cadence transplant is observation-only and may modify only:
+
+- `src/core/hle/service/nvnflinger/buffer_queue_producer.cpp`
+- `src/core/hle/service/nvnflinger/hardware_composer.cpp`
+
+The workflow hashes and requires no cadence-transplant change to:
+
+- VI conductor
+- GPU core composite path
+- Vulkan swapchain
+- Vulkan scheduler
+- nvhost_ctrl syncpoint event path
+
+Do not change VSync, speed limiter, Mailbox, Target_60, swap interval, scheduling, fences, waits, barriers, render-pass behavior, alias behavior, or game mods for this diagnostic.
+
+NEXT ACTION:
+
+Read `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`, then stop before Actions unless the user gives a fresh explicit build authorization. If authorized, run exactly one attempt of `Build dc95 X1 Frame Cadence Attribution`. If successful, test one run containing both the ~30-FPS title/light segment and steady ~20-FPS gameplay with X1 present logging enabled, then analyze with `analyze_x1_frame_cadence.py`.
