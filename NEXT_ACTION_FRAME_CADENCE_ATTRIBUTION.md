@@ -32,8 +32,8 @@ The new observation-only instrumentation records three points with the same host
    - successful guest `BufferQueueProducer::QueueBuffer`
    - queue/core identity
    - guest frame number
+   - slot
    - swap interval
-   - queue size
 
 2. `[X1-CADENCE][ACQUIRE]`
    - a new Nvnflinger framebuffer acquired by `HardwareComposer`
