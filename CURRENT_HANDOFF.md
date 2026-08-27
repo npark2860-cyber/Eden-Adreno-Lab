@@ -11,7 +11,8 @@ Updated: 2026-08-27 KST
 - Completed alias-route experiment: `exp/x1-alias-copy-reasons`
 - Completed alias-redundancy experiment: `exp/x1-alias-sync-redundancy`
 - Completed Uniform path experiment: `exp/x1-uniform-stream-reuse`
-- Current completed diagnostic: `exp/x1-uniform-payload-fingerprint`
+- Completed runtime diagnostic: `exp/x1-uniform-payload-fingerprint`
+- Current static-prepared experiment: `exp/x1-uniform-cache-ab`
 
 **No ARM64 build may be started or re-run without fresh explicit user permission. One permission = one attempt.**
 
@@ -31,6 +32,68 @@ X1 Uniform Payload Fingerprint:
 - SHA-256: `de68710492c8c221a8936cef97bb6d876dd44f409cd2d75074cee18bcab6106f`
 
 The workflow was restored to `workflow_dispatch` only after the authorized push-triggered run. No second run was created.
+
+## Current Uniform cache A/B static preparation — COMPLETE
+
+Branch:
+
+`exp/x1-uniform-cache-ab`
+
+Created from exact payload-fingerprint branch HEAD:
+
+`c7fc84bc7da50576235dd6f982be264c573e41cb`
+
+Prepared files:
+
+- `tools/adreno_lab/transplant_dc95_uniform_cache_ab.py`
+- `.github/workflows/build-dc95-x1-uniform-cache-ab.yml`
+
+The new workflow is `workflow_dispatch` only.
+
+Actions on `exp/x1-uniform-cache-ab` after static preparation: **0 runs**.
+
+Base-to-preparation comparison confirmed the functional preparation adds only the new transplant and workflow; no existing lab source file was directly modified for the A/B.
+
+### A/B implementation semantics
+
+Checkbox:
+
+`X1 A/B: Disable Adaptive Uniform Fast Stream`
+
+Default: **OFF**.
+
+At Vulkan `BufferCacheRuntime` construction, the experiment bit is enabled only when both are true:
+
+- Vulkan driver is `VK_DRIVER_ID_QUALCOMM_PROPRIETARY`
+- the debug checkbox setting is enabled
+
+This avoids a settings lookup on every Uniform visit.
+
+OFF preserves the existing payload-fingerprint policy selection.
+
+ON changes only adaptive small-Uniform fast-stream selection:
+
+- `needs_alignment_stream` remains authoritative and still selects mapped streaming
+- adaptive `fastSkip` eligibility no longer selects mapped streaming
+- the Uniform falls through to the already-existing classic cached path
+- existing `SynchronizeBuffer()` decides clean/no-upload versus actual upload
+
+No custom payload cache, hash dedupe or previous staging allocation reuse was added.
+
+### Static safety boundaries retained
+
+The A/B transplant does not edit:
+
+- scheduler source
+- alias-copy source
+- barriers or render-pass request code
+- dirty-state mutation logic
+- staging allocation body
+- descriptor binding/lifetime body
+- Vertex/Index/Storage paths
+- persistent Uniform binding policy
+
+The manual workflow snapshots the pre-A/B affected files, hashes scheduler source before the A/B transplant, and checks the isolated A/B diff for forbidden additions before configure/build.
 
 ## Latest matched runtime
 
@@ -130,31 +193,22 @@ The effect is persistent across the gameplay run rather than a single spike.
 
 ## Interpretation boundary
 
-The data now supports:
+The data supports:
 
 > Eden's dominant adaptive fast Uniform path repeatedly stages the same Uniform identity, and sampled repeat events overwhelmingly carry the same payload fingerprint, especially within one frame.
 
-Do **not** jump directly to `same key/hash => reuse previous staging allocation` yet. Correctness still requires preserving descriptor/staging lifetime and in-flight GPU use. A 64-bit fingerprint is strong equality evidence but not mathematical byte-for-byte proof.
+Do **not** jump directly to `same key/hash => reuse previous staging allocation`. Correctness still requires preserving descriptor/staging lifetime and in-flight GPU use. A 64-bit fingerprint is strong equality evidence but not mathematical byte-for-byte proof.
 
-## Most conservative next A/B
+## Current A/B purpose
 
-Do not invent a custom dedupe first.
+The prepared Qualcomm/X1 A/B directly tests whether the adaptive mapped re-stream policy is a major cause of the steady ~20 FPS ceiling without inventing a new cache.
 
-The safest causal test is a Qualcomm/X1 debug A/B that:
+Expected interpretations after a future authorized build:
 
-- leaves alignment-required streaming unchanged
-- when enabled, disables only the adaptive small-Uniform skip-cache decision
-- routes those Uniforms through Eden's existing classic cached `SynchronizeBuffer()` path
-- does not change memory dirty semantics, descriptor lifetime, barriers, render-pass behavior or scheduler behavior
-
-Why this is the best next test:
-
-- current fast traffic is 100% `fastSkip`, 0 alignment in measured gameplay
-- classic cached traffic is ~94% clean, so existing Eden logic already knows how to avoid the physical upload for many ranges
-- it directly tests whether re-streaming causes the ~20 FPS ceiling
-- if FPS rises without freezing, the optimization direction is validated
-- if FPS rises but freezing/stalls appear, that directly mirrors the Ryubing/Kenji tradeoff the user observed and tells us where lifetime/stall mitigation is required
-- if FPS does not improve, the fast streaming count is visually large but not the main frame-time cause
+- FPS materially rises, stability good: strong causal support for adaptive Uniform re-streaming as a major steady-state bottleneck
+- FPS rises but stalls/freezes appear: continuous re-stream cost shifted into synchronization/stall behavior; lifetime/in-flight handling becomes the next design problem
+- FPS does not materially improve: Uniform re-stream volume is architecturally large but not the dominant frame-time cause
+- correctness breaks: do not promote; investigate Qualcomm-specific classic-cache synchronization/stale-data behavior first
 
 ## What NOT to do next
 
@@ -169,22 +223,30 @@ Why this is the best next test:
 
 ## NEXT ACTION
 
-Prepare a new branch for a **Qualcomm/X1 adaptive Uniform cache A/B** with a debug checkbox, default OFF.
+**Stop before Actions and wait for fresh explicit user build authorization.**
 
-A/B OFF must be exact existing behavior.
+When authorization is given, run exactly once:
 
-A/B ON must only prevent `fastSkip` from selecting the mapped-stream path; `needs_alignment_stream` remains authoritative and the existing classic cached path handles the Uniform.
+`Build dc95 X1 Uniform Cache AB`
 
-Static validation must prove the delta does not touch scheduler, alias copies, barriers, render-pass requests, memory dirty state or descriptor/staging lifetime code.
+The single build must contain both A/B states through the runtime checkbox so OFF and ON use identical code provenance.
 
-After preparation, stop before Actions. One future explicit user authorization permits exactly one ARM64 build attempt.
+If the build fails, do not rerun without a new explicit authorization.
+
+After a successful build, test the same TOTK 1.4.2 save/route/options with:
+
+- Run A: checkbox OFF
+- Run B: checkbox ON
+
+Compare FPS/stability plus `[X1-UNIFORM-PATH]`, `[X1-UNIFORM-PAYLOAD]`, buffer-category upload/copy/outside-RP/barrier/wait signals.
 
 ## Current build authorization state
 
-- current diagnostic branch: `exp/x1-uniform-payload-fingerprint`
-- payload-fingerprint build attempts: 1, successful
+- current static-prepared branch: `exp/x1-uniform-cache-ab`
+- new branch Actions runs: 0
+- Uniform cache A/B build attempts: 0
 - next build authorization: **not granted**
-- gameplay optimization applied: none
-- Uniform payloads skipped/reused/batched: none
+- latest successful runtime build remains payload fingerprint run `33040377420`
+- gameplay optimization applied in a built artifact: none
 - alias copies skipped: none
 - barriers/render-pass requests suppressed: none

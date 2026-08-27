@@ -1,0 +1,254 @@
+name: Build dc95 X1 Uniform Cache AB
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dc95-x1-uniform-cache-ab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: dc95 ARM64 / X1 uniform cache AB
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout Eden CI workflow used by dc95-era nightlies
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify exact dc95 checkout
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+
+      - name: Install dc95-era Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Prepare compile-validated P0.2 non-scheduler patches
+        shell: bash
+        run: |
+          set -e
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          for f in \
+            src/video_core/renderer_vulkan/vk_buffer_cache.cpp \
+            src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp \
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
+            test -s "$out"
+          done
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
+      - name: Apply P0.2 non-scheduler source hooks
+        shell: bash
+        working-directory: eden
+        run: |
+          set -e
+          for p in \
+            ../profiler-patches/vk_buffer_cache.cpp.patch \
+            ../profiler-patches/vk_compute_pipeline.cpp.patch \
+            ../profiler-patches/vk_graphics_pipeline.cpp.patch \
+            ../profiler-patches/vk_staging_buffer_pool.cpp.patch \
+            ../profiler-patches/vk_update_descriptor.cpp.patch; do
+            git apply --ignore-whitespace "$p"
+          done
+
+      - name: Recreate payload-fingerprint diagnostic chain
+        shell: bash
+        run: |
+          set -e
+          python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+          python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+          python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+          python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_other_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_texture_fill_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_copy_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_payload_fingerprint.py eden
+
+      - name: Snapshot pre Uniform cache A/B state
+        shell: bash
+        run: |
+          set -e
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py \
+            lab/tools/adreno_lab/transplant_dc95_uniform_payload_fingerprint.py \
+            lab/tools/adreno_lab/transplant_dc95_uniform_cache_ab.py
+
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          grep -q '\[X1-UNIFORM-PATH\]' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          grep -q '\[X1-UNIFORM-PAYLOAD\]' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          grep -q 'x1_uniform_payload_sampled' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'const bool use_fast_buffer = needs_alignment_stream' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'const bool x1_uniform_cached_clean = SynchronizeBuffer(buffer, device_addr, size);' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+
+          mkdir -p pre-uniform-cache-ab/common pre-uniform-cache-ab/yuzu pre-uniform-cache-ab/generic pre-uniform-cache-ab/vulkan
+          cp eden/src/common/settings.h pre-uniform-cache-ab/common/
+          cp eden/src/yuzu/configuration/configure_debug.h pre-uniform-cache-ab/yuzu/
+          cp eden/src/yuzu/configuration/configure_debug.cpp pre-uniform-cache-ab/yuzu/
+          cp eden/src/video_core/buffer_cache/buffer_cache.h pre-uniform-cache-ab/generic/
+          cp eden/src/video_core/renderer_vulkan/vk_buffer_cache.h pre-uniform-cache-ab/vulkan/
+          cp eden/src/video_core/renderer_vulkan/vk_buffer_cache.cpp pre-uniform-cache-ab/vulkan/
+          sha256sum eden/src/video_core/renderer_vulkan/vk_scheduler.cpp > pre-uniform-cache-ab/scheduler-cpp.sha256
+          sha256sum eden/src/video_core/renderer_vulkan/vk_scheduler.h > pre-uniform-cache-ab/scheduler-h.sha256
+
+      - name: Transplant Qualcomm X1 adaptive Uniform cache A/B
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_uniform_cache_ab.py eden
+
+      - name: Verify Uniform cache A/B before configure
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+
+          grep -q 'Setting<bool> x1_ab_disable_adaptive_uniform_fast_stream' eden/src/common/settings.h
+          grep -q 'linkage, false, "x1_ab_disable_adaptive_uniform_fast_stream", Category::Debugging' eden/src/common/settings.h
+          grep -q 'X1 A/B: Disable Adaptive Uniform Fast Stream' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'x1_ab_disable_adaptive_uniform_fast_stream_checkbox->setEnabled(runtime_lock)' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q 'driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&' eden/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+          grep -q 'Settings::values.x1_ab_disable_adaptive_uniform_fast_stream.GetValue()' eden/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+          grep -q 'ShouldDisableAdaptiveUniformFastStream' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+          grep -q 'const bool x1_adaptive_fast_eligible' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'needs_alignment_stream ||' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'x1_adaptive_fast_eligible && !x1_disable_adaptive_uniform_fast_stream' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'const bool x1_uniform_cached_clean = SynchronizeBuffer(buffer, device_addr, size);' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+          grep -q 'staging_pool.Request(size, MemoryUsage::Upload)' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+          grep -q 'guest_descriptor_queue.AddBuffer' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+
+          sha256sum -c pre-uniform-cache-ab/scheduler-cpp.sha256
+          sha256sum -c pre-uniform-cache-ab/scheduler-h.sha256
+
+          {
+            diff -u pre-uniform-cache-ab/common/settings.h eden/src/common/settings.h || true
+            diff -u pre-uniform-cache-ab/yuzu/configure_debug.h eden/src/yuzu/configuration/configure_debug.h || true
+            diff -u pre-uniform-cache-ab/yuzu/configure_debug.cpp eden/src/yuzu/configuration/configure_debug.cpp || true
+            diff -u pre-uniform-cache-ab/generic/buffer_cache.h eden/src/video_core/buffer_cache/buffer_cache.h || true
+            diff -u pre-uniform-cache-ab/vulkan/vk_buffer_cache.h eden/src/video_core/renderer_vulkan/vk_buffer_cache.h || true
+            diff -u pre-uniform-cache-ab/vulkan/vk_buffer_cache.cpp eden/src/video_core/renderer_vulkan/vk_buffer_cache.cpp || true
+          } > uniform-cache-ab-only.diff
+          test -s uniform-cache-ab-only.diff
+
+          if grep -E '^\+.*(RequestOutsideRenderPassOperationContext|PostCopyBarrier|PreCopyBarrier|Finish\(|Wait\(|MarkRegionAs|staging_pool\.Request|guest_descriptor_queue\.AddBuffer|CopyImage|dedupe|payload reuse|HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS[[:space:]]*=[[:space:]]*true)' uniform-cache-ab-only.diff; then
+            echo 'ERROR: forbidden behavior leaked into Uniform cache A/B diff' >&2
+            exit 1
+          fi
+
+          test "$(grep -c 'const bool x1_uniform_cached_clean = SynchronizeBuffer(buffer, device_addr, size);' eden/src/video_core/buffer_cache/buffer_cache.h)" -eq 1
+          test "$(grep -c 'runtime.ShouldDisableAdaptiveUniformFastStream()' eden/src/video_core/buffer_cache/buffer_cache.h)" -eq 1
+
+          git -C eden status --short
+
+      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure dc95 ARM64 standard build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+
+      - name: Build dc95 ARM64 X1 uniform cache AB
+        shell: msys2 {0}
+        working-directory: eden
+        run: cmake --build build
+
+      - name: Package with Eden CI Windows packager
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: dc95cd09ee-x1-uniform-cache-ab
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Add analyzers and metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force extras | Out-Null
+          Copy-Item lab/tools/adreno_lab/analyze_x1_full_flow_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_buffer_category_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_uniform_path.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_uniform_payload.py extras/ -Force
+          @'
+          Experiment: X1 exact-dc95 Qualcomm adaptive Uniform cache A/B
+          Exact Eden source: dc95cd09eea9749250fe31a3072684d341d19417
+          Branch: exp/x1-uniform-cache-ab
+
+          Checkbox: X1 A/B: Disable Adaptive Uniform Fast Stream
+          OFF: exact payload-fingerprint behavior.
+          ON on Qualcomm proprietary Vulkan only: alignment-required Uniforms still stream;
+          adaptive fastSkip-eligible Uniforms fall through to the existing SynchronizeBuffer path.
+          No custom payload cache/dedupe or lifetime/scheduler/barrier/alias change is included.
+          '@ | Set-Content -Encoding UTF8 extras/EXPERIMENT.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-dc95-X1-uniform-cache-ab
+          path: |
+            eden/artifacts/*
+            extras/*
+          if-no-files-found: error
+          retention-days: 14

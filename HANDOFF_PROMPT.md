@@ -6,12 +6,13 @@ Use this prompt when continuing the work in a new tab.
 
 Eden Windows ARM64 / Snapdragon X / Adreno X1-85 구동분석 작업을 이어간다.
 
-GitHub 저장소 `npark2860-cyber/Eden-Adreno-Lab`에서 현재 실험 브랜치 `exp/x1-uniform-payload-fingerprint`의 실제 HEAD를 먼저 확인하고, 다음 문서를 기준 상태로 읽어라:
+GitHub 저장소 `npark2860-cyber/Eden-Adreno-Lab`에서 현재 실험 브랜치 `exp/x1-uniform-cache-ab`의 실제 HEAD와 Actions 상태를 먼저 확인하고, 다음 문서를 기준 상태로 읽어라:
 
 1. `CURRENT_HANDOFF.md`
 2. `DEBUG_HISTORY.md`
 3. `LAB_BOOTSTRAP.md`
 4. `NEXT_ACTION_UNIFORM_CACHE_AB.md`
+5. `HANDOFF_PROMPT.md`
 
 이전 대화를 추측해서 복원하지 말고 위 문서와 실제 GitHub 상태를 source of truth로 삼아라.
 
@@ -30,21 +31,41 @@ GitHub 저장소 `npark2860-cyber/Eden-Adreno-Lab`에서 현재 실험 브랜치
 - Uniform stream/reuse 런타임에서 gameplay fast path는 사실상 전부 `fastSkip`이었고 `fastAlignment=0`이었다.
 - classic cached path는 대부분 clean이었다.
 - payload fingerprint 런타임에서 sampled repeated Uniform key의 97%+가 동일 fingerprint였고 same-frame repeat는 99%+ 동일 fingerprint였다.
-- 따라서 다음 실험은 custom dedupe/reuse가 아니라 기존 classic cached path를 사용하는 policy A/B여야 한다.
+- 따라서 이번 실험은 custom dedupe/reuse가 아니라 기존 classic cached path를 사용하는 policy A/B다.
 
-`NEXT_ACTION_UNIFORM_CACHE_AB.md`의 지시대로 새 브랜치 `exp/x1-uniform-cache-ab`를 준비하고, Qualcomm/X1 전용 debug checkbox를 default OFF로 추가하라.
+`exp/x1-uniform-cache-ab`의 정적 준비는 이미 완료되어 있다. 다시 구현하지 마라.
 
-A/B OFF는 exact existing behavior를 보존해야 한다.
+추가된 핵심 파일:
 
-A/B ON은 오직 adaptive `fastSkip`만 fast mapped-stream 선택에서 제외하고 classic cached `SynchronizeBuffer()` path로 떨어뜨려야 한다. `needs_alignment_stream`은 그대로 fast path를 강제해야 한다.
+- `tools/adreno_lab/transplant_dc95_uniform_cache_ab.py`
+- `.github/workflows/build-dc95-x1-uniform-cache-ab.yml`
 
-scheduler, alias copy, barrier, render-pass request, dirty-state semantics, staging/descriptor lifetime은 건드리지 마라. persistent Uniform binding을 켜지 말고 previous staging allocation 재사용도 구현하지 마라.
+구현 의미:
 
-정적 검증과 workflow 준비까지만 진행해라.
+- checkbox: `X1 A/B: Disable Adaptive Uniform Fast Stream`
+- default OFF
+- Qualcomm proprietary Vulkan에서만 활성
+- OFF: 기존 payload-fingerprint 동작 보존
+- ON: adaptive `fastSkip`만 mapped-stream 선택에서 제외하고 기존 classic cached `SynchronizeBuffer()` path로 fall-through
+- `needs_alignment_stream`은 그대로 fast mapped streaming을 강제
+- 설정값은 `BufferCacheRuntime` 생성 시 Qualcomm 여부와 함께 한 번만 확정하여 per-Uniform 설정 조회를 넣지 않음
 
-ARM64 GitHub Actions는 사용자의 fresh explicit authorization 없이는 절대 시작하거나 재실행하지 마라. 한 번의 승인 = 정확히 한 번의 build attempt다.
+건드리지 않은 범위:
 
-현재 최신 성공 payload diagnostic build는:
+- scheduler
+- alias copy
+- barrier / render-pass request
+- dirty-state semantics
+- staging / descriptor lifetime
+- persistent Uniform binding
+- previous staging allocation reuse / payload dedupe
+- Vertex / Index / Storage 등 non-Uniform 경로
+
+새 workflow는 `workflow_dispatch` 전용이며, 정적 준비 이후 아직 Actions 실행은 0회다.
+
+다음 행동은 **빌드 승인을 기다리는 것**이다. 사용자의 fresh explicit authorization 없이는 ARM64 GitHub Actions를 절대 시작하거나 재실행하지 마라. 한 번의 승인 = 정확히 한 번의 build attempt다.
+
+현재 최신 성공 runtime 기준 빌드는 payload diagnostic이다:
 
 - workflow `Build dc95 X1 Uniform Payload Fingerprint`
 - run `33040377420`
@@ -55,4 +76,6 @@ ARM64 GitHub Actions는 사용자의 fresh explicit authorization 없이는 절�
 - artifact id `9634160587`
 - SHA-256 `de68710492c8c221a8936cef97bb6d876dd44f409cd2d75074cee18bcab6106f`
 
-작업 중 새로 확정되는 사실과 실험 결과는 `DEBUG_HISTORY.md`에 누적하고, 다음 탭이 바로 이어갈 수 있도록 `CURRENT_HANDOFF.md`를 항상 최신으로 유지해라.
+새 탭에서는 먼저 실제 `exp/x1-uniform-cache-ab` HEAD와 Actions 0회 상태가 문서와 맞는지 확인한 뒤, 사용자가 빌드를 명시적으로 승인한 경우에만 `Build dc95 X1 Uniform Cache AB`를 정확히 1회 실행하라.
+
+빌드 또는 런타임 결과가 생기면 `DEBUG_HISTORY.md`에 누적하고 `CURRENT_HANDOFF.md`를 최신 상태로 갱신하라.
