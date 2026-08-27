@@ -1,4 +1,4 @@
-# CURRENT HANDOFF — Eden Adreno X1 Diagnostic Harness
+# CURRENT HANDOFF — Eden Adreno X1 Frame-Build Attribution
 
 Updated: 2026-08-27 KST
 
@@ -7,9 +7,8 @@ Updated: 2026-08-27 KST
 - repository: `npark2860-cyber/Eden-Adreno-Lab`
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
-- current experiment branch: `exp/x1-diagnostic-harness`
-- predecessor branch: `exp/x1-swap-interval-3-to-2-ab`
-- predecessor cleanup HEAD: `9822e0017ca07da8c8aa0545339230efab6d4967`
+- current experiment branch: `exp/x1-frame-build-attribution`
+- predecessor: `exp/x1-diagnostic-harness@7fb2f6866cb406f0c502765a57f60789291fa3e4`
 
 Never change the exact Eden baseline without the explicit baseline-change procedure.
 
@@ -35,9 +34,9 @@ Do not implement simple alias-copy dedupe or suppress required outside-RP `vkCmd
 - classic cached Uniform path is mostly clean
 - payload-fingerprint runtime: 97.65% of tracked repeated samples same fingerprint
 - classified same-frame repeats: 99.17% same fingerprint
-- wholesale classic-cache fallback A/B did not break the gameplay ceiling and moved cost into explicit copy/outside-RP/synchronization work
+- wholesale classic-cache fallback A/B did not break the gameplay ceiling; it moved cost into explicit copy/outside-RP/synchronization work
 
-Do not blindly reuse old staging allocations or enable persistent Uniform bindings.
+Do not blindly reuse prior staging allocations or enable persistent Uniform bindings.
 
 ## Uniform cache A/B — completed
 
@@ -48,7 +47,6 @@ Authorized build — SUCCESS:
 - job `98428654028`
 - attempt 1
 - build HEAD `8e8351953d966a1c7677940b7a926aae902969d1`
-- artifact `Eden-dc95-X1-uniform-cache-ab`
 - artifact id `9636118096`
 - SHA-256 `b3ec51f770f5ea664a0d277bbc2ede3952f6e6cfea9fef0f14f52f98be84dd6e`
 
@@ -70,11 +68,10 @@ Authorized build — SUCCESS:
 - job `98478699166`
 - attempt 1
 - build HEAD `d49d5a20b17a4e6861aad036474600697ac14fc8`
-- artifact `Eden-dc95-X1-frame-cadence-attribution`
 - artifact id `9642483710`
 - SHA-256 `b9140318047ac09462751ad5c6dc1d598122cc82c2ea78bfe03a5c33fc91f870`
 
-Matched TOTK 1.4.2 runtime confirmed:
+Matched TOTK 1.4.2 runtime:
 
 - stable raw `swap=2`: QueueBuffer median ~33.352 ms, nominal 30-FPS cadence
 - stable raw `swap=3`: QueueBuffer median ~49.985 ms, nominal 20-FPS cadence
@@ -83,11 +80,11 @@ Matched TOTK 1.4.2 runtime confirmed:
 - `WaitForComposite` is normally near 0 ms
 - transition observed directly at QueueBuffer raw `swap=2 -> 3`
 
-Confirmed meaning:
+Meaning:
 
-> The discrete 30 -> <=20 shape is encoded in the guest/main BufferQueue cadence: raw 2 gives nominal 60/2=30 opportunities and raw 3 gives nominal 60/3=20 opportunities.
+> The discrete 30 -> <=20 shape in that 1.4.2 run is encoded in guest/main BufferQueue cadence. Raw 2 gives nominal 60/2=30 opportunities; raw 3 gives nominal 60/3=20 opportunities.
 
-Raw `swap_interval` originates in guest `QueueBufferInput`, is stored unchanged by `BufferQueueProducer`, and is not created by Qualcomm Vulkan, Mailbox, or Target_60.
+Raw `swap_interval` originates in guest `QueueBufferInput`; it is not created by Qualcomm Vulkan, Mailbox, or Target_60.
 
 ## Swap interval 3 -> effective 2 A/B — completed
 
@@ -98,144 +95,174 @@ Authorized build — SUCCESS:
 - job `98498505964`
 - attempt 1
 - build HEAD `c196cd1c61e6385009c136b3fb810d5ed9807615`
-- artifact `Eden-dc95-X1-swap-interval-3-to-2-ab`
 - artifact id `9644858627`
-- size 31,305,925 bytes
 - SHA-256 `e3b4b71b59812f9c39a9bb8f637cf2b227aa1b9eef623615497f62a65241a7cb`
-- exactly one attempt, no rerun
+- no rerun
 
-Runtime log:
-
-`eden_log.txt` uploaded 2026-08-27 12:06 KST.
-
-ON was confirmed:
-
-- `x1_ab_clamp_main_swap_interval_3_to_2 = true`
-- raw main `swap=3` records were acquired as `effective=2`
-- the A/B therefore executed correctly
+ON was confirmed: raw main `swap=3` was acquired as `effective=2`.
 
 Result:
 
-- raw QueueBuffer production in the long gameplay `swap=3` regime remained around the ~50-ms / ~19-FPS class
-- main acquire rate remained around the same class
-- effective interval 2 created some 2-tick acquire opportunities, but the producer did not supply enough new buffers to break the gameplay ceiling
+- raw producer cadence remained ~50-ms / ~19-FPS class
+- effective-2 opened some 2-tick acquire opportunities but did not create upstream frames
 
 Conclusion — CLOSED:
 
-> HardwareComposer interval-3 acquire/release gating is not the primary cause of the <=20-FPS gameplay ceiling. `swap=3` is a cadence signal/symptom; forcing effective 2 cannot create upstream frames that are not being queued.
+> HardwareComposer interval-3 acquire/release gating is not the primary cause of the <=20-FPS gameplay ceiling.
 
-Do not repeat a simple producer/composer `3 -> 2` number clamp as the next optimization.
+Do not repeat a simple producer/compositor `3 -> 2` clamp as the next optimization.
 
-## Exact dc95 BufferQueue backpressure path — source analysis
+## Integrated X1 Diagnostic Harness — built successfully
 
-`BufferQueueCore` on HOS has:
-
-- `use_async_buffer = false`
-- `max_acquired_buffer_count = 0`
-- `default_max_buffer_count = 2`
-
-`BufferQueueProducer::DequeueBuffer()` calls `WaitForFreeSlotThenRelock()`.
-
-If no free slot exists, or too many buffers are outstanding, that helper can block in `WaitForDequeueCondition()` until the consumer acquires/releases and calls `SignalDequeueCondition()`.
-
-Therefore the unresolved ~50-ms producer interval should be split into:
-
-1. previous QueueBuffer -> next DequeueBuffer entry
-2. DequeueBuffer entry -> free-slot selection / return
-3. DequeueBuffer return -> next QueueBuffer
-
-Interpretation:
-
-- long #1 => guest/game pacing before requesting the next buffer
-- long #2 => BufferQueue free-slot/backpressure
-- long #3 => guest rendering/GPU production after dequeue
-
-## Current experiment — runtime-selectable X1 Diagnostic Harness
-
-Branch:
+Branch predecessor:
 
 `exp/x1-diagnostic-harness`
 
-Purpose:
+Authorized build — SUCCESS:
 
-Stop paying one ARM64 build per attribution question. Recreate the complete proven diagnostic chain in one binary and select logging/A-B behavior at runtime.
+- workflow `Build dc95 X1 Diagnostic Harness`
+- run `33098438607`
+- job `98609399031`
+- attempt 1
+- build HEAD `4d7f8dd972dcf6e0593961aea6992ae385d08608`
+- artifact `Eden-dc95-X1-diagnostic-harness`
+- artifact id `9658387549`
+- size 31,309,147 bytes
+- SHA-256 `d726c233ed226571252d0e12e6c284fd6038fc511bf07a83286ac13eab567dd1`
+- no rerun
+- one-shot trigger removed; predecessor cleanup HEAD `7fb2f6866cb406f0c502765a57f60789291fa3e4`
 
-Existing controls remain available, including:
-
-- X1 upload/barrier/full-flow logs
-- X1 pipeline/shader logs
-- X1 present/frame logs
-- X1 scheduler/sync logs
-- X1 descriptor-ring log
-- Draw/Dispatch exact-signature A/B controls
-- `X1 A/B: Disable Adaptive Uniform Fast Stream`
-- `X1 A/B: Clamp Main Swap Interval 3 To 2`
-
-New independent controls:
+Runtime-selectable controls include the earlier X1 flow logs and A/Bs plus:
 
 - `X1 Log: Frame Cadence`
 - `X1 Log: Dequeue Attribution`
 
-Both new controls default OFF.
+## Dequeue / BufferQueue attribution — completed
 
-### Frame Cadence
+Runtime basis:
 
-Controls:
+- exact Eden dc95
+- TOTK 1.2.1
+- Adreno X1-85
+- Qualcomm 512.863.0 / Vulkan 1.3.295
+- Windows 11 25H2 build 26220.9223
 
-- `[X1-CADENCE][QUEUE]`
-- `[X1-CADENCE][ACQUIRE]`
-- `[X1-CADENCE][VI]`
+### Fast state
 
-This is now separate from the older `x1_present_frame_log`.
+Representative stable region around frame 1200-1680:
 
-### Dequeue Attribution
+- Queue -> Queue median ~16.66 ms
+- Queue -> next Dequeue entry ~0.13 ms
+- Dequeue total ~14.40 ms
+- free-slot wait ~14.29 ms
+- Dequeue END -> next Queue ~2.06 ms
 
-Observation-only.
+Interpretation: when the producer is fast, it really does wait for the 2-buffer queue.
 
-Records:
+### Slow gameplay state
 
-- `[X1-DEQUEUE][BEGIN]`
-- `[X1-DEQUEUE][SLOT]`
-- `[X1-DEQUEUE][END]`
+Representative stable region around frame 2760-3600:
 
-`SLOT` reports:
+- Queue -> Queue median ~46.90 ms
+- Queue -> next Dequeue entry ~0.16 ms
+- Dequeue total ~0.053 ms
+- free-slot wait ~0.001 ms
+- Dequeue END -> next Queue ~46.63 ms
 
-- time before the free-slot helper
-- time spent inside `WaitForFreeSlotThenRelock()`
+Interpretation — CLOSED:
 
-`END` reports total DequeueBuffer service time.
+> The ~45-50 ms low-FPS interval is not caused by waiting for a free BufferQueue slot. In the slow state the buffer is available essentially immediately; nearly all missing time appears after DequeueBuffer returns and before the next QueueBuffer submission.
 
-When Dequeue Attribution is ON, QueueBuffer records are also retained automatically even if Frame Cadence is OFF, because the analyzer needs Queue/Dequeue pairing.
+### Heavy diagnostic log overhead check
 
-No new wait, sleep, fence, buffer-count, swap-interval, scheduler, VI, present, barrier, render-pass, Uniform, alias, or GPU policy is added by the harness pass.
+Same slow region with broad X1 flow logs ON vs OFF remained essentially unchanged:
+
+- heavy ON, frame 2760-3120: Queue->Queue ~44.895 ms; Dequeue END->Queue ~44.616 ms
+- heavy OFF, same frame range: Queue->Queue ~45.368 ms; Dequeue END->Queue ~45.036 ms
+
+Therefore broad X1 logging is not the source of the ~20-FPS behavior.
+
+### Important swap interpretation update
+
+In these TOTK 1.2.1 slow-state runs, QueueBuffer remained raw `swap=1` while gameplay was still around ~20 FPS.
+
+Therefore:
+
+> `swap=3` explains/quantizes the 30->20 cadence shape seen in the earlier TOTK 1.4.2 run, but it is not the underlying renderer-performance cause. A slow ~45-50 ms frame-production path exists independently of raw swap=3.
+
+## Current experiment — Frame-Build Attribution
+
+Branch:
+
+`exp/x1-frame-build-attribution`
+
+Goal:
+
+Split the confirmed slow-state `Dequeue END -> next Queue` ~45-50 ms inside the Vulkan rasterizer/frame-build path.
+
+New runtime control:
+
+`X1 Log: Frame Build Attribution`
+
+Default OFF.
+
+New aggregate record:
+
+`[X1-FRAMEBUILD]`
+
+It reports 120-frame steady-clock wall-time totals for:
+
+### PrepareDraw
+
+- total
+- `FlushWork`
+- `gpu_memory->FlushCaching`
+- pipeline lookup / cache lock / SetEngine
+- `GraphicsPipeline::Configure`
+- post-config dynamic/query/transform-feedback/draw-command work
+
+### GraphicsPipeline::ConfigureImpl
+
+- descriptor synchronization
+- stage descriptor/image/sampler scan
+- `FillImageViews`
+- texture/image-buffer binding
+- graphics-buffer update / geometry binding
+- descriptor acquire + stage binding + PostCopyBarrier + render-target/feedback preparation
+- `ConfigureDraw`
+
+Existing Draw/texture reason-level scopes remain intact; this new pass wraps them with wall-time measurement.
+
+### Other paths
+
+- DispatchCompute total + flush / memory / configure / issue tail
+- DrawTexture
+- Clear
+- FlushCommands
+- TickFrame
 
 Prepared files:
 
-- `tools/adreno_lab/transplant_dc95_diagnostic_harness.py`
-- `tools/adreno_lab/analyze_x1_dequeue_attribution.py`
-- `.github/workflows/build-dc95-x1-diagnostic-harness.yml`
-- `NEXT_ACTION_X1_DIAGNOSTIC_HARNESS.md`
+- `src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h`
+- `tools/adreno_lab/transplant_dc95_frame_build_attribution.py`
+- `tools/adreno_lab/analyze_x1_frame_build_attribution.py`
+- `.github/workflows/build-dc95-x1-frame-build-attribution.yml`
+- `NEXT_ACTION_FRAME_BUILD_ATTRIBUTION.md`
 
 Workflow:
 
-`Build dc95 X1 Diagnostic Harness`
+`Build dc95 X1 Frame Build Attribution`
 
 Trigger:
 
 `workflow_dispatch` only.
 
-The workflow recreates the full existing diagnostic chain through the swap-clamp A/B, snapshots that state, then applies only the harness pass.
+The workflow reconstructs the complete existing diagnostic chain, applies the integrated Harness, then applies only the new frame-build wall-time pass.
 
-Harness-only allowed temporary Eden checkout changes:
+The frame-build pass is not allowed to alter and the workflow hashes:
 
-- `src/common/settings.h`
-- `src/yuzu/configuration/configure_debug.h`
-- `src/yuzu/configuration/configure_debug.cpp`
-- `src/core/hle/service/nvnflinger/buffer_queue_producer.cpp`
-- `src/core/hle/service/nvnflinger/hardware_composer.cpp`
-
-The workflow hashes and requires no harness change to:
-
+- BufferQueue producer
+- HardwareComposer
 - VI conductor
 - GPU core
 - Vulkan swapchain
@@ -244,62 +271,61 @@ The workflow hashes and requires no harness change to:
 - generic buffer cache
 - Vulkan buffer cache
 
-The harness transplant also requires the complete existing `WaitForFreeSlotThenRelock()` helper text to remain byte-for-byte unchanged.
+## Recommended first runtime after a future successful build
 
-## Recommended first runtime matrix after a future successful build
+Match the latest TOTK 1.2.1 route first.
 
-Use the same TOTK 1.4.2 save / route / settings.
+ON:
 
-Run A — pure attribution:
+- Frame Build Attribution
+- Frame Cadence
+- Dequeue Attribution
 
-- `X1 Log: Frame Cadence` ON
-- `X1 Log: Dequeue Attribution` ON
-- swap clamp OFF
-- Uniform cache A/B OFF
-- unrelated heavy logs OFF unless needed
+OFF:
 
-Run B — same attribution with clamp:
-
-- cadence ON
-- dequeue ON
-- swap clamp ON
-- Uniform cache A/B OFF
+- swap clamp A/B
+- Uniform cache A/B
+- Draw/Dispatch skip A/B
+- Scheduler/Present/Pipeline/Upload/QCOM heavy logs
+- Descriptor Ring unless separately needed
 
 Primary question:
 
-> In the raw `swap=3` gameplay regime, where does the ~50 ms first appear: before Dequeue entry, inside free-slot selection/wait, or after Dequeue returns?
+> Which measured renderer sub-stage owns the ~45-50 ms between Dequeue return and the next QueueBuffer?
+
+If the measured Vulkan scopes explain only a small fraction of the interval, move attribution one level upward into guest GPU command/channel execution rather than returning to BufferQueue/present pacing.
 
 ## What NOT to do
 
 - no ARM64 Actions without fresh explicit permission
 - no automatic rerun
-- do not modify raw guest QueueBuffer data
+- no raw guest QueueBuffer modification
 - no VSync / Mailbox / Target_60 / speed-limit changes for this attribution
-- no scheduler/fence/barrier/render-pass changes
-- no buffer-count modification before measuring the baseline
-- no alias trivial dedupe
+- no scheduler/fence/barrier/render-pass policy changes
+- no buffer-count modification
+- no simple alias dedupe
 - no blind persistent Uniform binding
-- no blind previous staging allocation reuse
+- no blind previous-staging reuse
 - do not treat intentional ForceStop as a crash
 
 ## NEXT ACTION
 
 Read:
 
-`NEXT_ACTION_X1_DIAGNOSTIC_HARNESS.md`
+`NEXT_ACTION_FRAME_BUILD_ATTRIBUTION.md`
 
-Static preparation is complete. **Stop before Actions.**
+Static preparation is in progress / pre-Actions validation only. **Stop before ARM64 Actions.**
 
 A fresh explicit user authorization is required for exactly one attempt of:
 
-`Build dc95 X1 Diagnostic Harness`
+`Build dc95 X1 Frame Build Attribution`
 
 If it fails, stop. No retry without another fresh explicit authorization.
 
 ## Build authorization state
 
-- current branch: `exp/x1-diagnostic-harness`
-- diagnostic-harness ARM64 build attempts: 0
-- reruns: 0
+- current branch: `exp/x1-frame-build-attribution`
+- frame-build ARM64 build attempts: 0
+- frame-build reruns: 0
 - current ARM64 build authorization: **none**
 - gameplay optimization promoted: none
