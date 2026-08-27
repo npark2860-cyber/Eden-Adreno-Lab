@@ -11,50 +11,53 @@ Updated: 2026-08-27 KST
 - Completed alias-route experiment: `exp/x1-alias-copy-reasons`
 - Completed alias-redundancy experiment: `exp/x1-alias-sync-redundancy`
 - Completed Uniform path experiment: `exp/x1-uniform-stream-reuse`
-- Completed runtime diagnostic: `exp/x1-uniform-payload-fingerprint`
-- Current static-prepared experiment: `exp/x1-uniform-cache-ab`
+- Completed payload diagnostic: `exp/x1-uniform-payload-fingerprint`
+- Current A/B experiment: `exp/x1-uniform-cache-ab`
 
 **No ARM64 build may be started or re-run without fresh explicit user permission. One permission = one attempt.**
 
-## Latest successful diagnostic build
-
-X1 Uniform Payload Fingerprint:
-
-- workflow: `Build dc95 X1 Uniform Payload Fingerprint`
-- run: `33040377420`
-- job: `98412364840`
-- attempt: 1
-- build HEAD: `9f1a916c7eaa72f3921cfa49233756dbbba5c3d9`
-- result: **success**
-- artifact: `Eden-dc95-X1-uniform-payload-fingerprint`
-- artifact id: `9634160587`
-- size: 31,299,993 bytes
-- SHA-256: `de68710492c8c221a8936cef97bb6d876dd44f409cd2d75074cee18bcab6106f`
-
-The workflow was restored to `workflow_dispatch` only after the authorized push-triggered run. No second run was created.
-
-## Current Uniform cache A/B static preparation — COMPLETE
+## Current branch / build state
 
 Branch:
 
 `exp/x1-uniform-cache-ab`
 
-Created from exact payload-fingerprint branch HEAD:
+Functional A/B preparation was created from payload-fingerprint HEAD:
 
 `c7fc84bc7da50576235dd6f982be264c573e41cb`
 
-Prepared files:
+The branch was initially prepared at:
 
-- `tools/adreno_lab/transplant_dc95_uniform_cache_ab.py`
-- `.github/workflows/build-dc95-x1-uniform-cache-ab.yml`
+`d2addb5247b3f31139074a8bca10cd9f24d8305e`
 
-The new workflow is `workflow_dispatch` only.
+Because the connected GitHub tool did not expose direct `workflow_dispatch`, one authorized build was started through a temporary one-shot push trigger restricted to the experiment workflow. The trigger was then removed and the workflow restored to `workflow_dispatch` only.
 
-Actions on `exp/x1-uniform-cache-ab` after static preparation: **0 runs**.
+Current branch HEAD before this handoff update was:
 
-Base-to-preparation comparison confirmed the functional preparation adds only the new transplant and workflow; no existing lab source file was directly modified for the A/B.
+`6df9c5ad530fa2a2a57e9685d029aeb0ff5508fc`
 
-### A/B implementation semantics
+### Authorized Uniform cache A/B build — SUCCESS
+
+- workflow: `Build dc95 X1 Uniform Cache AB`
+- run: `33045572814`
+- job: `98428654028`
+- attempt: 1
+- build HEAD: `8e8351953d966a1c7677940b7a926aae902969d1`
+- result: **success**
+- static A/B verification: success
+- configure: success
+- ARM64 compile: success
+- package: success
+- artifact upload: success
+- artifact: `Eden-dc95-X1-uniform-cache-ab`
+- artifact id: `9636118096`
+- size: 31,302,610 bytes
+- SHA-256: `b3ec51f770f5ea664a0d277bbc2ede3952f6e6cfea9fef0f14f52f98be84dd6e`
+- artifact expiry: 2026-09-10
+
+Build attempts for this A/B: **1 total**. Authorization is consumed. There was no rerun.
+
+## A/B implementation semantics
 
 Checkbox:
 
@@ -62,14 +65,12 @@ Checkbox:
 
 Default: **OFF**.
 
-At Vulkan `BufferCacheRuntime` construction, the experiment bit is enabled only when both are true:
+At Vulkan `BufferCacheRuntime` construction, the A/B bit becomes active only when both are true:
 
 - Vulkan driver is `VK_DRIVER_ID_QUALCOMM_PROPRIETARY`
-- the debug checkbox setting is enabled
+- the checkbox setting is enabled
 
-This avoids a settings lookup on every Uniform visit.
-
-OFF preserves the existing payload-fingerprint policy selection.
+OFF preserves the existing payload-fingerprint fast-stream policy.
 
 ON changes only adaptive small-Uniform fast-stream selection:
 
@@ -78,35 +79,119 @@ ON changes only adaptive small-Uniform fast-stream selection:
 - the Uniform falls through to the already-existing classic cached path
 - existing `SynchronizeBuffer()` decides clean/no-upload versus actual upload
 
-No custom payload cache, hash dedupe or previous staging allocation reuse was added.
+No custom payload cache, hash dedupe, previous staging allocation reuse, scheduler change, barrier suppression, alias-copy suppression, dirty-state mutation change, descriptor lifetime change, or persistent Uniform binding change is part of this A/B.
 
-### Static safety boundaries retained
+## Latest ON runtime — PARTIAL A/B RESULT, CONFIRMED
 
-The A/B transplant does not edit:
+Log:
 
-- scheduler source
-- alias-copy source
-- barriers or render-pass request code
-- dirty-state mutation logic
-- staging allocation body
-- descriptor binding/lifetime body
-- Vertex/Index/Storage paths
-- persistent Uniform binding policy
+`eden_log(20260827-083649).txt`
 
-The manual workflow snapshots the pre-A/B affected files, hashes scheduler source before the A/B transplant, and checks the isolated A/B diff for forbidden additions before configure/build.
-
-## Latest matched runtime
-
-Log: `eden_log(20260827-052251).txt`
+Runtime:
 
 - TOTK 1.4.2
+- exact Eden identification `HEAD-dc95cd09ee-HEAD`
 - Qualcomm Adreno X1-85
 - Qualcomm driver 512.863.0
 - Vulkan 1.3.295
 - Windows 11 25H2 build 26220.9223
-- Eden source identification: `HEAD-dc95cd09ee-HEAD`
-- reached >3000 frames
-- end `ForceStop` is the user's intentional stop after enough logging; do not classify it as a crash
+- `x1_ab_disable_adaptive_uniform_fast_stream = true`
+- run reached frame ~1503
+- end `ForceStop` is the user's intentional stop and is not a crash
+
+### A/B routing behavior — STRONG CONFIRMED
+
+The ON control worked exactly as intended.
+
+Representative reports show:
+
+- `fast = 0`
+- `fastAlignment = 0`
+- `fastSkip = 0`
+- `cached = visits`
+
+Therefore adaptive graphics Uniform traffic was fully redirected to the existing classic cached path in this run.
+
+Across report windows ending at frames 960, 1080, 1200, 1320 and 1440 (600 reported frames total):
+
+- visits: **9,449,653**
+- fast: **0**
+- cached: **9,449,653**
+- cachedClean: **8,913,714 = 94.33%**
+- cachedUpload: **535,939 = 5.67%**
+
+This independently confirms that most redirected Uniform visits are clean according to Eden's existing dirty tracking.
+
+Payload-fingerprint sample counters are zero in the ON run because those samples are taken from the mapped fast-stream path, which is no longer entered. This is expected and is not an instrumentation failure.
+
+### Performance direction — NO CEILING BREAK IN ON RUN
+
+Using report timestamps only as a coarse runtime-rate indicator:
+
+- frame 960 report: ~78.968 s
+- frame 1440 report: ~105.501 s
+- 480 frames elapsed in ~26.53 s
+- coarse rate: ~18.1 frames/s
+
+This ON run therefore did **not** show a material break above the existing ~20 FPS gameplay ceiling.
+
+Do not yet assign an exact regression percentage versus OFF: a paired same-build OFF run on the same save/route/options is still required.
+
+### Cost migration — STRONG CONFIRMED
+
+The fast-stream work did not simply disappear. Redirecting into the classic cache moved a substantial part of the cost into buffer upload/copy/outside-render-pass and scheduler synchronization work.
+
+Current ON frame-1440 / 120-frame report:
+
+Uniform draw category:
+
+- scopes: 3,156,315
+- uploadReq: 122,803
+- upload: 484.672 MiB
+- copy: 122,803 / 484.672 MiB
+- outside: 87,863
+
+Overall upload/scheduler report:
+
+- stagingUpload: 137,042 / 678.987 MiB
+- bufferCopy: 136,314 / 623.469 MiB
+- barriers: 114,016
+- scheduler wait: 1,547 calls / 6504.470 ms
+- finish: 378 / 794.399 ms
+- submit: 2,249 = 18.74/frame
+- RP: 117,243
+- images/postRPbarrier: 439,934
+
+For qualitative context only, the earlier payload-fingerprint OFF runtime at frame 1440 had:
+
+- Uniform uploadReq: 1,899,945
+- Uniform upload: 760.912 MiB
+- Uniform copy: 2,283 / 14.883 MiB
+- Uniform outside: 296
+- scheduler wait: 1,230 / 2669.884 ms
+
+These are not a perfectly paired same-build comparison, so do not use their ratios as final regression numbers. They do establish the architectural direction: disabling adaptive mapped streaming drastically reduces tiny Uniform staging requests but causes classic dirty Uniforms to become explicit copy/outside-RP work and increases synchronization pressure.
+
+## Current interpretation
+
+### Confirmed
+
+1. Adaptive `fastSkip` can be completely disabled on Qualcomm/X1 without immediately preventing TOTK gameplay from reaching the measured test segment.
+2. When redirected, about 94% of measured Uniform visits are classic-cache clean and avoid a real Uniform content upload.
+3. Simply redirecting all adaptive fast Uniforms to the classic cache is **not a performance optimization** in this test.
+4. The former fast-stream cost is exchanged for classic buffer-cache copy/outside-RP/synchronization pressure.
+5. The hypothesis that adaptive Uniform re-stream volume by itself is the full cause of the steady ~20 FPS ceiling is not supported by this ON run.
+
+### Still open
+
+The Uniform findings are still important. Previous payload telemetry established that repeated fast Uniform keys overwhelmingly carry the same payload fingerprint. The next optimization design should therefore avoid both extremes:
+
+- do not re-stream identical small Uniform payloads on every visit
+- do not force those visits into the classic GPU-buffer copy/synchronization path
+
+A future safe direction is a Qualcomm/X1-narrow fast-path reuse/cache design that preserves mapped-stream lifetime/in-flight safety while reducing redundant byte copies/staging work. Do **not** blindly reuse a previous staging allocation across frames or command-buffer lifetimes.
+
+Before selecting that implementation, complete the paired A/B measurement with the same built artifact.
 
 ## Closed alias result
 
@@ -118,101 +203,52 @@ Repeated alias copy pair/region traffic is **not** trivial unchanged-state dupli
 
 Do not pursue simple alias copy dedupe or suppress required outside-render-pass `vkCmdCopyImage` work.
 
-## Exact dc95 Uniform source facts — CONFIRMED
+## Prior exact dc95 Uniform facts — RETAINED
 
 1. Vulkan `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`.
-2. Vulkan therefore revisits enabled graphics Uniform bindings instead of preserving the OpenGL-style binding dirty mask.
+2. Vulkan revisits enabled graphics Uniform bindings rather than preserving the OpenGL-style dirty binding mask.
 3. Classic cached path calls `SynchronizeBuffer()` and can finish with zero upload when the guest range is clean.
-4. `uniform_cache_hits` counts that zero-upload outcome.
-5. The adaptive small-Uniform fast path is a stall-avoidance stream path, not payload reuse.
+4. `uniform_cache_hits` counts that clean/no-upload outcome.
+5. Adaptive small-Uniform fast path is a stall-avoidance mapped re-stream path, not payload reuse.
 6. Fast Vulkan Uniform path requests upload staging, adds a descriptor and copies guest bytes again.
 
-## Uniform path runtime — CONFIRMED
+## Prior payload fingerprint runtime — RETAINED
 
-Previous `exp/x1-uniform-stream-reuse` runtime proved:
+Matched payload log:
 
-- fast path dominates gameplay Uniform processing
-- gameplay fast reason is adaptive `fastSkip`, not alignment (`fastAlignment=0`)
-- classic cached path is mostly clean
-- repeated exact `(stage,index,device_addr,size)` keys dominate
-- `sameDraw=0`: repetition occurs across Draws, not inside one Draw
+`eden_log(20260827-052251).txt`
 
-Therefore the existing Uniform upload explosion is primarily created by Eden's adaptive mapped re-stream policy, not by classic cached dirty uploads.
+Gameplay aggregate frames 1320–3000 = 1800 frames:
 
-## Uniform payload fingerprint runtime — STRONG CONFIRMED EVIDENCE
+- visits: 41,733,585
+- fast: 41,188,346 = 98.69%
+- fastAlignment: 0
+- fastSkip: 41,188,346
+- cached: 545,239
+- cachedClean: 513,129 = 94.11% of cached
+- cachedUpload: 32,110
+- average fast payload: 410.46 bytes
+- fast streams/frame: 22,882.4
 
-Current instrumentation:
+Payload samples:
 
-- deterministic 1/16 Uniform-key sampling
-- fingerprint from the already-copied staging span; no second guest-memory read
-- bounded fixed table
-- instrumentation only; no work skipped/reused/batched
+- samples: 1,890,393
+- uniqueSamples: 14,526
+- repeatSamples: 1,835,334
+- sameFingerprint: 1,792,196
+- changedFingerprint: 43,138
+- sampleOverflow: 40,533
+- 97.65% of tracked repeated samples had the same fingerprint
+- 99.17% of classified same-frame repeats had the same fingerprint
 
-Gameplay aggregate: report frames 1320–3000 inclusive = 1800 frames.
+Interpretation boundary remains:
 
-### Path totals
-
-- visits: **41,733,585**
-- fast streams: **41,188,346 = 98.69%**
-- fastAlignment: **0**
-- fastSkip: **41,188,346**
-- cached: **545,239**
-- cachedClean: **513,129 = 94.11% of cached**
-- cachedUpload: **32,110**
-- average fast payload: **410.46 bytes**
-- fast streams/frame: **22,882.4** for this matched route
-
-### Payload sample totals
-
-- samples: **1,890,393**
-- uniqueSamples: **14,526**
-- repeatSamples: **1,835,334**
-- sameFingerprint: **1,792,196**
-- changedFingerprint: **43,138**
-- sampleOverflow: **40,533**
-
-Among tracked repeated sampled keys:
-
-- **97.65% same fingerprint**
-- **2.35% changed fingerprint**
-
-Among same-frame repeated samples with fingerprint classification:
-
-- same: **1,445,069**
-- changed: **12,119**
-- **99.17% same fingerprint**
-
-Representative stability:
-
-- frame 1440: 96.60% same fingerprint
-- frame 1560: 95.47%
-- frame 2400: 97.64%
-- frame 2880: 98.23%
-
-The effect is persistent across the gameplay run rather than a single spike.
-
-## Interpretation boundary
-
-The data supports:
-
-> Eden's dominant adaptive fast Uniform path repeatedly stages the same Uniform identity, and sampled repeat events overwhelmingly carry the same payload fingerprint, especially within one frame.
-
-Do **not** jump directly to `same key/hash => reuse previous staging allocation`. Correctness still requires preserving descriptor/staging lifetime and in-flight GPU use. A 64-bit fingerprint is strong equality evidence but not mathematical byte-for-byte proof.
-
-## Current A/B purpose
-
-The prepared Qualcomm/X1 A/B directly tests whether the adaptive mapped re-stream policy is a major cause of the steady ~20 FPS ceiling without inventing a new cache.
-
-Expected interpretations after a future authorized build:
-
-- FPS materially rises, stability good: strong causal support for adaptive Uniform re-streaming as a major steady-state bottleneck
-- FPS rises but stalls/freezes appear: continuous re-stream cost shifted into synchronization/stall behavior; lifetime/in-flight handling becomes the next design problem
-- FPS does not materially improve: Uniform re-stream volume is architecturally large but not the dominant frame-time cause
-- correctness breaks: do not promote; investigate Qualcomm-specific classic-cache synchronization/stale-data behavior first
+> Same key/fingerprint is strong evidence for redundant payload restaging, but it does not by itself prove that an old staging allocation is safe to reuse. Descriptor identity, staging lifetime and in-flight GPU use must remain correct.
 
 ## What NOT to do next
 
 - no ARM64 Actions without fresh explicit permission
+- no build rerun from the already-consumed authorization
 - no alias trivial dedupe
 - no render-pass/barrier suppression
 - no blind persistent-binding enable
@@ -220,33 +256,38 @@ Expected interpretations after a future authorized build:
 - no global change to all vendors
 - no removal of alignment-required fast streaming
 - do not treat `ForceStop` as a crash
+- do not call the ON-vs-older-OFF timing difference a final A/B regression percentage
 
 ## NEXT ACTION
 
-**Stop before Actions and wait for fresh explicit user build authorization.**
+**No new build is needed.**
 
-When authorization is given, run exactly once:
+Using the already-built artifact `Eden-dc95-X1-uniform-cache-ab`, run the same TOTK 1.4.2 save/route/options with:
 
-`Build dc95 X1 Uniform Cache AB`
+`X1 A/B: Disable Adaptive Uniform Fast Stream = OFF`
 
-The single build must contain both A/B states through the runtime checkbox so OFF and ON use identical code provenance.
+Then provide that OFF log.
 
-If the build fails, do not rerun without a new explicit authorization.
+Compare paired OFF vs ON using:
 
-After a successful build, test the same TOTK 1.4.2 save/route/options with:
+- displayed/runtime FPS and stability
+- `[X1-UNIFORM-PATH]`
+- `[X1-FLOW][UPLOAD]`
+- draw `cat=uniform`
+- buffer copy / outside-RP counts
+- scheduler wait / finish / submit
+- render-pass/image/barrier signals
 
-- Run A: checkbox OFF
-- Run B: checkbox ON
-
-Compare FPS/stability plus `[X1-UNIFORM-PATH]`, `[X1-UNIFORM-PAYLOAD]`, buffer-category upload/copy/outside-RP/barrier/wait signals.
+Only after that paired OFF measurement should the A/B performance conclusion and next implementation experiment be finalized.
 
 ## Current build authorization state
 
-- current static-prepared branch: `exp/x1-uniform-cache-ab`
-- new branch Actions runs: 0
-- Uniform cache A/B build attempts: 0
-- next build authorization: **not granted**
-- latest successful runtime build remains payload fingerprint run `33040377420`
-- gameplay optimization applied in a built artifact: none
+- current branch: `exp/x1-uniform-cache-ab`
+- Uniform cache A/B Actions runs: 1
+- Uniform cache A/B build attempts: 1
+- latest attempt result: success
+- build authorization for that attempt: consumed
+- next ARM64 build authorization: **not granted**
+- gameplay optimization promoted: none
 - alias copies skipped: none
 - barriers/render-pass requests suppressed: none
