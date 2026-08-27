@@ -1,4 +1,4 @@
-# CURRENT HANDOFF — Eden Adreno X1 Uniform fast-stream diagnosis
+# CURRENT HANDOFF — Eden Adreno X1 frame-cadence attribution
 
 Updated: 2026-08-27 KST
 
@@ -7,36 +7,17 @@ Updated: 2026-08-27 KST
 - Lab repository: `npark2860-cyber/Eden-Adreno-Lab`
 - Exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
 - Immutable control: `lab/dc95-arm64-baseline`
-- Completed texture experiment: `exp/x1-texture-fill-reasons`
-- Completed alias-route experiment: `exp/x1-alias-copy-reasons`
-- Completed alias-redundancy experiment: `exp/x1-alias-sync-redundancy`
-- Completed Uniform path experiment: `exp/x1-uniform-stream-reuse`
-- Completed payload diagnostic: `exp/x1-uniform-payload-fingerprint`
-- Current A/B experiment: `exp/x1-uniform-cache-ab`
+- Current experiment branch: `exp/x1-frame-cadence-attribution`
+
+**Never change the Eden source baseline without the explicit baseline-change procedure.**
 
 **No ARM64 build may be started or re-run without fresh explicit user permission. One permission = one attempt.**
 
-## Current branch / build state
+## Immediate predecessor — Uniform cache A/B
 
-Branch:
+Branch: `exp/x1-uniform-cache-ab`
 
-`exp/x1-uniform-cache-ab`
-
-Functional A/B preparation was created from payload-fingerprint HEAD:
-
-`c7fc84bc7da50576235dd6f982be264c573e41cb`
-
-The branch was initially prepared at:
-
-`d2addb5247b3f31139074a8bca10cd9f24d8305e`
-
-Because the connected GitHub tool did not expose direct `workflow_dispatch`, one authorized build was started through a temporary one-shot push trigger restricted to the experiment workflow. The trigger was then removed and the workflow restored to `workflow_dispatch` only.
-
-Current branch HEAD before this handoff update was:
-
-`6df9c5ad530fa2a2a57e9685d029aeb0ff5508fc`
-
-### Authorized Uniform cache A/B build — SUCCESS
+Authorized build:
 
 - workflow: `Build dc95 X1 Uniform Cache AB`
 - run: `33045572814`
@@ -44,250 +25,253 @@ Current branch HEAD before this handoff update was:
 - attempt: 1
 - build HEAD: `8e8351953d966a1c7677940b7a926aae902969d1`
 - result: **success**
-- static A/B verification: success
-- configure: success
-- ARM64 compile: success
-- package: success
-- artifact upload: success
 - artifact: `Eden-dc95-X1-uniform-cache-ab`
 - artifact id: `9636118096`
 - size: 31,302,610 bytes
 - SHA-256: `b3ec51f770f5ea664a0d277bbc2ede3952f6e6cfea9fef0f14f52f98be84dd6e`
-- artifact expiry: 2026-09-10
+- expires: 2026-09-10
+- build attempts: exactly 1
+- reruns: 0
 
-Build attempts for this A/B: **1 total**. Authorization is consumed. There was no rerun.
+That build authorization is consumed.
 
-## A/B implementation semantics
+### A/B semantics
 
 Checkbox:
 
 `X1 A/B: Disable Adaptive Uniform Fast Stream`
 
-Default: **OFF**.
+- OFF: existing payload-fingerprint/adaptive fast-stream behavior
+- ON on Qualcomm proprietary Vulkan only: alignment-required streaming remains, adaptive `fastSkip` falls through to existing classic cached `SynchronizeBuffer()` path
+- no custom payload cache/dedupe
+- no previous staging reuse
+- no scheduler/barrier/render-pass/alias/dirty-state/lifetime/persistent-binding change
 
-At Vulkan `BufferCacheRuntime` construction, the A/B bit becomes active only when both are true:
+## Paired A/B runtime result
 
-- Vulkan driver is `VK_DRIVER_ID_QUALCOMM_PROPRIETARY`
-- the checkbox setting is enabled
-
-OFF preserves the existing payload-fingerprint fast-stream policy.
-
-ON changes only adaptive small-Uniform fast-stream selection:
-
-- `needs_alignment_stream` remains authoritative and still selects mapped streaming
-- adaptive `fastSkip` eligibility no longer selects mapped streaming
-- the Uniform falls through to the already-existing classic cached path
-- existing `SynchronizeBuffer()` decides clean/no-upload versus actual upload
-
-No custom payload cache, hash dedupe, previous staging allocation reuse, scheduler change, barrier suppression, alias-copy suppression, dirty-state mutation change, descriptor lifetime change, or persistent Uniform binding change is part of this A/B.
-
-## Latest ON runtime — PARTIAL A/B RESULT, CONFIRMED
-
-Log:
-
-`eden_log(20260827-083649).txt`
-
-Runtime:
+Matched environment:
 
 - TOTK 1.4.2
-- exact Eden identification `HEAD-dc95cd09ee-HEAD`
 - Qualcomm Adreno X1-85
 - Qualcomm driver 512.863.0
 - Vulkan 1.3.295
 - Windows 11 25H2 build 26220.9223
-- `x1_ab_disable_adaptive_uniform_fast_stream = true`
-- run reached frame ~1503
-- end `ForceStop` is the user's intentional stop and is not a crash
+- exact Eden identification `HEAD-dc95cd09ee-HEAD`
 
-### A/B routing behavior — STRONG CONFIRMED
+### ON log
 
-The ON control worked exactly as intended.
+`eden_log(20260827-083649).txt`
 
-Representative reports show:
+- setting true
+- fast = 0
+- fastSkip = 0
+- cached = visits
+- report windows 960–1440, 600 frames:
+  - visits 9,449,653
+  - cachedClean 8,913,714 = 94.33%
+  - cachedUpload 535,939 = 5.67%
+- coarse rate over frame 960→1440: ~18.1 FPS
+- no ceiling break
+- frame-1440 classic-path cost included ~122.8k Uniform copies, ~484.7 MiB Uniform copied data, ~87.9k Uniform outside-RP operations and scheduler wait ~6504 ms / 120 frames
+- end ForceStop intentional, not crash
 
-- `fast = 0`
-- `fastAlignment = 0`
-- `fastSkip = 0`
-- `cached = visits`
+Conclusion: the switch works, and most redirected Uniforms are clean, but forcing adaptive Uniforms into classic cache is not an optimization. Cost migrates into explicit copy/outside-RP/synchronization pressure.
 
-Therefore adaptive graphics Uniform traffic was fully redirected to the existing classic cached path in this run.
+### OFF paired log
 
-Across report windows ending at frames 960, 1080, 1200, 1320 and 1440 (600 reported frames total):
+`eden_log(20260827-085340).txt`
 
-- visits: **9,449,653**
-- fast: **0**
-- cached: **9,449,653**
-- cachedClean: **8,913,714 = 94.33%**
-- cachedUpload: **535,939 = 5.67%**
+- setting false
+- same built artifact / same runtime environment
+- user observation: title/light screen reaches ~30 FPS, gameplay feels pinned at or below 20 FPS; 22–23 FPS is unusually rare
+- log wall-time supports two distinct stable regimes:
+  - light/title-like segment around frame 1453–1557: ~29.7 FPS
+  - gameplay frame 2640→2880: ~19.48 FPS
+  - gameplay frame 2880→3120: ~19.59 FPS
+- in-game scheduler wait is large, e.g.:
+  - frame 2640 report: ~2693 ms / 120 frames
+  - frame 2880 report: ~3353 ms / 120 frames
+  - frame 3120 report: ~2586 ms / 120 frames
+- existing Vulkan swapchain profiler `pacing` totals remain tiny (fractions of a millisecond per 120 frames), so explicit `Target_60` swapchain resource pacing is not consuming an extra ~16.7 ms each frame
 
-This independently confirms that most redirected Uniform visits are clean according to Eden's existing dirty tracking.
+Do **not** call this a proven hardcoded 20-FPS cap. The measured shape is consistent with cadence quantization and needs attribution.
 
-Payload-fingerprint sample counters are zero in the ON run because those samples are taken from the mapped fast-stream path, which is no longer entered. This is expected and is not an instrumentation failure.
+## New source-level cadence facts — exact dc95
 
-### Performance direction — NO CEILING BREAK IN ON RUN
+### VI conductor
 
-Using report timestamps only as a coarse runtime-rate indicator:
+`src/core/hle/service/vi/conductor.cpp`
 
-- frame 960 report: ~78.968 s
-- frame 1440 report: ~105.501 s
-- 480 frames elapsed in ~26.53 s
-- coarse rate: ~18.1 frames/s
+- base `FrameNs = 1e9 / 60`
+- `ScreenComposition` is scheduled from that 60-Hz base
+- `ProcessVsync()` calls `ComposeOnDisplay()` then signals VSync
+- period is derived from `m_swap_interval`, speed scale and speed limit
 
-This ON run therefore did **not** show a material break above the existing ~20 FPS gameplay ceiling.
+### Nvnflinger HardwareComposer
 
-Do not yet assign an exact regression percentage versus OFF: a paired same-build OFF run on the same save/route/options is still required.
+`src/core/hle/service/nvnflinger/hardware_composer.cpp`
 
-### Cost migration — STRONG CONFIRMED
+- reads each layer `item.swap_interval`
+- uses normalized interval for framebuffer acquire/release bookkeeping
+- nevertheless `ComposeLocked()` ends with `m_frame_number += 1; return 1;`
+- therefore dc95 does not directly return 2 or 3 from this compositor to select 30 or 20 Hz
+- `nvdisp.WaitForComposite()` occurs at the start of each active compose
+- a host composite is requested only when a **new buffer was acquired**
 
-The fast-stream work did not simply disappear. Redirecting into the classic cache moved a substantial part of the cost into buffer upload/copy/outside-render-pass and scheduler synchronization work.
+### nvdisp / GPU composite hand-off
 
-Current ON frame-1440 / 120-frame report:
+`src/core/hle/service/nvdrv/devices/nvdisp_disp0.cpp`
 
-Uniform draw category:
+- `WaitForComposite()` delegates to `system.GPU().WaitForComposite()`
+- `Composite()` delegates to `system.GPU().RequestComposite(...)`, then reports frame interval / speed limiting / perf frame boundary
 
-- scopes: 3,156,315
-- uploadReq: 122,803
-- upload: 484.672 MiB
-- copy: 122,803 / 484.672 MiB
-- outside: 87,863
+`src/video_core/gpu.cpp`
 
-Overall upload/scheduler report:
+- `RequestComposite()` queues a GPU sync operation and handles guest acquire fences
+- `WaitForComposite()` waits for the prior pending sync-operation fence when present
 
-- stagingUpload: 137,042 / 678.987 MiB
-- bufferCopy: 136,314 / 623.469 MiB
-- barriers: 114,016
-- scheduler wait: 1,547 calls / 6504.470 ms
-- finish: 378 / 794.399 ms
-- submit: 2,249 = 18.74/frame
-- RP: 117,243
-- images/postRPbarrier: 439,934
+Current interpretation:
 
-For qualitative context only, the earlier payload-fingerprint OFF runtime at frame 1440 had:
+> VI itself continues to operate from a 60-Hz base. The visible 30→~20 step is more plausibly created by when new game framebuffers become available/completed relative to those 60-Hz composition opportunities, or by a composite hand-off stall, rather than by a literal `swap_interval=3` or explicit host swapchain pacing sleep.
 
-- Uniform uploadReq: 1,899,945
-- Uniform upload: 760.912 MiB
-- Uniform copy: 2,283 / 14.883 MiB
-- Uniform outside: 296
-- scheduler wait: 1,230 / 2669.884 ms
+This is a hypothesis to test, not yet a final cause.
 
-These are not a perfectly paired same-build comparison, so do not use their ratios as final regression numbers. They do establish the architectural direction: disabling adaptive mapped streaming drastically reduces tiny Uniform staging requests but causes classic dirty Uniforms to become explicit copy/outside-RP work and increases synchronization pressure.
+## Current experiment — frame cadence attribution
 
-## Current interpretation
+Branch:
 
-### Confirmed
+`exp/x1-frame-cadence-attribution`
 
-1. Adaptive `fastSkip` can be completely disabled on Qualcomm/X1 without immediately preventing TOTK gameplay from reaching the measured test segment.
-2. When redirected, about 94% of measured Uniform visits are classic-cache clean and avoid a real Uniform content upload.
-3. Simply redirecting all adaptive fast Uniforms to the classic cache is **not a performance optimization** in this test.
-4. The former fast-stream cost is exchanged for classic buffer-cache copy/outside-RP/synchronization pressure.
-5. The hypothesis that adaptive Uniform re-stream volume by itself is the full cause of the steady ~20 FPS ceiling is not supported by this ON run.
+Created from predecessor HEAD:
 
-### Still open
+`2e8f339a2338c5538f2c4af5cb8b1b135498a148`
 
-The Uniform findings are still important. Previous payload telemetry established that repeated fast Uniform keys overwhelmingly carry the same payload fingerprint. The next optimization design should therefore avoid both extremes:
+Prepared files:
 
-- do not re-stream identical small Uniform payloads on every visit
-- do not force those visits into the classic GPU-buffer copy/synchronization path
+- `tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py`
+- `tools/adreno_lab/analyze_x1_frame_cadence.py`
+- `.github/workflows/build-dc95-x1-frame-cadence-attribution.yml`
+- `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`
 
-A future safe direction is a Qualcomm/X1-narrow fast-path reuse/cache design that preserves mapped-stream lifetime/in-flight safety while reducing redundant byte copies/staging work. Do **not** blindly reuse a previous staging allocation across frames or command-buffer lifetimes.
+Workflow:
 
-Before selecting that implementation, complete the paired A/B measurement with the same built artifact.
+`Build dc95 X1 Frame Cadence Attribution`
 
-## Closed alias result
+Trigger: `workflow_dispatch` only.
 
-Repeated alias copy pair/region traffic is **not** trivial unchanged-state duplication:
+Actions runs on this branch at preparation check: **0**.
+
+### Observation points
+
+`[X1-CADENCE][QUEUE]`
+
+- successful guest `BufferQueueProducer::QueueBuffer`
+- host steady-clock timestamp
+- queue-core identity
+- guest frame number
+- swap interval
+- queue size
+
+`[X1-CADENCE][ACQUIRE]`
+
+- new Nvnflinger framebuffer acquisition
+- same host clock
+- compositor tick
+- consumer identity
+- main/overlay
+- guest frame number / swap interval
+
+`[X1-CADENCE][VI]`
+
+- every active compositor tick
+- whether a new main buffer was acquired
+- `WaitForComposite()` host duration
+- total `ComposeLocked()` host duration
+
+Existing `x1_present_frame_log` gates the new records.
+
+### Safety boundary
+
+The cadence transplant is restricted to observation additions in:
+
+- `src/core/hle/service/nvnflinger/buffer_queue_producer.cpp`
+- `src/core/hle/service/nvnflinger/hardware_composer.cpp`
+
+The workflow snapshots these files and hashes the following as no-change critical files:
+
+- `src/core/hle/service/vi/conductor.cpp`
+- `src/video_core/gpu.cpp`
+- `src/video_core/renderer_vulkan/vk_swapchain.cpp`
+- `src/video_core/renderer_vulkan/vk_scheduler.cpp`
+- `src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp`
+
+Static checks reject newly-added sleeps, waits, scheduling changes, swap-interval assignments, speed-limit changes, new composite requests, or alternate numeric cadence returns.
+
+## Interpretation matrix for the future cadence runtime
+
+- QueueBuffer ~50 ms + main acquire every 3 compositor ticks:
+  - cadence already exists upstream / game-frame production side
+
+- QueueBuffer ~33 ms + main acquire every 3 ticks:
+  - consumer/compositor acquisition/release side delays ready frames
+
+- VI tick itself stretches toward ~50 ms or `WaitForComposite()` repeatedly costs ~16/33 ms:
+  - compositor/GPU hand-off stalls VI
+
+- QueueBuffer and acquire both ~33 ms while displayed/runtime FPS remains ~20:
+  - loss is after acquisition; next target becomes renderer composite/present completion
+
+## Retained closed facts
+
+### Alias
+
+Repeated alias copy pair/region traffic is not trivial unchanged-state duplication:
 
 - same source modification tick among tracked repeats: 0
 - every tracked repeat advanced source tick
 - same-state + same-region candidates: 0
 
-Do not pursue simple alias copy dedupe or suppress required outside-render-pass `vkCmdCopyImage` work.
+Do not pursue simple alias-copy dedupe or suppress required outside-RP `vkCmdCopyImage` work.
 
-## Prior exact dc95 Uniform facts — RETAINED
+### Uniform
 
-1. Vulkan `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`.
-2. Vulkan revisits enabled graphics Uniform bindings rather than preserving the OpenGL-style dirty binding mask.
-3. Classic cached path calls `SynchronizeBuffer()` and can finish with zero upload when the guest range is clean.
-4. `uniform_cache_hits` counts that clean/no-upload outcome.
-5. Adaptive small-Uniform fast path is a stall-avoidance mapped re-stream path, not payload reuse.
-6. Fast Vulkan Uniform path requests upload staging, adds a descriptor and copies guest bytes again.
-
-## Prior payload fingerprint runtime — RETAINED
-
-Matched payload log:
-
-`eden_log(20260827-052251).txt`
-
-Gameplay aggregate frames 1320–3000 = 1800 frames:
-
-- visits: 41,733,585
-- fast: 41,188,346 = 98.69%
-- fastAlignment: 0
-- fastSkip: 41,188,346
-- cached: 545,239
-- cachedClean: 513,129 = 94.11% of cached
-- cachedUpload: 32,110
-- average fast payload: 410.46 bytes
-- fast streams/frame: 22,882.4
-
-Payload samples:
-
-- samples: 1,890,393
-- uniqueSamples: 14,526
-- repeatSamples: 1,835,334
-- sameFingerprint: 1,792,196
-- changedFingerprint: 43,138
-- sampleOverflow: 40,533
-- 97.65% of tracked repeated samples had the same fingerprint
-- 99.17% of classified same-frame repeats had the same fingerprint
-
-Interpretation boundary remains:
-
-> Same key/fingerprint is strong evidence for redundant payload restaging, but it does not by itself prove that an old staging allocation is safe to reuse. Descriptor identity, staging lifetime and in-flight GPU use must remain correct.
+- exact dc95 Vulkan `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`
+- adaptive small-Uniform fast path is mapped re-stream, not payload reuse
+- gameplay fast path was almost entirely adaptive `fastSkip`; `fastAlignment=0`
+- classic cached path is mostly clean
+- payload-fingerprint run showed 97.65% of tracked repeated samples same fingerprint and 99.17% of classified same-frame repeats same fingerprint
+- this still does not justify blind previous-staging reuse because descriptor/staging lifetime and in-flight GPU safety remain unresolved
 
 ## What NOT to do next
 
 - no ARM64 Actions without fresh explicit permission
-- no build rerun from the already-consumed authorization
+- no reuse of the consumed Uniform A/B build authorization
+- do not claim a proven literal 20-FPS cap yet
+- do not blame Mailbox/Target_60 without new evidence
+- do not change VSync, speed limiter, swap interval, scheduling, fences or waits as part of attribution
+- no scheduler/barrier/render-pass suppression
 - no alias trivial dedupe
-- no render-pass/barrier suppression
-- no blind persistent-binding enable
-- no blind previous-staging reuse
-- no global change to all vendors
-- no removal of alignment-required fast streaming
-- do not treat `ForceStop` as a crash
-- do not call the ON-vs-older-OFF timing difference a final A/B regression percentage
+- no blind persistent Uniform binding
+- no blind previous staging allocation reuse
+- do not treat ForceStop as a crash
 
 ## NEXT ACTION
 
-**No new build is needed.**
+**Stop before Actions.**
 
-Using the already-built artifact `Eden-dc95-X1-uniform-cache-ab`, run the same TOTK 1.4.2 save/route/options with:
+Read `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`.
 
-`X1 A/B: Disable Adaptive Uniform Fast Stream = OFF`
+A fresh explicit user authorization is required for exactly one build attempt of:
 
-Then provide that OFF log.
+`Build dc95 X1 Frame Cadence Attribution`
 
-Compare paired OFF vs ON using:
+If authorized and successful, run TOTK 1.4.2 through both the ~30-FPS title/light regime and the steady ~20-FPS gameplay regime with existing X1 present logging enabled. Then run `analyze_x1_frame_cadence.py` on the produced log.
 
-- displayed/runtime FPS and stability
-- `[X1-UNIFORM-PATH]`
-- `[X1-FLOW][UPLOAD]`
-- draw `cat=uniform`
-- buffer copy / outside-RP counts
-- scheduler wait / finish / submit
-- render-pass/image/barrier signals
+## Build authorization state
 
-Only after that paired OFF measurement should the A/B performance conclusion and next implementation experiment be finalized.
-
-## Current build authorization state
-
-- current branch: `exp/x1-uniform-cache-ab`
-- Uniform cache A/B Actions runs: 1
-- Uniform cache A/B build attempts: 1
-- latest attempt result: success
-- build authorization for that attempt: consumed
-- next ARM64 build authorization: **not granted**
+- current branch: `exp/x1-frame-cadence-attribution`
+- current branch Actions runs: 0
+- frame-cadence build attempts: 0
+- frame-cadence build authorization: **not granted**
+- previous Uniform cache A/B authorization: consumed
 - gameplay optimization promoted: none
-- alias copies skipped: none
-- barriers/render-pass requests suppressed: none
