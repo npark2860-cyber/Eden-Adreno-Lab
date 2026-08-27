@@ -1,28 +1,29 @@
 # DEBUG HISTORY — Eden Adreno X1-85
 
-This file records confirmed experiment outcomes and the current diagnostic chain. It was absent from the working branch before the 2026-08-27 Uniform investigation, so earlier history remains represented by the existing TECH_BIBLE / maps / handoff documents rather than being reconstructed here from memory.
+Updated: 2026-08-27 KST
 
-## 2026-08-27 — X1 alias synchronization redundancy runtime
+This file records confirmed experiment outcomes. Exact Eden baseline remains:
 
-Baseline:
+`eden-emulator/mirror`
+`dc95cd09eea9749250fe31a3072684d341d19417`
 
-- exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
-- branch `exp/x1-alias-sync-redundancy`
-- authorized build run `33024690895`, job `98363162523`, attempt 1
+Do not reconstruct missing facts from chat when the GitHub documents are available.
+
+## 2026-08-27 — alias synchronization redundancy runtime
+
+Branch: `exp/x1-alias-sync-redundancy`
+
+Authorized build:
+
+- run `33024690895`
+- job `98363162523`
+- attempt 1
 - build HEAD `804f394c5db280f842a01113e6ca92f7ad57d219`
-- result success
-- artifact `Eden-dc95-X1-alias-sync-redundancy`, id `9628554127`
-- artifact SHA-256 `3aa79bb1cd986d7b4da19a1047a22c87db7b486b549a8856680138d11655b8f2`
+- artifact `Eden-dc95-X1-alias-sync-redundancy`
+- artifact id `9628554127`
+- SHA-256 `3aa79bb1cd986d7b4da19a1047a22c87db7b486b549a8856680138d11655b8f2`
 
-Matched runtime:
-
-- TOTK 1.4.2
-- Adreno X1-85, driver 512.863.0, Vulkan 1.3.295
-- Windows 11 25H2 build 26220.9223
-- log `eden_log(9).txt`
-- user stopped the emulator intentionally when the log became large; not a crash
-
-Aggregate alias-sync result:
+Matched TOTK 1.4.2 runtime aggregate:
 
 - copies 194,396
 - sameFrame 59,722
@@ -39,38 +40,27 @@ Aggregate alias-sync result:
 
 Conclusion — CONFIRMED:
 
-Repeated alias pair/region requests are not trivial unchanged-state duplicates. Every tracked recurrence advances source `modification_tick`; there are zero same-source-tick + same-region candidates. Do not implement simple alias-copy dedupe from this evidence.
+Repeated alias pair/region traffic is not trivial unchanged-state duplication. Every tracked recurrence advances source `modification_tick`; same-source-tick + same-region candidates are zero. Do not implement simple alias-copy dedupe.
 
-The established path remains:
+Established route remains:
 
 `Draw Configure -> FillImageViews -> PrepareImage -> SynchronizeAliases -> CopyImage -> direct Vulkan copy -> RequestOutsideRenderPassOperationContext -> vkCmdCopyImage`
 
 ## 2026-08-27 — exact dc95 graphics Uniform source analysis
 
-Motivation:
-
-Steady TOTK gameplay continues to show roughly 10k–12k tiny graphics Uniform upload requests per frame, while alias trivial dedupe is now closed.
-
-Exact source facts — CONFIRMED:
+Confirmed source facts:
 
 1. Vulkan `BufferCacheParams::HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`.
-2. Generic graphics Uniform binding begins with `dirty = ~0U`; the persistent dirty-binding mask is only consumed when the policy enables persistent Uniform bindings.
-3. Every visited graphics Uniform increments `uniform_cache_shots[0]`.
-4. Classic cached path calls `SynchronizeBuffer()`.
-5. `SynchronizeBuffer()` returns true when `ForEachUploadRange()` yields zero upload bytes, and returns false after a real `UploadMemory()`.
-6. `uniform_cache_hits[0]` therefore counts classic cached visits that required zero upload bytes.
-7. `TickFrame()` uses recent hit/shot history to toggle `uniform_buffer_skip_cache_size`.
-8. Exact dc95 Vulkan fast graphics Uniform path calls `BindMappedUniformBuffer()`, which performs `staging_pool.Request(size, MemoryUsage::Upload)` and descriptor insertion; generic code then copies guest bytes with `device_memory.ReadBlockUnsafe()`.
-
-Interpretation — CONFIRMED DESIGN FACT:
-
-The fast path is a stall-avoidance re-stream path, not persistent payload reuse.
+2. Vulkan revisits enabled graphics Uniform bindings rather than preserving an OpenGL-style persistent dirty binding mask.
+3. Classic cached Uniform path calls `SynchronizeBuffer()`.
+4. `SynchronizeBuffer()` can return clean with no physical upload when no upload range exists.
+5. `uniform_cache_hits` therefore counts classic-cache clean/no-upload outcomes.
+6. Adaptive small-Uniform path uses `BindMappedUniformBuffer()` and requests upload staging / descriptor insertion, then copies guest bytes again.
+7. The fast path is a stall-avoidance re-stream path, not persistent payload reuse.
 
 ## 2026-08-27 — Uniform stream/reuse runtime
 
-Branch:
-
-`exp/x1-uniform-stream-reuse`
+Branch: `exp/x1-uniform-stream-reuse`
 
 Authorized build:
 
@@ -79,29 +69,26 @@ Authorized build:
 - job `98402328028`
 - attempt 1
 - build HEAD `8f33dc37c98afa134ad5efbbf14ab85df388ee42`
-- result success
 - artifact `Eden-dc95-X1-uniform-stream-reuse`
 - artifact id `9633005533`
 - SHA-256 `03491e648026bf0226f2bbd3817d4a979040cc027991af45f9117c2a68564860`
 
 Runtime result — CONFIRMED:
 
-- fast Uniform path dominates gameplay Uniform processing
-- representative matched gameplay aggregate previously measured over frame 1200–1680: 9,762,092 fast streams out of 9,927,196 visits (98.34%)
-- fastAlignment = 0 in gameplay; fast path selection was entirely adaptive skip policy (`fastSkip`)
-- classic cached path was mostly clean: 154,847 clean out of 165,104 cached visits (93.79%)
-- exact fast key `(stage,index,device_addr,size)` repeated heavily across Draws
-- `sameDraw = 0`; repetition is cross-Draw, not duplicate calls inside one Draw
+- representative frame 1200–1680 aggregate: 9,762,092 fast streams / 9,927,196 visits = 98.34%
+- gameplay `fastAlignment = 0`
+- gameplay fast selection was adaptive `fastSkip`
+- classic cached path: 154,847 clean / 165,104 cached = 93.79%
+- exact `(stage,index,device_addr,size)` fast keys repeat heavily across Draws
+- `sameDraw = 0`
 
 Conclusion:
 
-The prior tiny Uniform `uploadReq` explosion is overwhelmingly caused by the adaptive fast mapped-stream policy rather than by classic cached dirty uploads.
+The prior tiny Uniform upload-request explosion is overwhelmingly produced by adaptive mapped re-stream policy, not classic-cache dirty uploads.
 
 ## 2026-08-27 — Uniform payload fingerprint runtime
 
-Branch:
-
-`exp/x1-uniform-payload-fingerprint`
+Branch: `exp/x1-uniform-payload-fingerprint`
 
 Authorized build:
 
@@ -110,7 +97,6 @@ Authorized build:
 - job `98412364840`
 - attempt 1
 - build HEAD `9f1a916c7eaa72f3921cfa49233756dbbba5c3d9`
-- result success
 - artifact `Eden-dc95-X1-uniform-payload-fingerprint`
 - artifact id `9634160587`
 - size 31,299,993 bytes
@@ -120,57 +106,198 @@ Matched runtime:
 
 - log `eden_log(20260827-052251).txt`
 - TOTK 1.4.2
-- exact Eden identification `HEAD-dc95cd09ee-HEAD`
-- Adreno X1-85, driver 512.863.0, Vulkan 1.3.295
+- Adreno X1-85 / Qualcomm 512.863.0 / Vulkan 1.3.295
 - Windows 11 25H2 build 26220.9223
-- test reached >3000 frames and user intentionally stopped the emulator; end `ForceStop` is not treated as a crash
+- end ForceStop intentional, not crash
 
-Instrumentation:
+Gameplay aggregate frame 1320–3000 = 1800 frames:
 
-- deterministic 1/16 key sampling
-- fingerprint computed from the already-copied mapped staging span; no additional guest-memory read
-- fixed bounded sample table
-- observation only; no Uniform skip/reuse/batching or dirty-state change
+- visits 41,733,585
+- fast 41,188,346 = 98.69%
+- fastAlignment 0
+- fastSkip 41,188,346
+- cached 545,239
+- cachedClean 513,129 = 94.11%
+- cachedUpload 32,110
+- average fast payload 410.46 bytes
+- fast streams/frame 22,882.4
 
-Gameplay aggregate used for conclusion: report frames 1320–3000 inclusive (15 x 120-frame reports = 1800 frames).
+Payload samples:
 
-Uniform path aggregate:
-
-- visits: **41,733,585**
-- fast: **41,188,346** = **98.69%**
-- fastAlignment: **0**
-- fastSkip: **41,188,346**
-- cached: **545,239**
-- cachedClean: **513,129** = **94.11% of cached**
-- cachedUpload: **32,110**
-- average fast payload: **410.46 bytes**
-- fast streams/frame: **22,882.4** in this route
-- tracked fast-key repeats dominate: 40,257,355 repeat vs 236,970 unique; table overflow exists and therefore the repeat ratio is a lower-bound style observation, not a perfect census
-
-Payload-sample aggregate:
-
-- samples: **1,890,393**
-- uniqueSamples: **14,526**
-- repeatSamples: **1,835,334**
-- sameFingerprint: **1,792,196**
-- changedFingerprint: **43,138**
-- sampleOverflow: **40,533**
-- among tracked repeat samples, **97.65% had the same payload fingerprint** and **2.35% changed**
-- same-frame repeat classification: 1,445,069 same vs 12,119 changed; **99.17% of classified same-frame repeats had the same fingerprint**
-
-Representative report blocks:
-
-- frame 1440: 69,863 repeat samples; 67,489 same fingerprint vs 2,374 changed = 96.60% same
-- frame 1560: 49,705 repeat; 47,453 same vs 2,252 changed = 95.47% same
-- frame 2400: 148,365 repeat; 144,858 same vs 3,507 changed = 97.64% same
-- frame 2880: 159,729 repeat; 156,906 same vs 2,823 changed = 98.23% same
+- samples 1,890,393
+- uniqueSamples 14,526
+- repeatSamples 1,835,334
+- sameFingerprint 1,792,196
+- changedFingerprint 43,138
+- sampleOverflow 40,533
+- tracked repeated samples: 97.65% same fingerprint
+- classified same-frame repeats: 99.17% same fingerprint
 
 Conclusion — STRONG RUNTIME EVIDENCE:
 
-The dominant fast Uniform path repeatedly streams not only the same `(stage,index,address,size)` identity but, for sampled repeated keys, overwhelmingly the same payload fingerprint. The effect is especially strong within the same frame.
+Dominant adaptive fast Uniform traffic repeatedly streams not only the same key identity but overwhelmingly the same sampled payload fingerprint. This does not prove that a previous staging allocation is safe to reuse; descriptor identity, staging lifetime and in-flight GPU use remain correctness boundaries.
 
-This does **not** yet justify blindly reusing the previous staging allocation: staging lifetime, descriptor identity and in-flight GPU use must remain correct. A 64-bit fingerprint is also evidence of payload equality, not mathematical byte-for-byte proof.
+## 2026-08-27 — Uniform cache A/B build and runtime
 
-The safest next A/B is therefore **not** a custom skip/dedupe. It is to expose a Qualcomm/X1 diagnostic control that disables the adaptive small-Uniform skip-cache policy and routes those Uniforms through Eden's existing classic cached path, while leaving alignment-required streaming untouched. This reuses existing dirty tracking and lifetime semantics and directly tests whether the fast-stream policy is causing the ~20 FPS ceiling or whether the cached path simply moves the cost into stalls/freezes.
+Branch: `exp/x1-uniform-cache-ab`
 
-No such A/B build has been started yet. Fresh explicit authorization remains required for each ARM64 attempt.
+A/B control:
+
+`X1 A/B: Disable Adaptive Uniform Fast Stream`
+
+Semantics:
+
+- OFF = established adaptive fast-stream behavior
+- ON on Qualcomm proprietary Vulkan only = alignment-required streaming unchanged; adaptive fastSkip eligibility falls through to existing classic cached `SynchronizeBuffer()` path
+- no custom dedupe/cache
+- no prior staging reuse
+- no scheduler/barrier/render-pass/alias/dirty-state/lifetime/persistent-binding change
+
+Authorized build — SUCCESS:
+
+- workflow `Build dc95 X1 Uniform Cache AB`
+- run `33045572814`
+- job `98428654028`
+- attempt 1
+- build HEAD `8e8351953d966a1c7677940b7a926aae902969d1`
+- artifact `Eden-dc95-X1-uniform-cache-ab`
+- artifact id `9636118096`
+- size 31,302,610 bytes
+- SHA-256 `b3ec51f770f5ea664a0d277bbc2ede3952f6e6cfea9fef0f14f52f98be84dd6e`
+- exactly one build attempt; no rerun
+
+### ON runtime
+
+Log: `eden_log(20260827-083649).txt`
+
+- `x1_ab_disable_adaptive_uniform_fast_stream = true`
+- fast = 0
+- fastSkip = 0
+- cached = visits
+- report windows ending 960–1440, 600 frames total:
+  - visits 9,449,653
+  - cachedClean 8,913,714 = 94.33%
+  - cachedUpload 535,939 = 5.67%
+- coarse frame 960→1440 wall rate ~18.1 FPS
+- no gameplay ceiling break
+- representative frame-1440 Uniform cost:
+  - ~122,803 copies
+  - ~484.7 MiB copied data
+  - ~87,863 outside-RP operations
+- frame-1440 scheduler wait ~6504 ms / 120 frames
+
+Conclusion — CONFIRMED:
+
+The A/B switch worked exactly as designed, and most redirected visits are clean, but wholesale fallback to classic cache is not an optimization. The adaptive staging-request storm is exchanged for explicit buffer-copy/outside-RP/synchronization pressure.
+
+### Paired OFF runtime
+
+Log: `eden_log(20260827-085340).txt`
+
+- same built artifact
+- `x1_ab_disable_adaptive_uniform_fast_stream = false`
+- same TOTK 1.4.2 / Adreno X1-85 / driver 512.863.0 / Vulkan 1.3.295 / Win11 25H2 environment
+
+Important user observation:
+
+- title/light screen reaches ~30 FPS
+- gameplay is nearly always at or below 20 FPS
+- intermediate 22–23 FPS is unusually rare; it feels pinned
+
+Log wall-time supports distinct regimes:
+
+- frame 1453→1557: ~29.7 FPS
+- frame 2640→2880: ~19.48 FPS
+- frame 2880→3120: ~19.59 FPS
+
+Gameplay scheduler wait examples:
+
+- frame 2640 report: ~2693 ms / 120 frames
+- frame 2880 report: ~3353 ms / 120 frames
+- frame 3120 report: ~2586 ms / 120 frames
+
+Existing Vulkan swapchain `pacing` totals in these reports are only fractions of a millisecond per 120 frames. Therefore the explicit `Target_60` swapchain resource-pacing wait is not the missing ~16.7 ms/frame.
+
+Conclusion — CURRENT BOUNDARY:
+
+Do not describe this as a proven hardcoded 20-FPS cap. The 30→~20 step is consistent with a 60-Hz cadence transition (new game frame every second vs every third composition opportunity), but the layer where that cadence first appears is still unknown.
+
+## 2026-08-27 — exact dc95 cadence source analysis
+
+Source facts — CONFIRMED:
+
+### VI conductor
+
+`src/core/hle/service/vi/conductor.cpp`
+
+- `FrameNs = 1e9 / 60`
+- `ScreenComposition` is scheduled from this 60-Hz base
+- `ProcessVsync()` composes displays and signals VSync
+- timing period uses `m_swap_interval` / speed scale
+
+### HardwareComposer
+
+`src/core/hle/service/nvnflinger/hardware_composer.cpp`
+
+- layer `item.swap_interval` is read and used for acquire/release bookkeeping
+- `ComposeLocked()` still ends with `m_frame_number += 1; return 1;`
+- it does not directly return 2 or 3 to select 30/20 Hz
+- `nvdisp.WaitForComposite()` is called before acquire/release processing
+- `nvdisp.Composite(...)` is called only when a new buffer was acquired
+
+### nvdisp / GPU
+
+`src/core/hle/service/nvdrv/devices/nvdisp_disp0.cpp`
+
+- `WaitForComposite()` -> `system.GPU().WaitForComposite()`
+- `Composite()` -> `system.GPU().RequestComposite(...)`
+
+`src/video_core/gpu.cpp`
+
+- composite request is queued as a GPU sync operation
+- guest acquire fences may defer renderer composite
+- the next `WaitForComposite()` waits on the prior pending sync-operation fence when present
+
+Interpretation:
+
+The 20-ish cadence is more plausibly tied to **new game framebuffer availability/completion relative to 60-Hz composition opportunities**, or to a composite hand-off stall, than to a direct `swap_interval=3` or host swapchain pacing sleep.
+
+## 2026-08-27 — frame cadence attribution static preparation
+
+Branch: `exp/x1-frame-cadence-attribution`
+
+Created from predecessor HEAD:
+
+`2e8f339a2338c5538f2c4af5cb8b1b135498a148`
+
+Prepared:
+
+- `tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py`
+- `tools/adreno_lab/analyze_x1_frame_cadence.py`
+- `.github/workflows/build-dc95-x1-frame-cadence-attribution.yml`
+- `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`
+
+Observation records:
+
+- `[X1-CADENCE][QUEUE]`: successful guest QueueBuffer timestamp / queue core / guest frame / slot / swap interval
+- `[X1-CADENCE][ACQUIRE]`: compositor new-buffer acquire timestamp / compositor tick / consumer / main-overlay / frame / swap interval
+- `[X1-CADENCE][VI]`: active compositor tick timestamp / new-main count / `WaitForComposite` duration / total compose duration
+
+All timestamps use host `steady_clock`.
+
+Safety:
+
+- cadence transplant edits only `buffer_queue_producer.cpp` and `hardware_composer.cpp` in the temporary Eden checkout
+- workflow hashes and requires no cadence change to VI conductor, GPU core, Vulkan swapchain, Vulkan scheduler or nvhost_ctrl
+- workflow rejects newly-added sleeps, new wait calls, schedule changes, swap-interval assignments, speed-limit changes, new composite requests and alternate numeric cadence returns
+- workflow is `workflow_dispatch` only
+- no Actions run was started during static preparation
+
+Next interpretation matrix:
+
+- QueueBuffer ~50 ms + acquire every 3 ticks -> cadence already upstream/game-produced
+- QueueBuffer ~33 ms + acquire every 3 ticks -> consumer/compositor delaying ready buffers
+- VI tick wall time ~50 ms or WaitForComposite ~16/33 ms -> composite/GPU hand-off stalls VI
+- QueueBuffer/acquire ~33 ms but visible/runtime ~20 -> investigate after acquisition in renderer/present completion
+
+Fresh explicit user build authorization is required before any ARM64 run of this experiment.
