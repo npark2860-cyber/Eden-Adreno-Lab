@@ -1,0 +1,286 @@
+name: Build dc95 X1 Uniform Stream Reuse
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dc95-x1-uniform-stream-reuse-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: dc95 ARM64 / X1 uniform stream reuse
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout Eden CI workflow used by dc95-era nightlies
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify exact dc95 checkout
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+
+      - name: Install dc95-era Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Prepare compile-validated P0.2 non-scheduler patches
+        shell: bash
+        run: |
+          set -e
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          for f in \
+            src/video_core/renderer_vulkan/vk_buffer_cache.cpp \
+            src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp \
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
+            test -s "$out"
+          done
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
+      - name: Apply P0.2 non-scheduler source hooks
+        shell: bash
+        working-directory: eden
+        run: |
+          set -e
+          for p in \
+            ../profiler-patches/vk_buffer_cache.cpp.patch \
+            ../profiler-patches/vk_compute_pipeline.cpp.patch \
+            ../profiler-patches/vk_graphics_pipeline.cpp.patch \
+            ../profiler-patches/vk_staging_buffer_pool.cpp.patch \
+            ../profiler-patches/vk_update_descriptor.cpp.patch; do
+            git apply --ignore-whitespace "$p"
+          done
+
+      - name: Transplant descriptor-ring profiler
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+
+      - name: Transplant base diagnostic checkboxes
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+
+      - name: Transplant X1 full-flow controls and non-scheduler hooks
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+
+      - name: Transplant exact dc95 scheduler flow hooks
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+
+      - name: Finalize exact dc95 diagnostic behavior
+        shell: bash
+        run: python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
+
+      - name: Transplant Draw Dispatch cost correlation
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
+
+      - name: Transplant signature based Draw Dispatch AB controls
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
+
+      - name: Transplant Draw other reason buckets
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_draw_other_reasons.py eden
+
+      - name: Transplant texture FillImageViews and RT subreasons
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_texture_fill_reasons.py eden
+
+      - name: Transplant alias CopyImage route subreasons
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_alias_copy_reasons.py eden
+
+      - name: Transplant bounded alias synchronization redundancy telemetry
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py eden
+
+      - name: Snapshot pre Uniform instrumentation
+        shell: bash
+        run: |
+          set -e
+          mkdir -p pre-uniform/vulkan pre-uniform/opengl pre-uniform/generic
+          cp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h pre-uniform/vulkan/
+          cp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp pre-uniform/vulkan/
+          cp eden/src/video_core/renderer_vulkan/vk_buffer_cache.h pre-uniform/vulkan/
+          cp eden/src/video_core/renderer_opengl/gl_buffer_cache.h pre-uniform/opengl/
+          cp eden/src/video_core/buffer_cache/buffer_cache.h pre-uniform/generic/
+
+      - name: Transplant graphics Uniform stream reuse telemetry
+        shell: bash
+        run: python lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py eden
+
+      - name: Verify instrumentation before configure
+        shell: bash
+        run: |
+          set -e
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py \
+            lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py \
+            lab/tools/adreno_lab/analyze_x1_uniform_path.py
+
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+
+          grep -q 'BeginWork(AdrenoProfiler::WorkOrigin::Draw)' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+          grep -q '\[X1-ALIAS-SYNC\]' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          grep -q '\[X1-UNIFORM-PATH\]' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          grep -q 'X1_UNIFORM_FAST_KEY_CAPACITY = 16384' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+          grep -q 'X1_UNIFORM_FAST_PROBE_LIMIT = 32' eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+          grep -q 'RecordX1UniformPath' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+          grep -q 'RecordX1UniformPath' eden/src/video_core/renderer_opengl/gl_buffer_cache.h
+          grep -q 'P::RecordX1UniformPath' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'x1_uniform_cached_clean' eden/src/video_core/buffer_cache/buffer_cache.h
+
+          grep -q 'HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+          grep -q 'staging_pool.Request(size, MemoryUsage::Upload)' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+          grep -q 'guest_descriptor_queue.AddBuffer' eden/src/video_core/renderer_vulkan/vk_buffer_cache.h
+          grep -q 'u32 dirty = ~0U;' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q '++channel_state->uniform_cache_shots\[0\]' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'uniform_buffer_skip_cache_size = skip_preferred ? DEFAULT_SKIP_CACHE_SIZE : 0' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'const bool use_fast_buffer = needs_alignment_stream' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'device_memory.ReadBlockUnsafe(device_addr, span.data(), size)' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'if (total_size_bytes == 0)' eden/src/video_core/buffer_cache/buffer_cache.h
+          grep -q 'UploadMemory(buffer, total_size_bytes, largest_copy, copies_span)' eden/src/video_core/buffer_cache/buffer_cache.h
+
+          {
+            diff -u pre-uniform/vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h || true
+            diff -u pre-uniform/vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp || true
+            diff -u pre-uniform/vulkan/vk_buffer_cache.h eden/src/video_core/renderer_vulkan/vk_buffer_cache.h || true
+            diff -u pre-uniform/opengl/gl_buffer_cache.h eden/src/video_core/renderer_opengl/gl_buffer_cache.h || true
+            diff -u pre-uniform/generic/buffer_cache.h eden/src/video_core/buffer_cache/buffer_cache.h || true
+          } > uniform-only.diff
+          test -s uniform-only.diff
+
+          if grep -E '^\+.*(RequestOutsideRenderPassOperationContext|Finish\(|Wait\(|dedupe|batch|reuse.*payload|skip.*Uniform|MarkRegionAs|uniform_buffer_skip_cache_size[[:space:]]*=|HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS[[:space:]]*=[[:space:]]*true)' uniform-only.diff; then
+            echo 'ERROR: forbidden Uniform optimization/state mutation appeared in uniform-only diff' >&2
+            exit 1
+          fi
+          if grep -q 'vk_scheduler' lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py; then
+            echo 'ERROR: Uniform transplant must not touch scheduler source' >&2
+            exit 1
+          fi
+
+          grep -q 'sleep_time > std::chrono::milliseconds(15)' eden/src/video_core/renderer_vulkan/vk_scheduler.h
+          if grep -q 'spin_tail' eden/src/video_core/renderer_vulkan/vk_scheduler.h; then
+            echo 'ERROR: non-dc95 frame-pacing behavior leaked into diagnostic source' >&2
+            exit 1
+          fi
+          for forbidden in MarkResolveShadowsUpToDate FlushDeferredClear depth_stencil_discard; do
+            if grep -q "$forbidden" eden/src/video_core/renderer_vulkan/vk_scheduler.cpp; then
+              echo "ERROR: later scheduler behavior leaked into exact dc95 diagnostic: $forbidden" >&2
+              exit 1
+            fi
+          done
+
+          git -C eden status --short
+
+      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure dc95 ARM64 standard build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+
+      - name: Build dc95 ARM64 X1 uniform stream reuse
+        shell: msys2 {0}
+        working-directory: eden
+        run: cmake --build build
+
+      - name: Package with Eden CI Windows packager
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: dc95cd09ee-x1-uniform-stream-reuse
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Add analyzers and metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force extras | Out-Null
+          Copy-Item lab/tools/adreno_lab/analyze_x1_full_flow_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_buffer_category_log.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_uniform_path.py extras/ -Force
+          @'
+          Experiment: X1 exact-dc95 graphics Uniform stream/reuse telemetry
+          Exact Eden source: dc95cd09eea9749250fe31a3072684d341d19417
+          Branch: exp/x1-uniform-stream-reuse
+
+          Instrumentation-only. No Uniform update, binding, dirty state, barrier, render-pass,
+          scheduler behavior, or guest-visible work is skipped, cached, batched, or reordered.
+
+          New aggregate line:
+            [X1-UNIFORM-PATH]
+
+          Measures fast mapped-stream vs classic cached path, cached clean/upload result,
+          alignment-vs-skip fast reason, and bounded exact fast-key repetition.
+          A repeated key does not claim byte-content equality.
+          '@ | Set-Content -Encoding UTF8 extras/EXPERIMENT.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-dc95-X1-uniform-stream-reuse
+          path: |
+            eden/artifacts/*
+            extras/*
+          if-no-files-found: error
+          retention-days: 14
