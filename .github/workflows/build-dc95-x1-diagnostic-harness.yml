@@ -2,6 +2,11 @@ name: Build dc95 X1 Diagnostic Harness
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-diagnostic-harness
+    paths:
+      - tools/adreno_lab/X1_DIAGNOSTIC_HARNESS_BUILD_TRIGGER
 
 concurrency:
   group: dc95-x1-diagnostic-harness-${{ github.ref }}
