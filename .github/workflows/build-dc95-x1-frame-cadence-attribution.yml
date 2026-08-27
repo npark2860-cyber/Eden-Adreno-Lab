@@ -2,6 +2,11 @@ name: Build dc95 X1 Frame Cadence Attribution
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-frame-cadence-attribution
+    paths:
+      - .github/x1-frame-cadence-attribution-authorized-build
 
 concurrency:
   group: dc95-x1-frame-cadence-attribution-${{ github.ref }}
