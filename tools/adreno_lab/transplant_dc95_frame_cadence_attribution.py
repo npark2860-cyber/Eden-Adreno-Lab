@@ -38,45 +38,33 @@ def main() -> int:
 
     root = Path(sys.argv[1])
 
-    # Require the already-established A/B + present diagnostic chain.
     settings = (root / "src/common/settings.h").read_text(encoding="utf-8")
-    for marker in (
-        "x1_present_frame_log",
-        "x1_ab_disable_adaptive_uniform_fast_stream",
-    ):
+    for marker in ("x1_present_frame_log", "x1_ab_disable_adaptive_uniform_fast_stream"):
         if marker not in settings:
             raise RuntimeError(f"required parent diagnostic marker missing: {marker}")
 
-    # ------------------------------------------------------------------
-    # Producer side: timestamp every successful QueueBuffer just before the
-    # existing listener notification. No queue state or return value changes.
-    # ------------------------------------------------------------------
     producer = root / "src/core/hle/service/nvnflinger/buffer_queue_producer.cpp"
     text = producer.read_text(encoding="utf-8")
-
-    include_anchor = '''#include "common/assert.h"\n'''
     text = replace_once(
         text,
-        include_anchor,
-        '''#include <chrono>\n#include <cstdint>\n\n#include "common/assert.h"\n''',
+        '#include "common/assert.h"\n',
+        '#include <chrono>\n#include <cstdint>\n\n#include "common/assert.h"\n',
         "producer cadence includes",
     )
 
     notify_anchor = '''    item.graphic_buffer.reset();\n    item.slot = BufferItem::INVALID_BUFFER_SLOT;\n\n    if (listener_available) {\n'''
-    notify_replacement = '''    if (Settings::values.x1_present_frame_log.GetValue()) {\n        const auto x1_queue_host_us = std::chrono::duration_cast<std::chrono::microseconds>(\n            std::chrono::steady_clock::now().time_since_epoch()).count();\n        LOG_INFO(Service_Nvnflinger,\n                 "[X1-CADENCE][QUEUE] hostUs={} core=0x{:x} frame={} slot={} swap={} qsize={}",\n                 x1_queue_host_us, reinterpret_cast<std::uintptr_t>(core.get()), item.frame_number,\n                 slot, item.swap_interval, core->queue.size());\n    }\n\n    item.graphic_buffer.reset();\n    item.slot = BufferItem::INVALID_BUFFER_SLOT;\n\n    if (listener_available) {\n'''
+    notify_replacement = '''    if (Settings::values.x1_present_frame_log.GetValue()) {\n        const auto x1_queue_host_us = std::chrono::duration_cast<std::chrono::microseconds>(\n            std::chrono::steady_clock::now().time_since_epoch()).count();\n        LOG_INFO(Service_Nvnflinger,\n                 "[X1-CADENCE][QUEUE] hostUs={} core=0x{:x} frame={} slot={} swap={}",\n                 x1_queue_host_us, reinterpret_cast<std::uintptr_t>(core.get()), item.frame_number,\n                 slot, item.swap_interval);\n    }\n\n    item.graphic_buffer.reset();\n    item.slot = BufferItem::INVALID_BUFFER_SLOT;\n\n    if (listener_available) {\n'''
     text = replace_once(text, notify_anchor, notify_replacement, "producer QueueBuffer cadence log")
     producer.write_text(text, encoding="utf-8")
 
-    # ------------------------------------------------------------------
-    # Consumer/compositor side: use the same steady clock. Log each acquired
-    # layer and one summary line per active 60-Hz composition tick.
-    # ------------------------------------------------------------------
     composer = root / "src/core/hle/service/nvnflinger/hardware_composer.cpp"
     text = composer.read_text(encoding="utf-8")
-
-    include_anchor = '''#include <optional>\n\n#include <boost/container/small_vector.hpp>\n'''
-    include_replacement = '''#include <chrono>\n#include <optional>\n\n#include <boost/container/small_vector.hpp>\n\n#include "common/logging.h"\n#include "common/settings.h"\n'''
-    text = replace_once(text, include_anchor, include_replacement, "composer cadence includes")
+    text = replace_once(
+        text,
+        '#include <optional>\n\n#include <boost/container/small_vector.hpp>\n',
+        '#include <chrono>\n#include <optional>\n\n#include <boost/container/small_vector.hpp>\n\n#include "common/logging.h"\n#include "common/settings.h"\n',
+        "composer cadence includes",
+    )
 
     wait_anchor = '''    // Set default speed limit to 100%.\n    *out_speed_scale = 1.0f;\n\n    nvdisp.WaitForComposite();\n    this->ReleaseFramebuffersLocked(display);\n'''
     wait_replacement = '''    // Set default speed limit to 100%.\n    *out_speed_scale = 1.0f;\n\n    const auto x1_tick_start = std::chrono::steady_clock::now();\n    nvdisp.WaitForComposite();\n    const auto x1_after_wait = std::chrono::steady_clock::now();\n    const auto x1_wait_us = std::chrono::duration_cast<std::chrono::microseconds>(\n        x1_after_wait - x1_tick_start).count();\n    u32 x1_main_acquired = 0;\n    u32 x1_overlay_acquired = 0;\n\n    this->ReleaseFramebuffersLocked(display);\n'''
@@ -91,14 +79,9 @@ def main() -> int:
     text = replace_once(text, end_anchor, end_replacement, "composer tick cadence log")
     composer.write_text(text, encoding="utf-8")
 
-    # Local static invariants: observation only and existing return semantics retained.
     producer_final = producer.read_text(encoding="utf-8")
     composer_final = composer.read_text(encoding="utf-8")
-    for required in (
-        "[X1-CADENCE][QUEUE]",
-        "listener_available->OnFrameAvailable(item)",
-        "return Status::NoError;",
-    ):
+    for required in ("[X1-CADENCE][QUEUE]", "listener_available->OnFrameAvailable(item)", "return Status::NoError;"):
         if required not in producer_final:
             raise RuntimeError(f"producer cadence invariant missing: {required}")
     for required in (
