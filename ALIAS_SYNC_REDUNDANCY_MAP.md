@@ -2,7 +2,7 @@
 
 Updated: 2026-08-27 KST
 
-Status: **instrumentation prepared / runtime not yet executed**
+Status: **ARM64 diagnostic build succeeded / runtime not yet captured**
 
 Exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
 
@@ -24,75 +24,36 @@ The preceding alias-route experiment established the dominant Draw outside-rende
 
 Matched runtime (`eden_log(8).txt`):
 
-- `direct-route`: 100,021 scopes
-- `direct-resolve-invalidate`: 100,021 scopes / outside 0
-- `direct-vk-copy`: 100,021 scopes / outside 24,806
-- `reinterpret-route`: 0
-- `convert-route`: 0
-- `direct-bpb-reinterpret`: 0
+- direct-route: 100,021 scopes
+- direct-resolve-invalidate: 100,021 scopes / outside 0
+- direct-vk-copy: 100,021 scopes / outside 24,806
+- reinterpret-route: 0
+- convert-route: 0
+- direct-bpb-reinterpret: 0
 - whole-log attributed Draw outside-RP: 39,017
-- direct-vk-copy share: 24,806 / 39,017 = **63.58%**
+- direct-vk-copy share: **63.58%**
 
 This experiment does not reopen route attribution.
 
 ## Exact dc95 alias semantics — source verified
 
-### `AliasedImage`
+- `AliasedImage` stores alias `ImageId` plus `std::vector<ImageCopy>`; no per-alias dirty/up-to-date flag exists.
+- `ImageFlagBits::Alias` is not the synchronization freshness test.
+- `MarkModification()` sets `GpuModified` and advances `image.modification_tick` from the cache-global counter.
+- `modification_tick` is an Eden recency/version signal, not a content hash.
+- `SynchronizeAliases()` selects a source only when `destination.modification_tick < source.modification_tick`.
+- destination tick is advanced to the maximum selected source tick before copies execute.
+- selected aliases are sorted by source tick.
+- actual request: `CopyImage(image_id, aliased->id, aliased->copies)`.
+- `AddImageAlias()` builds regions from source/destination subresources, offsets and extents.
 
-Exact dc95 defines an alias record as:
-
-- `ImageId id`
-- `std::vector<ImageCopy> copies`
-
-There is no per-alias dirty/up-to-date flag in `AliasedImage`.
-
-`ImageFlagBits::Alias` indicates that the image has aliases and affects cache/GC state. `CheckAliasState()` clears that flag only when `aliased_images` becomes empty; it is not the synchronization freshness test.
-
-### `modification_tick`
-
-`TextureCache<P>::MarkModification(ImageBase&)`:
-
-- sets `GpuModified`
-- sets `image.modification_tick = ++modification_tick`
-
-Other exact-dc95 maintenance paths can propagate an existing image tick to a newly joined/copied image, and `SynchronizeAliases()` propagates the most recent selected alias tick to the destination.
-
-Therefore `modification_tick` is used here as an Eden recency/version ordering signal. It is **not** treated as a content hash or proof that two byte streams are equal.
-
-### `SynchronizeAliases()` selection and copy order
-
-For destination `image_id`, exact dc95:
-
-1. reads the destination image's current `modification_tick`
-2. examines each `AliasedImage`
-3. selects an alias only when:
-   `destination.modification_tick < source.modification_tick`
-4. records the maximum selected source tick
-5. updates the destination tick to that maximum
-6. sorts selected aliases by source `modification_tick`
-7. calls `CopyImage(image_id, aliased->id, aliased->copies)` for each selected alias, with scale handling around the same copy request where required
-
-Thus the new telemetry is attached to the alias-copy request issued from this exact `SynchronizeAliases()` path, immediately before the existing copy call.
-
-## Copy-region semantics
-
-`AliasedImage::copies` is produced by `AddImageAlias()` and contains `ImageCopy` records with:
-
-- source subresource: base level, base layer, layer count
-- destination subresource: base level, base layer, layer count
-- source x/y/z offset
-- destination x/y/z offset
-- width/height/depth extent
-
-The diagnostic hashes exactly these fields, plus region count, in copy order. It does not invent a byte-volume formula for compressed/block formats.
-
-## Prepared passive telemetry
+## Diagnostic instrumentation
 
 Transplant:
 
 `tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py`
 
-New report marker:
+Aggregate marker:
 
 `[X1-ALIAS-SYNC]`
 
@@ -101,35 +62,50 @@ One aggregate line is emitted at the existing profiler report interval, default 
 Fields:
 
 - `copies`: total SynchronizeAliases alias-copy requests
-- `uniquePairs`: unique `(dst ImageId, src ImageId)` pairs tracked in the interval
-- `sameFrame`: repeated pair in the same texture-cache frame
-- `sameDraw`: repeated pair in the same Draw work scope
-- `consecutiveFrame`: repeated pair on consecutive texture-cache frames
+- `uniquePairs`: unique `(dst ImageId, src ImageId)` pairs tracked in interval
+- `sameFrame`: repeated pair in same texture-cache frame
+- `sameDraw`: repeated pair in same Draw work scope
+- `consecutiveFrame`: repeated pair on consecutive frames
 - `sameSrcTick`: repeated pair with unchanged source `modification_tick`
 - `advancedSrcTick`: repeated pair whose source tick advanced
-- `regressedSrcTick`: diagnostic guard for a lower subsequently observed source tick
+- `regressedSrcTick`: lower subsequently observed source tick guard
 - `sameSignature`: repeated pair with identical copy-region signature
-- `sameStateSignature`: repeated pair with both unchanged source tick and identical region signature
-- `regions`: total ImageCopy regions represented by requests
+- `sameStateSignature`: same pair + same source tick + identical region signature
+- `regions`: total `ImageCopy` regions represented
 - `maxRegions`: largest region count in one request
-- `tableOverflow`: requests whose pair history could not be retained by the bounded tracker
+- `tableOverflow`: requests whose pair history could not be retained
+
+Region signature covers copy count and exact source/destination subresource, offset and extent fields in copy order.
 
 ## Bounded-state design
 
-Pair history is fixed-size:
-
-- capacity: 4,096 entries
+- fixed capacity: 4,096 entries
 - probe cap: 32
-- no dynamic growth
-- state rotated/cleared at each report boundary
+- fixed array; no dynamic growth
+- state cleared/rotated at each report boundary
 
-This bounds diagnostic memory regardless of runtime duration.
+Non-zero `tableOverflow` means some repeat history could not be classified.
 
-`uniquePairs` and repeat classifications should be interpreted together with `tableOverflow`; a non-zero overflow means some pair-history classification was missed.
+## Successful build
+
+Exactly one authorized ARM64 attempt was executed:
+
+- run: `33024690895`
+- job: `98363162523`
+- attempt: `1`
+- build head: `804f394c5db280f842a01113e6ca92f7ad57d219`
+- result: **success**
+- exact dc95 preflight: **success**
+- instrumentation verification: **success**
+- configure/build/package/upload: **success**
+- artifact: `Eden-dc95-X1-alias-sync-redundancy`
+- artifact id: `9628554127`
+- size: `31,300,012` bytes
+- SHA-256: `3aa79bb1cd986d7b4da19a1047a22c87db7b486b549a8856680138d11655b8f2`
+
+The temporary one-shot push trigger was removed after launch. Workflow is back to `workflow_dispatch` only and no second run was created.
 
 ## Existing telemetry retained
-
-The workflow retains the established instrumentation chain, including:
 
 - `other/texture/alias-copy`
 - `other/texture/alias-copy/direct-route`
@@ -137,14 +113,11 @@ The workflow retains the established instrumentation chain, including:
 - `other/post-copy-barrier`
 - Uniform / Vertex / Index / refresh counters
 
-A future matched runtime can therefore cross-check the new copy-request count against the known alias-route scope magnitude and outside-RP attribution.
-
 ## Instrumentation-only boundary
 
-This experiment does not:
+This build does not:
 
-- skip or deduplicate copies
-- cache copy results
+- skip/deduplicate/cache copies
 - batch `vkCmdCopyImage`
 - suppress barriers
 - suppress `RequestOutsideRenderPassOperationContext()`
@@ -153,46 +126,21 @@ This experiment does not:
 - move copies across Draw boundaries
 - change Draw/Dispatch A/B defaults
 
-The purpose is measurement only.
-
-## Prepared workflow
-
-Workflow:
-
-`.github/workflows/build-dc95-x1-alias-sync-redundancy.yml`
-
-Artifact name:
-
-`Eden-dc95-X1-alias-sync-redundancy`
-
-The workflow is manual-only (`workflow_dispatch`) and checks out the exact fixed Eden SHA.
-
-Preflight includes:
-
-- exact dc95 HEAD verification
-- Python transplant syntax checks
-- `git diff --check` on transplanted Eden source
-- exact source-semantic markers
-- required `[X1-ALIAS-SYNC]` and bounded-state markers
-- retained alias direct-route/direct-vk-copy markers
-- an alias-sync-only diff checked for forbidden state/optimization changes
-- explicit no-scheduler-touch guard for the new transplant
-- existing exact-dc95 scheduler leak guards
-
 ## Runtime decision rules
 
-No runtime conclusion exists yet.
+Runtime conclusion is still pending.
 
-After one future authorized build and matched run:
+After a matched run:
 
-- high `sameStateSignature`, especially with high `sameFrame` or `sameDraw`, is evidence supporting a separate one-variable redundant-copy A/B experiment
-- mostly `advancedSrcTick` means source state normally changes before repeated copies, so dedupe is not supported by this measurement
-- mostly unique pairs with little repeat means alias-set churn is the more likely next diagnostic target
+- high `sameStateSignature`, especially high `sameFrame` or `sameDraw`, supports a separate one-variable redundant-copy A/B experiment
+- mostly `advancedSrcTick` means source version changes normally justify repeated copies; dedupe is not supported
+- mostly unique pairs with little repetition points toward alias-set churn as the next diagnostic target
+- non-zero `tableOverflow` limits repeat-ratio interpretation
 
-Even a high `sameSrcTick` result remains a version-state result, not byte-for-byte content proof.
+Unchanged `modification_tick` remains version-state evidence, not byte-for-byte equality proof.
 
-## Build authorization state
+## Next action
 
-**No ARM64 build has been started for this experiment.**
+Run the successful artifact on the matched TOTK 1.4.2 route and provide the log containing `[X1-ALIAS-SYNC]` plus retained telemetry.
 
-Fresh explicit user authorization is required before exactly one build attempt. One authorization = one attempt.
+No additional build is authorized. Any further ARM64 attempt requires fresh explicit user permission.
