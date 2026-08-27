@@ -1,4 +1,4 @@
-# Handoff Prompt — Eden Adreno X1 Frame-Build Attribution
+# Handoff Prompt — Eden Adreno X1 GPU Command Attribution
 
 Use this prompt when continuing in a new tab.
 
@@ -12,16 +12,17 @@ GitHub repository:
 
 Current experiment branch:
 
-`exp/x1-frame-build-attribution`
+`exp/x1-gpu-command-attribution`
 
 Do not reconstruct state from old chat. First read these GitHub documents and treat them as source of truth:
 
 1. `CURRENT_HANDOFF.md`
 2. `DEBUG_HISTORY.md`
 3. `DEBUG_HISTORY_20260827_CONTINUED.md`
-4. `LAB_BOOTSTRAP.md`
-5. `NEXT_ACTION_FRAME_BUILD_ATTRIBUTION.md`
-6. `HANDOFF_PROMPT.md`
+4. `DEBUG_HISTORY_20260828_CONTINUED.md`
+5. `LAB_BOOTSTRAP.md`
+6. `NEXT_ACTION_GPU_COMMAND_ATTRIBUTION.md`
+7. `HANDOFF_PROMPT.md`
 
 Then verify actual branch HEAD and Actions state against the documents before doing anything else.
 
@@ -36,59 +37,81 @@ Hard build rule:
 - one authorization = exactly one build attempt
 - if that attempt fails, stop; no retry without another explicit authorization
 
-Retain the closed facts in `CURRENT_HANDOFF.md`, especially:
+Retain all closed facts in `CURRENT_HANDOFF.md`, especially:
 
 - alias trivial dedupe is closed
 - adaptive Uniform fast stream is mapped staging re-stream; wholesale classic-cache fallback did not fix gameplay
 - TOTK 1.4.2 raw main BufferQueue `swap=2 -> 3` explains the discrete 30 -> <=20 cadence shape in that run
 - raw swap originates in guest QueueBuffer input, not Qualcomm Vulkan Present
 - raw-3/effective-2 HardwareComposer A/B executed correctly but did not break the gameplay ceiling
-- integrated Diagnostic Harness build succeeded: run `33098438607`, artifact id `9658387549`
 - Dequeue attribution closed 2-buffer backpressure as the slow-state cause
-- fast state waits ~14 ms for a free slot; slow gameplay state waits ~0.001 ms and instead spends ~46.6 ms after Dequeue END before next Queue
-- heavy X1 flow logs ON/OFF do not materially change that slow-state interval
-- TOTK 1.2.1 reaches ~20-FPS class while raw swap stays 1, proving raw swap=3 is not the underlying renderer-performance cause
+- slow gameplay waits ~0.001 ms for a free slot and spends ~45-47 ms after Dequeue END before next Queue
+- heavy X1 diagnostic logs do not create that interval
+- DFPS ON can remain ~20-FPS class with raw swap=1
+- DFPS OFF can remain ~20-FPS class with raw swap=3
+- therefore DFPS and raw swap=3 are not the root renderer-performance cause
+- Frame-Build attribution showed only roughly ~9-12 ms/frame in measured Vulkan Draw/Dispatch/Clear scopes, leaving roughly ~37-39 ms/frame unexplained outside those scopes
 
-Current work is the runtime-selectable frame-build wall-time extension to the integrated Harness.
+Frame-Build build completed successfully:
+
+- workflow `Build dc95 X1 Frame Build Attribution`
+- run `33115424368`
+- job `98668715842`
+- attempt 1
+- build HEAD `a1eba5fdbea2455f24392629f594cbb99cc03e74`
+- artifact id `9665216124`
+- SHA-256 `43a83eeb51dd3ef9ba65f804a12f14f08dbf58796e84bed22e2147c9ab3af709`
+- cleanup HEAD `f54b732e86e2ef0dd57a402a03b8a76cbbedc0e1`
+
+Current work is the runtime-selectable GPU command attribution layer.
 
 New control:
 
-`X1 Log: Frame Build Attribution`
+`X1 Log: GPU Command Attribution`
 
-It emits `[X1-FRAMEBUILD]` 120-frame aggregates for:
+It emits `[X1-GPUCMD]` 120-frame aggregates for:
 
-- PrepareDraw total / FlushWork / GPU-memory FlushCaching / pre-config / GraphicsPipeline::Configure / post-config
-- GraphicsPipeline Configure descriptor sync / stage scan / FillImageViews / image-buffer bind / graphics-buffer update / descriptor+render-target preparation / ConfigureDraw
-- DispatchCompute total / flush / memory / configure / issue
-- DrawTexture / Clear / FlushCommands / TickFrame
+- asynchronous GPU worker queue PopWait vs active command handling
+- PushCommand total + synchronous block-wait
+- `Tegra::Control::Scheduler::Push` total / bind / DmaPusher dispatch
+- `DmaPusher::DispatchCalls` loop / tail / sync wait
+- `ProcessCommands` total + command-word volume
+- CallMethod / CallMultiMethod counts without per-method timers
 
-The existing Draw/texture reason-level scopes must remain intact. The new pass only measures wall time around them.
+Primary next split:
+
+- queueWait dominates => GPU worker is idle waiting for upstream/guest command supply
+- active/dma/process dominates => Eden command interpretation / method execution owns the missing time
+- blockWait material => upstream caller synchronously waits for GPU-worker completion
 
 Prepared files:
 
-- `src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h`
-- `tools/adreno_lab/transplant_dc95_frame_build_attribution.py`
-- `tools/adreno_lab/analyze_x1_frame_build_attribution.py`
-- `.github/workflows/build-dc95-x1-frame-build-attribution.yml`
-- `NEXT_ACTION_FRAME_BUILD_ATTRIBUTION.md`
+- `src/video_core/x1_gpu_command_profiler.h`
+- `tools/adreno_lab/transplant_dc95_gpu_command_attribution.py`
+- `tools/adreno_lab/analyze_x1_gpu_command_attribution.py`
+- `.github/workflows/build-dc95-x1-gpu-command-attribution.yml`
+- `NEXT_ACTION_GPU_COMMAND_ATTRIBUTION.md`
 
 Workflow:
 
-`Build dc95 X1 Frame Build Attribution`
+`Build dc95 X1 GPU Command Attribution`
 
 It must remain `workflow_dispatch` only.
 
-Recommended first runtime after a successful future build:
+Recommended first runtime after a future successful build:
 
+- same TOTK 1.2.1 gameplay route
+- DFPS OFF first
+- GPU Command Attribution ON
 - Frame Build Attribution ON
 - Frame Cadence ON
 - Dequeue Attribution ON
 - all behavioral A/B controls OFF
 - Scheduler/Present/Pipeline/Upload/QCOM heavy logs OFF
-- Descriptor Ring OFF unless separately needed
+- Descriptor Ring OFF
 
 NEXT ACTION:
 
-Read `NEXT_ACTION_FRAME_BUILD_ATTRIBUTION.md` and finish static/pre-Actions validation. Stop before ARM64 Actions.
+Read `NEXT_ACTION_GPU_COMMAND_ATTRIBUTION.md`, verify branch/HEAD/workflow state, and finish static/pre-Actions validation. Stop before ARM64 Actions.
 
 No current ARM64 build authorization exists. A fresh explicit user authorization is required for exactly one build attempt.
