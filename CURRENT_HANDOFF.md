@@ -1,4 +1,4 @@
-# CURRENT HANDOFF — Eden Adreno X1 swap-interval 3->2 A/B
+# CURRENT HANDOFF — Eden Adreno X1 Diagnostic Harness
 
 Updated: 2026-08-27 KST
 
@@ -7,8 +7,9 @@ Updated: 2026-08-27 KST
 - repository: `npark2860-cyber/Eden-Adreno-Lab`
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
-- current experiment branch: `exp/x1-swap-interval-3-to-2-ab`
-- predecessor HEAD: `exp/x1-frame-cadence-attribution@d32cf164b12260d6ab49fc7c3d965141d22af69f`
+- current experiment branch: `exp/x1-diagnostic-harness`
+- predecessor branch: `exp/x1-swap-interval-3-to-2-ab`
+- predecessor cleanup HEAD: `9822e0017ca07da8c8aa0545339230efab6d4967`
 
 Never change the exact Eden baseline without the explicit baseline-change procedure.
 
@@ -32,7 +33,8 @@ Do not implement simple alias-copy dedupe or suppress required outside-RP `vkCmd
 - adaptive small-Uniform fast path is mapped staging re-stream, not payload reuse
 - gameplay fast selection is almost entirely adaptive `fastSkip`; `fastAlignment=0`
 - classic cached Uniform path is mostly clean
-- payload-fingerprint runtime: 97.65% of tracked repeated samples same fingerprint; 99.17% of classified same-frame repeats same fingerprint
+- payload-fingerprint runtime: 97.65% of tracked repeated samples same fingerprint
+- classified same-frame repeats: 99.17% same fingerprint
 - wholesale classic-cache fallback A/B did not break the gameplay ceiling and moved cost into explicit copy/outside-RP/synchronization work
 
 Do not blindly reuse old staging allocations or enable persistent Uniform bindings.
@@ -54,8 +56,8 @@ ON result:
 
 - adaptive fast / fastSkip = 0
 - redirected classic-cache visits ~94.33% clean
-- gameplay still ~18 FPS in matched run
-- representative frame-1440: ~122.8k Uniform copies, ~484.7 MiB, ~87.9k outside-RP Uniform operations, scheduler wait ~6504 ms / 120 frames
+- gameplay still ~18 FPS
+- cost migrated into explicit copy / outside-RP / synchronization
 
 Conclusion: wholesale classic-cache fallback is not an optimization.
 
@@ -70,138 +72,170 @@ Authorized build — SUCCESS:
 - build HEAD `d49d5a20b17a4e6861aad036474600697ac14fc8`
 - artifact `Eden-dc95-X1-frame-cadence-attribution`
 - artifact id `9642483710`
-- size 31,305,699 bytes
 - SHA-256 `b9140318047ac09462751ad5c6dc1d598122cc82c2ea78bfe03a5c33fc91f870`
-- attempts 1, reruns 0
+
+Matched TOTK 1.4.2 runtime confirmed:
+
+- stable raw `swap=2`: QueueBuffer median ~33.352 ms, nominal 30-FPS cadence
+- stable raw `swap=3`: QueueBuffer median ~49.985 ms, nominal 20-FPS cadence
+- main acquire follows ~33.5 ms vs ~50.0 ms
+- VI remains ~60 Hz
+- `WaitForComposite` is normally near 0 ms
+- transition observed directly at QueueBuffer raw `swap=2 -> 3`
+
+Confirmed meaning:
+
+> The discrete 30 -> <=20 shape is encoded in the guest/main BufferQueue cadence: raw 2 gives nominal 60/2=30 opportunities and raw 3 gives nominal 60/3=20 opportunities.
+
+Raw `swap_interval` originates in guest `QueueBufferInput`, is stored unchanged by `BufferQueueProducer`, and is not created by Qualcomm Vulkan, Mailbox, or Target_60.
+
+## Swap interval 3 -> effective 2 A/B — completed
+
+Authorized build — SUCCESS:
+
+- workflow `Build dc95 X1 Swap Interval 3 To 2 AB`
+- run `33066726140`
+- job `98498505964`
+- attempt 1
+- build HEAD `c196cd1c61e6385009c136b3fb810d5ed9807615`
+- artifact `Eden-dc95-X1-swap-interval-3-to-2-ab`
+- artifact id `9644858627`
+- size 31,305,925 bytes
+- SHA-256 `e3b4b71b59812f9c39a9bb8f637cf2b227aa1b9eef623615497f62a65241a7cb`
+- exactly one attempt, no rerun
 
 Runtime log:
 
-`eden_log(20260827-104943).txt`
+`eden_log.txt` uploaded 2026-08-27 12:06 KST.
 
-Matched environment:
+ON was confirmed:
 
-- TOTK 1.4.2
-- Qualcomm Adreno X1-85
-- Qualcomm driver 512.863.0
-- Vulkan 1.3.295
-- Windows 11 25H2 build 26220.9223
-- exact Eden identification `HEAD-dc95cd09ee-HEAD`
-- `x1_present_frame_log = true`
-- Uniform cache A/B OFF
+- `x1_ab_clamp_main_swap_interval_3_to_2 = true`
+- raw main `swap=3` records were acquired as `effective=2`
+- the A/B therefore executed correctly
 
-### Stable raw swap=2 regime
+Result:
 
-QueueBuffer frames 562-910:
+- raw QueueBuffer production in the long gameplay `swap=3` regime remained around the ~50-ms / ~19-FPS class
+- main acquire rate remained around the same class
+- effective interval 2 created some 2-tick acquire opportunities, but the producer did not supply enough new buffers to break the gameplay ceiling
 
-- 349 QueueBuffer records
-- duration 11.830372 s
-- queue rate 29.416 FPS
-- median QueueBuffer interval 33.352 ms
-- main acquire median 33.506 ms
-- acquire tick delta 2 for 344 / 348 adjacent acquires
-- VI tick median ~16.609 ms
-- no `WaitForComposite > 1 ms` event in the stable segment
+Conclusion — CLOSED:
 
-### Stable raw swap=3 gameplay regime
+> HardwareComposer interval-3 acquire/release gating is not the primary cause of the <=20-FPS gameplay ceiling. `swap=3` is a cadence signal/symptom; forcing effective 2 cannot create upstream frames that are not being queued.
 
-QueueBuffer frames 911-1758:
+Do not repeat a simple producer/composer `3 -> 2` number clamp as the next optimization.
 
-- 848 QueueBuffer records
-- duration 48.44955 s
-- queue rate 17.482 FPS because nominal 50-ms opportunities are additionally missed
-- median QueueBuffer interval 49.985 ms
-- main acquire median 50.044 ms
-- acquire tick delta 3 for 726 adjacent acquires; remainder mostly 4+ tick misses
-- VI tick median ~16.586 ms / mean ~16.667 ms
-- `WaitForComposite` median 0 ms; only 4 VI ticks exceeded 1 ms
+## Exact dc95 BufferQueue backpressure path — source analysis
 
-Critical transition:
+`BufferQueueCore` on HOS has:
 
-- QueueBuffer frame 910: `swap=2`
-- QueueBuffer frame 911: `swap=3`
-- final gameplay remains raw `swap=3` through frame 1758
+- `use_async_buffer = false`
+- `max_acquired_buffer_count = 0`
+- `default_max_buffer_count = 2`
 
-CONFIRMED:
+`BufferQueueProducer::DequeueBuffer()` calls `WaitForFreeSlotThenRelock()`.
 
-> raw main guest BufferQueue swap 2 creates nominal 60/2=30 FPS opportunities; raw swap 3 creates nominal 60/3=20 FPS opportunities. Misses only lower the rate further, explaining why 22-23 FPS is normally absent and gameplay feels pinned to <=20.
+If no free slot exists, or too many buffers are outstanding, that helper can block in `WaitForDequeueCondition()` until the consumer acquires/releases and calls `SignalDequeueCondition()`.
 
-This is not a Qualcomm Vulkan driver hard cap and is not caused by Eden `Target_60` pacing sleep.
+Therefore the unresolved ~50-ms producer interval should be split into:
 
-## Exact dc95 swap ownership — confirmed
+1. previous QueueBuffer -> next DequeueBuffer entry
+2. DequeueBuffer entry -> free-slot selection / return
+3. DequeueBuffer return -> next QueueBuffer
 
-`QueueBufferInput` contains `s32 swap_interval` and is read directly from guest `InputParcel` via `parcel.ReadFlattened(*this)`.
+Interpretation:
 
-`BufferQueueProducer::QueueBuffer()` deflates it and stores:
+- long #1 => guest/game pacing before requesting the next buffer
+- long #2 => BufferQueue free-slot/backpressure
+- long #3 => guest rendering/GPU production after dequeue
 
-`item.swap_interval = swap_interval`
-
-No Vulkan/Adreno conversion occurs there.
-
-`HardwareComposer` honors the main-layer interval by:
-
-1. suppressing another main acquire while `frames_since_last_acquire < expected_interval`
-2. setting `release_frame_number = m_frame_number + swap_interval` after successful acquire
-
-The VI/compositor itself still advances at ~60 Hz and `ComposeLocked()` returns 1.
-
-## Current experiment — static preparation complete
+## Current experiment — runtime-selectable X1 Diagnostic Harness
 
 Branch:
 
-`exp/x1-swap-interval-3-to-2-ab`
+`exp/x1-diagnostic-harness`
 
 Purpose:
 
-Determine whether raw guest `swap=3` is only a symptom of already-slow upstream frame production, or whether Eden's interval-3 main-layer acquire/release bookkeeping also participates in a feedback ceiling.
+Stop paying one ARM64 build per attribution question. Recreate the complete proven diagnostic chain in one binary and select logging/A-B behavior at runtime.
 
-Checkbox:
+Existing controls remain available, including:
 
-`X1 A/B: Clamp Main Swap Interval 3 To 2`
+- X1 upload/barrier/full-flow logs
+- X1 pipeline/shader logs
+- X1 present/frame logs
+- X1 scheduler/sync logs
+- X1 descriptor-ring log
+- Draw/Dispatch exact-signature A/B controls
+- `X1 A/B: Disable Adaptive Uniform Fast Stream`
+- `X1 A/B: Clamp Main Swap Interval 3 To 2`
 
-Default: OFF.
+New independent controls:
 
-OFF:
+- `X1 Log: Frame Cadence`
+- `X1 Log: Dequeue Attribution`
 
-- preserve cadence-attribution behavior exactly
+Both new controls default OFF.
 
-ON in the dedicated Windows ARM64 Vulkan X1 diagnostic build:
+### Frame Cadence
 
-- preserve raw guest QueueBuffer parcel and `item.swap_interval`
-- preserve `[X1-CADENCE][QUEUE] swap=<raw>`
-- only for main non-overlay layer, when raw interval is exactly 3:
-  - effective acquire interval = 2
-  - effective release interval = 2
-- overlays unchanged
-- raw 0/1/2 and >=4 unchanged
-- `[X1-CADENCE][ACQUIRE]` reports both `swap=<raw>` and `effective=<value>`
+Controls:
 
-Important implementation boundary:
+- `[X1-CADENCE][QUEUE]`
+- `[X1-CADENCE][ACQUIRE]`
+- `[X1-CADENCE][VI]`
 
-HardwareComposer does not own Vulkan driver identity. Runtime guard is therefore Windows ARM64 + Vulkan + explicit checkbox, inside a dedicated X1/Qualcomm lab build. This is not a production Qualcomm-detection mechanism.
+This is now separate from the older `x1_present_frame_log`.
+
+### Dequeue Attribution
+
+Observation-only.
+
+Records:
+
+- `[X1-DEQUEUE][BEGIN]`
+- `[X1-DEQUEUE][SLOT]`
+- `[X1-DEQUEUE][END]`
+
+`SLOT` reports:
+
+- time before the free-slot helper
+- time spent inside `WaitForFreeSlotThenRelock()`
+
+`END` reports total DequeueBuffer service time.
+
+When Dequeue Attribution is ON, QueueBuffer records are also retained automatically even if Frame Cadence is OFF, because the analyzer needs Queue/Dequeue pairing.
+
+No new wait, sleep, fence, buffer-count, swap-interval, scheduler, VI, present, barrier, render-pass, Uniform, alias, or GPU policy is added by the harness pass.
 
 Prepared files:
 
-- `tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py`
-- updated `tools/adreno_lab/analyze_x1_frame_cadence.py`
-- `.github/workflows/build-dc95-x1-swap-interval-3-to-2-ab.yml`
-- `NEXT_ACTION_SWAP_INTERVAL_3_TO_2_AB.md`
+- `tools/adreno_lab/transplant_dc95_diagnostic_harness.py`
+- `tools/adreno_lab/analyze_x1_dequeue_attribution.py`
+- `.github/workflows/build-dc95-x1-diagnostic-harness.yml`
+- `NEXT_ACTION_X1_DIAGNOSTIC_HARNESS.md`
 
 Workflow:
 
-`Build dc95 X1 Swap Interval 3 To 2 AB`
+`Build dc95 X1 Diagnostic Harness`
 
-Trigger: `workflow_dispatch` only.
+Trigger:
 
-Clamp pass may alter only the temporary Eden checkout files:
+`workflow_dispatch` only.
+
+The workflow recreates the full existing diagnostic chain through the swap-clamp A/B, snapshots that state, then applies only the harness pass.
+
+Harness-only allowed temporary Eden checkout changes:
 
 - `src/common/settings.h`
 - `src/yuzu/configuration/configure_debug.h`
 - `src/yuzu/configuration/configure_debug.cpp`
+- `src/core/hle/service/nvnflinger/buffer_queue_producer.cpp`
 - `src/core/hle/service/nvnflinger/hardware_composer.cpp`
 
-Workflow hashes and requires no clamp change to:
+The workflow hashes and requires no harness change to:
 
-- `buffer_queue_producer.cpp`
 - VI conductor
 - GPU core
 - Vulkan swapchain
@@ -210,37 +244,39 @@ Workflow hashes and requires no clamp change to:
 - generic buffer cache
 - Vulkan buffer cache
 
-It also rejects newly-added sleeps, wait/schedule/composite requests, speed changes, present-mode changes, and raw `item.swap_interval` assignment changes.
+The harness transplant also requires the complete existing `WaitForFreeSlotThenRelock()` helper text to remain byte-for-byte unchanged.
 
-## Runtime interpretation after a future successful build
+## Recommended first runtime matrix after a future successful build
 
-A/B OFF:
+Use the same TOTK 1.4.2 save / route / settings.
 
-- expect raw/effective 3/3 in steady gameplay
+Run A — pure attribution:
 
-A/B ON:
+- `X1 Log: Frame Cadence` ON
+- `X1 Log: Dequeue Attribution` ON
+- swap clamp OFF
+- Uniform cache A/B OFF
+- unrelated heavy logs OFF unless needed
 
-- verify raw/effective 3/2
+Run B — same attribution with clamp:
 
-Interpretation:
+- cadence ON
+- dequeue ON
+- swap clamp ON
+- Uniform cache A/B OFF
 
-1. raw QueueBuffer remains ~50 ms with effective=2
-   - clamp cannot create upstream frames
-   - swap=3 is mainly a symptom/guest pacing decision
+Primary question:
 
-2. raw QueueBuffer shifts into 33-50 ms and 21-29 FPS begins appearing
-   - Eden interval-3 acquire/release timing participates in a feedback ceiling
-
-3. timing/render regression
-   - reject clamp as optimization regardless of FPS
+> In the raw `swap=3` gameplay regime, where does the ~50 ms first appear: before Dequeue entry, inside free-slot selection/wait, or after Dequeue returns?
 
 ## What NOT to do
 
 - no ARM64 Actions without fresh explicit permission
-- no rerun of prior cadence build
+- no automatic rerun
 - do not modify raw guest QueueBuffer data
-- no VSync/speed-limiter/Mailbox/Target_60/scheduler/fence/barrier/render-pass changes in this A/B
-- no clamp for intervals other than raw main-layer 3
+- no VSync / Mailbox / Target_60 / speed-limit changes for this attribution
+- no scheduler/fence/barrier/render-pass changes
+- no buffer-count modification before measuring the baseline
 - no alias trivial dedupe
 - no blind persistent Uniform binding
 - no blind previous staging allocation reuse
@@ -250,20 +286,20 @@ Interpretation:
 
 Read:
 
-`NEXT_ACTION_SWAP_INTERVAL_3_TO_2_AB.md`
+`NEXT_ACTION_X1_DIAGNOSTIC_HARNESS.md`
 
 Static preparation is complete. **Stop before Actions.**
 
 A fresh explicit user authorization is required for exactly one attempt of:
 
-`Build dc95 X1 Swap Interval 3 To 2 AB`
+`Build dc95 X1 Diagnostic Harness`
 
 If it fails, stop. No retry without another fresh explicit authorization.
 
 ## Build authorization state
 
-- current branch: `exp/x1-swap-interval-3-to-2-ab`
-- swap-clamp build attempts: 0
+- current branch: `exp/x1-diagnostic-harness`
+- diagnostic-harness ARM64 build attempts: 0
 - reruns: 0
 - current ARM64 build authorization: **none**
 - gameplay optimization promoted: none
