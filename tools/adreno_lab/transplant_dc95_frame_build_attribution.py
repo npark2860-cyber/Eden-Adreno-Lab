@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Add observation-only X1 frame-build wall-time attribution on top of the diagnostic harness.
+'''Add observation-only X1 frame-build wall-time attribution on top of the final harness chain.
 
 Expected order:
   - recreate the complete existing X1 diagnostic chain
@@ -10,9 +10,12 @@ Expected order:
 The new control is runtime-selectable and defaults OFF:
   X1 Log: Frame Build Attribution
 
-The pass measures host steady-clock wall time only. It does not add waits, sleeps, submits,
-flushes, fences, barriers, render-pass changes, swap changes, buffer-count changes, descriptor
-policy changes, or guest-state changes.
+Important: this pass intentionally anchors to the FINAL generated source after the existing
+Draw/Dispatch correlation, Draw-other reason, texture, alias, Uniform, cadence and harness passes.
+It preserves those scopes and adds steady-clock timing around them.
+
+No wait, sleep, submit, flush, fence, barrier, render-pass, swap interval, buffer count,
+descriptor policy, guest-state, or scheduling policy is added or changed by this pass.
 '''
 
 from pathlib import Path
@@ -62,8 +65,8 @@ def main() -> int:
     text = replace_once(text, anchor, replacement, "frame-build setting")
     settings.write_text(text, encoding="utf-8")
 
-    header = root / "src/yuzu/configuration/configure_debug.h"
-    text = header.read_text(encoding="utf-8")
+    ui_header = root / "src/yuzu/configuration/configure_debug.h"
+    text = ui_header.read_text(encoding="utf-8")
     anchor = '''    QCheckBox* x1_frame_cadence_log_checkbox{};
     QCheckBox* x1_dequeue_attribution_log_checkbox{};
 
@@ -76,11 +79,10 @@ def main() -> int:
     const Core::System& system;
 '''
     text = replace_once(text, anchor, replacement, "frame-build widget member")
-    header.write_text(text, encoding="utf-8")
+    ui_header.write_text(text, encoding="utf-8")
 
-    cpp = root / "src/yuzu/configuration/configure_debug.cpp"
-    text = cpp.read_text(encoding="utf-8")
-
+    ui_cpp = root / "src/yuzu/configuration/configure_debug.cpp"
+    text = ui_cpp.read_text(encoding="utf-8")
     anchor = '''    x1_dequeue_attribution_log_checkbox =
         new QCheckBox(tr("X1 Log: Dequeue Attribution"), this);
 
@@ -141,7 +143,7 @@ def main() -> int:
 }
 '''
     text = replace_once(text, anchor, replacement, "frame-build widget retranslate")
-    cpp.write_text(text, encoding="utf-8")
+    ui_cpp.write_text(text, encoding="utf-8")
 
     # -------------------------------------------------------------------------
     # Rasterizer top-level frame-build timing.
@@ -155,7 +157,6 @@ def main() -> int:
         '#include "video_core/renderer_vulkan/vk_x1_frame_build_profiler.h"\n',
         "frame-build profiler include",
     )
-
     text = replace_once(
         text,
         '''    scheduler.SetQueryCache(query_cache);
@@ -169,40 +170,12 @@ def main() -> int:
         "frame-build profiler initialization",
     )
 
-    prepare_anchor = '''template <typename Func>
-void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
-    auto& x1_origin_profiler = AdrenoProfiler::Get();
+    def edit_prepare_draw(section: str) -> str:
+        # Preserve the existing origin/correlation lifecycle and all nested reason scopes.
+        prefix = '''    auto& x1_origin_profiler = AdrenoProfiler::Get();
     x1_origin_profiler.BeginWork(AdrenoProfiler::WorkOrigin::Draw);
-    SCOPE_EXIT {
-        x1_origin_profiler.EndWork();
-        gpu.TickWork();
-    };
-    FlushWork();
-    gpu_memory->FlushCaching();
-
-    GraphicsPipeline* const pipeline{pipeline_cache.CurrentGraphicsPipeline()};
-    if (!pipeline) {
-        return;
-    }
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    // update engine as channel may be different.
-    pipeline->SetEngine(maxwell3d, gpu_memory);
-    if (!pipeline->Configure(is_indexed))
-        return;
-
-    UpdateDynamicStates();
-
-    query_cache.NotifySegment(true);
-    HandleTransformFeedback();
-    query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
-    draw_func();
-}
 '''
-    prepare_replacement = '''template <typename Func>
-void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
-    auto& x1_origin_profiler = AdrenoProfiler::Get();
-    x1_origin_profiler.BeginWork(AdrenoProfiler::WorkOrigin::Draw);
-    auto& x1_build_profiler = X1FrameBuildProfiler::Get();
+        prefix_replacement = prefix + '''    auto& x1_build_profiler = X1FrameBuildProfiler::Get();
     const bool x1_build_log = x1_build_profiler.Enabled();
     const auto x1_draw_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
@@ -211,7 +184,15 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     u64 x1_pre_config_ns{};
     u64 x1_configure_ns{};
     u64 x1_post_config_ns{};
-    SCOPE_EXIT {
+'''
+        section = replace_once(section, prefix, prefix_replacement, "PrepareDraw timing state")
+
+        scope = '''    SCOPE_EXIT {
+        x1_origin_profiler.EndWork();
+        gpu.TickWork();
+    };
+'''
+        scope_replacement = '''    SCOPE_EXIT {
         if (x1_build_log) {
             x1_build_profiler.RecordPrepareDraw(
                 X1FrameBuildProfiler::ElapsedNs(x1_draw_start), x1_flush_ns, x1_memory_ns,
@@ -220,16 +201,35 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         x1_origin_profiler.EndWork();
         gpu.TickWork();
     };
+'''
+        section = replace_once(section, scope, scope_replacement, "PrepareDraw timing scope")
 
-    const auto x1_flush_start =
-        x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
+        flush_block = '''    x1_origin_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherFlushWork);
     FlushWork();
+    x1_origin_profiler.EndBufferCategory();
+'''
+        flush_replacement = '''    const auto x1_flush_start =
+        x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
+    x1_origin_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherFlushWork);
+    FlushWork();
+    x1_origin_profiler.EndBufferCategory();
     if (x1_build_log) {
         x1_flush_ns = X1FrameBuildProfiler::ElapsedNs(x1_flush_start);
     }
-    const auto x1_memory_start =
-        x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
+'''
+        section = replace_once(section, flush_block, flush_replacement, "PrepareDraw FlushWork timing")
+
+        memory_block = '''    x1_origin_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherFlushCaching);
     gpu_memory->FlushCaching();
+    x1_origin_profiler.EndBufferCategory();
+
+    GraphicsPipeline* const pipeline{pipeline_cache.CurrentGraphicsPipeline()};
+'''
+        memory_replacement = '''    const auto x1_memory_start =
+        x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
+    x1_origin_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherFlushCaching);
+    gpu_memory->FlushCaching();
+    x1_origin_profiler.EndBufferCategory();
     if (x1_build_log) {
         x1_memory_ns = X1FrameBuildProfiler::ElapsedNs(x1_memory_start);
     }
@@ -237,19 +237,32 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     const auto x1_pre_config_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     GraphicsPipeline* const pipeline{pipeline_cache.CurrentGraphicsPipeline()};
-    if (!pipeline) {
+'''
+        section = replace_once(section, memory_block, memory_replacement, "PrepareDraw memory/pre-config start")
+
+        pipeline_missing = '''    if (!pipeline) {
+        return;
+    }
+'''
+        pipeline_missing_replacement = '''    if (!pipeline) {
         if (x1_build_log) {
             x1_pre_config_ns = X1FrameBuildProfiler::ElapsedNs(x1_pre_config_start);
         }
         return;
     }
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    // update engine as channel may be different.
-    pipeline->SetEngine(maxwell3d, gpu_memory);
+'''
+        section = replace_once(
+            section, pipeline_missing, pipeline_missing_replacement, "PrepareDraw missing pipeline timing"
+        )
+
+        set_engine = '''    pipeline->SetEngine(maxwell3d, gpu_memory);
+    if (!pipeline->Configure(is_indexed))
+        return;
+'''
+        set_engine_replacement = '''    pipeline->SetEngine(maxwell3d, gpu_memory);
     if (x1_build_log) {
         x1_pre_config_ns = X1FrameBuildProfiler::ElapsedNs(x1_pre_config_start);
     }
-
     const auto x1_configure_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     if (!pipeline->Configure(is_indexed)) {
@@ -261,71 +274,81 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     if (x1_build_log) {
         x1_configure_ns = X1FrameBuildProfiler::ElapsedNs(x1_configure_start);
     }
+'''
+        section = replace_once(section, set_engine, set_engine_replacement, "PrepareDraw Configure timing")
 
-    const auto x1_post_config_start =
+        post_start = '''    x1_origin_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherDynamicStates);
+'''
+        post_start_replacement = '''    const auto x1_post_config_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
-    UpdateDynamicStates();
+    x1_origin_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherDynamicStates);
+'''
+        section = replace_once(section, post_start, post_start_replacement, "PrepareDraw post-config start")
 
-    query_cache.NotifySegment(true);
-    HandleTransformFeedback();
-    query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
+        post_end = '''    x1_origin_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherDrawCommand);
     draw_func();
-    if (x1_build_log) {
+    x1_origin_profiler.EndBufferCategory();
+'''
+        post_end_replacement = post_end + '''    if (x1_build_log) {
         x1_post_config_ns = X1FrameBuildProfiler::ElapsedNs(x1_post_config_start);
     }
-}
 '''
-    text = replace_once(text, prepare_anchor, prepare_replacement, "PrepareDraw timing")
-
-    def edit_draw_texture(section: str) -> str:
-        anchor = '''void RasterizerVulkan::DrawTexture() {
-
-'''
-        replacement = '''void RasterizerVulkan::DrawTexture() {
-    auto& x1_build_profiler = X1FrameBuildProfiler::Get();
-    const bool x1_build_log = x1_build_profiler.Enabled();
-    const auto x1_start =
-        x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
-    SCOPE_EXIT {
-        if (x1_build_log) {
-            x1_build_profiler.RecordDrawTexture(X1FrameBuildProfiler::ElapsedNs(x1_start));
-        }
-    };
-
-'''
-        return replace_once(section, anchor, replacement, "DrawTexture total timing")
+        section = replace_once(section, post_end, post_end_replacement, "PrepareDraw post-config end")
+        return section
 
     text = edit_section(
-        text, "void RasterizerVulkan::DrawTexture() {", "void RasterizerVulkan::Clear(",
-        edit_draw_texture, "DrawTexture section"
+        text,
+        "template <typename Func>\nvoid RasterizerVulkan::PrepareDraw(",
+        "void RasterizerVulkan::Draw(bool is_indexed",
+        edit_prepare_draw,
+        "PrepareDraw section",
     )
 
-    def edit_clear(section: str) -> str:
-        anchor = '''void RasterizerVulkan::Clear(u32 layer_count) {
-'''
-        replacement = '''void RasterizerVulkan::Clear(u32 layer_count) {
-    auto& x1_build_profiler = X1FrameBuildProfiler::Get();
+    def add_total_scope(section: str, signature: str, record_call: str, label: str) -> str:
+        anchor = signature + "\n"
+        replacement = anchor + '''    auto& x1_build_profiler = X1FrameBuildProfiler::Get();
     const bool x1_build_log = x1_build_profiler.Enabled();
-    const auto x1_start =
+    const auto x1_build_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     SCOPE_EXIT {
         if (x1_build_log) {
-            x1_build_profiler.RecordClear(X1FrameBuildProfiler::ElapsedNs(x1_start));
+            ''' + record_call + '''(X1FrameBuildProfiler::ElapsedNs(x1_build_start));
         }
     };
 '''
-        return replace_once(section, anchor, replacement, "Clear total timing")
+        return replace_once(section, anchor, replacement, label)
 
     text = edit_section(
-        text, "void RasterizerVulkan::Clear(u32 layer_count) {", "void RasterizerVulkan::DispatchCompute() {",
-        edit_clear, "Clear section"
+        text,
+        "void RasterizerVulkan::DrawTexture() {",
+        "void RasterizerVulkan::Clear(",
+        lambda section: add_total_scope(
+            section,
+            "void RasterizerVulkan::DrawTexture() {",
+            "x1_build_profiler.RecordDrawTexture",
+            "DrawTexture total timing",
+        ),
+        "DrawTexture section",
+    )
+
+    text = edit_section(
+        text,
+        "void RasterizerVulkan::Clear(u32 layer_count) {",
+        "void RasterizerVulkan::DispatchCompute() {",
+        lambda section: add_total_scope(
+            section,
+            "void RasterizerVulkan::Clear(u32 layer_count) {",
+            "x1_build_profiler.RecordClear",
+            "Clear total timing",
+        ),
+        "Clear section",
     )
 
     def edit_dispatch(section: str) -> str:
+        # Total timing starts before the diagnostic A/B gate; baseline runs keep all A/B controls OFF.
         anchor = '''void RasterizerVulkan::DispatchCompute() {
 '''
-        replacement = '''void RasterizerVulkan::DispatchCompute() {
-    auto& x1_build_profiler = X1FrameBuildProfiler::Get();
+        replacement = anchor + '''    auto& x1_build_profiler = X1FrameBuildProfiler::Get();
     const bool x1_build_log = x1_build_profiler.Enabled();
     const auto x1_dispatch_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
@@ -346,82 +369,79 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     };
 '''
         section = replace_once(section, anchor, replacement, "Dispatch total timing")
-        section = replace_once(
-            section,
-            '''    FlushWork();
+
+        flush_memory = '''    FlushWork();
     gpu_memory->FlushCaching();
-''',
-            '''    const auto x1_flush_start =
+
+    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};
+'''
+        flush_memory_replacement = '''    const auto x1_dispatch_flush_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     FlushWork();
     if (x1_build_log) {
-        x1_dispatch_flush_ns = X1FrameBuildProfiler::ElapsedNs(x1_flush_start);
+        x1_dispatch_flush_ns = X1FrameBuildProfiler::ElapsedNs(x1_dispatch_flush_start);
     }
-    const auto x1_memory_start =
+    const auto x1_dispatch_memory_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     gpu_memory->FlushCaching();
     if (x1_build_log) {
-        x1_dispatch_memory_ns = X1FrameBuildProfiler::ElapsedNs(x1_memory_start);
+        x1_dispatch_memory_ns = X1FrameBuildProfiler::ElapsedNs(x1_dispatch_memory_start);
     }
-''',
-            "Dispatch flush/memory timing",
-        )
-        configure_anchor = '''    std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
+
+    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};
+'''
+        section = replace_once(section, flush_memory, flush_memory_replacement, "Dispatch flush/memory timing")
+
+        configure = '''    std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
                              texture_cache)) {
         return;
     }
 
 '''
-        configure_replacement = '''    const auto x1_configure_start =
+        configure_replacement = '''    const auto x1_dispatch_configure_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
                              texture_cache)) {
         if (x1_build_log) {
-            x1_dispatch_configure_ns = X1FrameBuildProfiler::ElapsedNs(x1_configure_start);
+            x1_dispatch_configure_ns =
+                X1FrameBuildProfiler::ElapsedNs(x1_dispatch_configure_start);
         }
         return;
     }
     if (x1_build_log) {
-        x1_dispatch_configure_ns = X1FrameBuildProfiler::ElapsedNs(x1_configure_start);
+        x1_dispatch_configure_ns = X1FrameBuildProfiler::ElapsedNs(x1_dispatch_configure_start);
         x1_dispatch_issue_start = X1FrameBuildProfiler::Now();
         x1_dispatch_issue_started = true;
     }
 
 '''
-        section = replace_once(
-            section, configure_anchor, configure_replacement, "Dispatch configure timing"
-        )
+        section = replace_once(section, configure, configure_replacement, "Dispatch configure timing")
         return section
 
     text = edit_section(
-        text, "void RasterizerVulkan::DispatchCompute() {", "void RasterizerVulkan::ResetCounter(",
-        edit_dispatch, "Dispatch section"
+        text,
+        "void RasterizerVulkan::DispatchCompute() {",
+        "void RasterizerVulkan::ResetCounter(",
+        edit_dispatch,
+        "Dispatch section",
     )
-
-    def edit_flush_commands(section: str) -> str:
-        anchor = '''void RasterizerVulkan::FlushCommands() {
-'''
-        replacement = '''void RasterizerVulkan::FlushCommands() {
-    auto& x1_build_profiler = X1FrameBuildProfiler::Get();
-    const bool x1_build_log = x1_build_profiler.Enabled();
-    const auto x1_start =
-        x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
-    SCOPE_EXIT {
-        if (x1_build_log) {
-            x1_build_profiler.RecordFlushCommands(X1FrameBuildProfiler::ElapsedNs(x1_start));
-        }
-    };
-'''
-        return replace_once(section, anchor, replacement, "FlushCommands timing")
 
     text = edit_section(
-        text, "void RasterizerVulkan::FlushCommands() {", "void RasterizerVulkan::TickFrame() {",
-        edit_flush_commands, "FlushCommands section"
+        text,
+        "void RasterizerVulkan::FlushCommands() {",
+        "void RasterizerVulkan::TickFrame() {",
+        lambda section: add_total_scope(
+            section,
+            "void RasterizerVulkan::FlushCommands() {",
+            "x1_build_profiler.RecordFlushCommands",
+            "FlushCommands timing",
+        ),
+        "FlushCommands section",
     )
 
-    tick_anchor = '''void RasterizerVulkan::TickFrame() {
+    tick_prefix = '''void RasterizerVulkan::TickFrame() {
     draw_counter = 0;
 '''
     tick_replacement = '''void RasterizerVulkan::TickFrame() {
@@ -431,9 +451,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     draw_counter = 0;
 '''
-    text = replace_once(text, tick_anchor, tick_replacement, "TickFrame timing start")
+    text = replace_once(text, tick_prefix, tick_replacement, "TickFrame timing start")
 
-    tick_end_anchor = '''    {
+    tick_tail = '''    {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.TickFrame();
     }
@@ -441,7 +461,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 
 bool RasterizerVulkan::AccelerateConditionalRendering() {
 '''
-    tick_end_replacement = '''    {
+    tick_tail_replacement = '''    {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.TickFrame();
     }
@@ -453,11 +473,12 @@ bool RasterizerVulkan::AccelerateConditionalRendering() {
 
 bool RasterizerVulkan::AccelerateConditionalRendering() {
 '''
-    text = replace_once(text, tick_end_anchor, tick_end_replacement, "TickFrame report hook")
+    text = replace_once(text, tick_tail, tick_tail_replacement, "TickFrame report hook")
     rasterizer.write_text(text, encoding="utf-8")
 
     # -------------------------------------------------------------------------
     # GraphicsPipeline::ConfigureImpl sub-stage timing.
+    # Preserve all existing Draw-other category wrappers.
     # -------------------------------------------------------------------------
     graphics = vulkan / "vk_graphics_pipeline.cpp"
     text = graphics.read_text(encoding="utf-8")
@@ -506,15 +527,21 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 '''
     text = replace_once(text, cfg_prefix, cfg_replacement, "ConfigureImpl timing state")
 
-    text = replace_once(
-        text,
-        '''    texture_cache.SynchronizeDescriptors(false);
+    sync_block = '''    auto& x1_other_profiler = AdrenoProfiler::Get();
+    x1_other_profiler.BeginBufferCategory(
+        AdrenoProfiler::BufferCategory::OtherTextureSyncDescriptors);
+    texture_cache.SynchronizeDescriptors(false);
+    x1_other_profiler.EndBufferCategory();
 
     buffer_cache.SetUniformBuffersState(enabled_uniform_buffer_masks, &uniform_buffer_sizes);
-''',
-        '''    const auto x1_sync_desc_start =
+'''
+    sync_replacement = '''    auto& x1_other_profiler = AdrenoProfiler::Get();
+    const auto x1_sync_desc_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
+    x1_other_profiler.BeginBufferCategory(
+        AdrenoProfiler::BufferCategory::OtherTextureSyncDescriptors);
     texture_cache.SynchronizeDescriptors(false);
+    x1_other_profiler.EndBufferCategory();
     if (x1_build_log) {
         x1_sync_desc_ns = X1FrameBuildProfiler::ElapsedNs(x1_sync_desc_start);
     }
@@ -522,26 +549,29 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     const auto x1_stage_scan_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     buffer_cache.SetUniformBuffersState(enabled_uniform_buffer_masks, &uniform_buffer_sizes);
-''',
-        "Configure descriptor sync/stage start",
-    )
+'''
+    text = replace_once(text, sync_block, sync_replacement, "Configure descriptor sync/stage start")
 
-    text = replace_once(
-        text,
-        '''    ASSERT(views.size() == num_image_elements);
+    fill_block = '''    ASSERT(views.size() == num_image_elements);
     ASSERT(samplers.size() == num_textures);
+    x1_other_profiler.BeginBufferCategory(
+        AdrenoProfiler::BufferCategory::OtherTextureFillImageViews);
     texture_cache.FillImageViews(std::span(views.data(), views.size()), false, Spec::has_images);
+    x1_other_profiler.EndBufferCategory();
 
     VideoCommon::ImageViewInOut* texture_buffer_it{views.data()};
-''',
-        '''    if (x1_build_log) {
+'''
+    fill_replacement = '''    if (x1_build_log) {
         x1_stage_scan_ns = X1FrameBuildProfiler::ElapsedNs(x1_stage_scan_start);
     }
     ASSERT(views.size() == num_image_elements);
     ASSERT(samplers.size() == num_textures);
     const auto x1_fill_views_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
+    x1_other_profiler.BeginBufferCategory(
+        AdrenoProfiler::BufferCategory::OtherTextureFillImageViews);
     texture_cache.FillImageViews(std::span(views.data(), views.size()), false, Spec::has_images);
+    x1_other_profiler.EndBufferCategory();
     if (x1_build_log) {
         x1_fill_views_ns = X1FrameBuildProfiler::ElapsedNs(x1_fill_views_start);
     }
@@ -549,31 +579,31 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     const auto x1_bind_views_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     VideoCommon::ImageViewInOut* texture_buffer_it{views.data()};
-''',
-        "Configure stage/fill/bind transition",
-    )
+'''
+    text = replace_once(text, fill_block, fill_replacement, "Configure stage/fill/bind transition")
 
-    text = replace_once(
-        text,
-        '''    if (regs.transform_feedback_enabled != 0) {
-        scheduler.RequestOutsideRenderPassOperationContext();
-    }
-
-    buffer_cache.UpdateGraphicsBuffers(is_indexed);
-    buffer_cache.BindHostGeometryBuffers(is_indexed);
-
-    guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
-''',
-        '''    if (x1_build_log) {
+    update_start = '''    if (regs.transform_feedback_enabled != 0) {
+        x1_other_profiler.BeginBufferCategory(
+            AdrenoProfiler::BufferCategory::OtherTransformFeedbackBreak);
+'''
+    update_start_replacement = '''    if (x1_build_log) {
         x1_bind_views_ns = X1FrameBuildProfiler::ElapsedNs(x1_bind_views_start);
     }
     const auto x1_update_buffers_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
     if (regs.transform_feedback_enabled != 0) {
-        scheduler.RequestOutsideRenderPassOperationContext();
-    }
+        x1_other_profiler.BeginBufferCategory(
+            AdrenoProfiler::BufferCategory::OtherTransformFeedbackBreak);
+'''
+    text = replace_once(text, update_start, update_start_replacement, "Configure bind/update transition")
 
-    buffer_cache.UpdateGraphicsBuffers(is_indexed);
+    descriptor_acquire = '''    buffer_cache.UpdateGraphicsBuffers(is_indexed);
+    buffer_cache.BindHostGeometryBuffers(is_indexed);
+
+    x1_other_profiler.BeginBufferCategory(
+        AdrenoProfiler::BufferCategory::OtherDescriptorAcquire);
+'''
+    descriptor_acquire_replacement = '''    buffer_cache.UpdateGraphicsBuffers(is_indexed);
     buffer_cache.BindHostGeometryBuffers(is_indexed);
     if (x1_build_log) {
         x1_update_buffers_ns = X1FrameBuildProfiler::ElapsedNs(x1_update_buffers_start);
@@ -581,23 +611,32 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 
     const auto x1_descriptor_prepare_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
-    guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
-''',
-        "Configure bind/update/descriptor transition",
+    x1_other_profiler.BeginBufferCategory(
+        AdrenoProfiler::BufferCategory::OtherDescriptorAcquire);
+'''
+    text = replace_once(
+        text, descriptor_acquire, descriptor_acquire_replacement, "Configure update/descriptor transition"
     )
 
-    tail_anchor = '''    texture_cache.UpdateRenderTargets(false);
+    feedback_tail = '''    x1_other_profiler.BeginBufferCategory(
+        AdrenoProfiler::BufferCategory::OtherFeedbackLoop);
     texture_cache.CheckFeedbackLoop(std::span<const VideoCommon::ImageViewInOut>{views.data(),
                                                                                  views.size()});
+    x1_other_profiler.EndBufferCategory();
     if (IsBuilt() && !pipeline) {
         return false;
     }
-    return ConfigureDraw(rescaling, render_area);
+    x1_other_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherConfigureDraw);
+    const bool x1_configure_draw_result = ConfigureDraw(rescaling, render_area);
+    x1_other_profiler.EndBufferCategory();
+    return x1_configure_draw_result;
 }
 '''
-    tail_replacement = '''    texture_cache.UpdateRenderTargets(false);
+    feedback_tail_replacement = '''    x1_other_profiler.BeginBufferCategory(
+        AdrenoProfiler::BufferCategory::OtherFeedbackLoop);
     texture_cache.CheckFeedbackLoop(std::span<const VideoCommon::ImageViewInOut>{views.data(),
                                                                                  views.size()});
+    x1_other_profiler.EndBufferCategory();
     if (x1_build_log) {
         x1_descriptor_prepare_ns = X1FrameBuildProfiler::ElapsedNs(x1_descriptor_prepare_start);
     }
@@ -606,25 +645,54 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     }
     const auto x1_configure_draw_start =
         x1_build_log ? X1FrameBuildProfiler::Now() : X1FrameBuildProfiler::TimePoint{};
-    const bool x1_configure_result = ConfigureDraw(rescaling, render_area);
+    x1_other_profiler.BeginBufferCategory(AdrenoProfiler::BufferCategory::OtherConfigureDraw);
+    const bool x1_configure_draw_result = ConfigureDraw(rescaling, render_area);
+    x1_other_profiler.EndBufferCategory();
     if (x1_build_log) {
         x1_configure_draw_ns = X1FrameBuildProfiler::ElapsedNs(x1_configure_draw_start);
     }
-    return x1_configure_result;
+    return x1_configure_draw_result;
 }
 '''
-    text = replace_once(text, tail_anchor, tail_replacement, "Configure descriptor/configure-draw tail")
+    text = replace_once(
+        text, feedback_tail, feedback_tail_replacement, "Configure descriptor/configure-draw tail"
+    )
     graphics.write_text(text, encoding="utf-8")
 
-    # Static behavior guard: the attribution pass must not introduce timing/render policy verbs.
-    for path in (rasterizer, graphics):
-        final = path.read_text(encoding="utf-8")
-        if "x1_frame_build_attribution_log" not in settings.read_text(encoding="utf-8"):
-            raise RuntimeError("frame-build setting disappeared")
-        if "X1FrameBuildProfiler" not in final:
-            raise RuntimeError(f"frame-build profiler hook missing from {path.name}")
+    # -------------------------------------------------------------------------
+    # Static sanity markers. Workflow performs the stronger unchanged-file hash checks.
+    # -------------------------------------------------------------------------
+    final_settings = settings.read_text(encoding="utf-8")
+    final_rasterizer = rasterizer.read_text(encoding="utf-8")
+    final_graphics = graphics.read_text(encoding="utf-8")
+    for marker in (
+        "x1_frame_build_attribution_log",
+        "x1_frame_cadence_log",
+        "x1_dequeue_attribution_log",
+    ):
+        if marker not in final_settings:
+            raise RuntimeError(f"required setting missing after pass: {marker}")
+    for marker in (
+        "RecordPrepareDraw",
+        "RecordDispatch",
+        "RecordDrawTexture",
+        "RecordClear",
+        "OtherFlushWork",
+        "OtherDrawCommand",
+    ):
+        if marker not in final_rasterizer:
+            raise RuntimeError(f"required rasterizer marker missing after pass: {marker}")
+    for marker in (
+        "RecordGraphicsConfigure",
+        "OtherTextureSyncDescriptors",
+        "OtherTextureFillImageViews",
+        "OtherDescriptorAcquire",
+        "OtherConfigureDraw",
+    ):
+        if marker not in final_graphics:
+            raise RuntimeError(f"required graphics marker missing after pass: {marker}")
 
-    print("Transplanted exact dc95 X1 frame-build attribution")
+    print("Transplanted exact dc95 X1 frame-build attribution over final diagnostic harness chain")
     return 0
 
 
