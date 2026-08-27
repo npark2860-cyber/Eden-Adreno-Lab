@@ -2,6 +2,11 @@ name: Build dc95 X1 Swap Interval 3 To 2 AB
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-swap-interval-3-to-2-ab
+    paths:
+      - .github/x1-swap-interval-3-to-2-ab-build.trigger
 
 concurrency:
   group: dc95-x1-swap-interval-3-to-2-ab-${{ github.ref }}
