@@ -218,9 +218,9 @@ Gameplay scheduler wait examples:
 
 Existing Vulkan swapchain `pacing` totals in these reports are only fractions of a millisecond per 120 frames. Therefore the explicit `Target_60` swapchain resource-pacing wait is not the missing ~16.7 ms/frame.
 
-Conclusion — CURRENT BOUNDARY:
+Conclusion at that time:
 
-Do not describe this as a proven hardcoded 20-FPS cap. The 30→~20 step is consistent with a 60-Hz cadence transition (new game frame every second vs every third composition opportunity), but the layer where that cadence first appears is still unknown.
+Do not describe this as a proven hardcoded 20-FPS cap. The 30→~20 step was consistent with a 60-Hz cadence transition (new game frame every second vs every third composition opportunity), but the layer where that cadence first appeared still needed attribution.
 
 ## 2026-08-27 — exact dc95 cadence source analysis
 
@@ -258,10 +258,6 @@ Source facts — CONFIRMED:
 - guest acquire fences may defer renderer composite
 - the next `WaitForComposite()` waits on the prior pending sync-operation fence when present
 
-Interpretation:
-
-The 20-ish cadence is more plausibly tied to **new game framebuffer availability/completion relative to 60-Hz composition opportunities**, or to a composite hand-off stall, than to a direct `swap_interval=3` or host swapchain pacing sleep.
-
 ## 2026-08-27 — frame cadence attribution static preparation
 
 Branch: `exp/x1-frame-cadence-attribution`
@@ -290,14 +286,96 @@ Safety:
 - cadence transplant edits only `buffer_queue_producer.cpp` and `hardware_composer.cpp` in the temporary Eden checkout
 - workflow hashes and requires no cadence change to VI conductor, GPU core, Vulkan swapchain, Vulkan scheduler or nvhost_ctrl
 - workflow rejects newly-added sleeps, new wait calls, schedule changes, swap-interval assignments, speed-limit changes, new composite requests and alternate numeric cadence returns
-- workflow is `workflow_dispatch` only
-- no Actions run was started during static preparation
 
-Next interpretation matrix:
+## 2026-08-27 — frame cadence attribution build and runtime
 
-- QueueBuffer ~50 ms + acquire every 3 ticks -> cadence already upstream/game-produced
-- QueueBuffer ~33 ms + acquire every 3 ticks -> consumer/compositor delaying ready buffers
-- VI tick wall time ~50 ms or WaitForComposite ~16/33 ms -> composite/GPU hand-off stalls VI
-- QueueBuffer/acquire ~33 ms but visible/runtime ~20 -> investigate after acquisition in renderer/present completion
+Authorized build — SUCCESS:
 
-Fresh explicit user build authorization is required before any ARM64 run of this experiment.
+- workflow `Build dc95 X1 Frame Cadence Attribution`
+- run `33060773960`
+- job `98478699166`
+- attempt 1
+- build HEAD `d49d5a20b17a4e6861aad036474600697ac14fc8`
+- artifact `Eden-dc95-X1-frame-cadence-attribution`
+- artifact id `9642483710`
+- size 31,305,699 bytes
+- SHA-256 `b9140318047ac09462751ad5c6dc1d598122cc82c2ea78bfe03a5c33fc91f870`
+- exactly one build attempt; no rerun
+
+Runtime log:
+
+`eden_log(20260827-104943).txt`
+
+Matched runtime:
+
+- TOTK 1.4.2
+- Adreno X1-85 / Qualcomm 512.863.0 / Vulkan 1.3.295
+- Windows 11 25H2 build 26220.9223
+- exact Eden identification `HEAD-dc95cd09ee-HEAD`
+- `x1_present_frame_log = true`
+- Uniform cache A/B OFF
+
+### Stable swap=2 regime — CONFIRMED
+
+Guest QueueBuffer frames 562-910:
+
+- 349 queue records
+- 11.830372 s
+- effective 29.416 FPS
+- median QueueBuffer interval 33.352 ms
+- main-buffer acquire median 33.506 ms
+- acquire tick delta 2 for 344 / 348 adjacent acquires
+- VI tick median ~16.609 ms
+- zero `WaitForComposite > 1 ms` events in the segment
+
+### Stable swap=3 gameplay regime — CONFIRMED
+
+Guest QueueBuffer frames 911-1758:
+
+- 848 queue records
+- 48.44955 s
+- effective 17.482 FPS because 3-tick opportunities are sometimes additionally missed
+- median QueueBuffer interval 49.985 ms
+- main-buffer acquire median 50.044 ms
+- acquire tick delta 3 for 726 adjacent acquires; remaining misses are mostly 4+ ticks
+- VI tick median ~16.586 ms / mean ~16.667 ms
+- `WaitForComposite` median 0 ms; only 4 VI ticks exceeded 1 ms
+
+Critical transition:
+
+- frame 910 QueueBuffer: `swap=2`
+- frame 911 QueueBuffer: `swap=3`
+- final gameplay remains `swap=3` through frame 1758
+
+Conclusion — CONFIRMED:
+
+The discrete 30 -> <=20 behavior is explained by the main guest BufferQueue interval changing from 2 to 3:
+
+- swap 2 -> nominal 60 / 2 = 30 FPS opportunity
+- swap 3 -> nominal 60 / 3 = 20 FPS opportunity
+
+With swap 3 active, missing a presentation opportunity only lowers FPS further. This is why 22-23 FPS is normally absent and gameplay feels pinned at 20 or below.
+
+This cadence is already visible at guest `QueueBuffer`; it is not created later by Vulkan Present, Mailbox or `Target_60` pacing.
+
+### Raw interval ownership — CONFIRMED SOURCE FACT
+
+Exact dc95:
+
+- `QueueBufferInput` contains `s32 swap_interval`
+- its constructor directly `parcel.ReadFlattened(*this)` from the guest input parcel
+- `BufferQueueProducer::QueueBuffer()` deflates that value and writes `item.swap_interval = swap_interval`
+- HardwareComposer honors it for main-layer acquire spacing and release-frame bookkeeping
+- compositor/VI itself continues on the 60-Hz base
+
+Therefore raw `swap=3` originates before host Vulkan presentation, in the guest QueueBuffer request path.
+
+Still unknown:
+
+- why TOTK selects/sends interval 3 in this runtime
+- whether interval 3 is purely a symptom of already missing the 30-FPS budget
+- whether Eden main-layer acquire/release timing participates in a feedback ceiling once interval 3 is active
+
+Next proposal is documented in `NEXT_ACTION_SWAP_INTERVAL_3_AB.md`.
+
+No new ARM64 build is authorized. The proposed main-layer raw-3/effective-2 clamp is an attribution A/B only and must not be implemented or built without fresh explicit user approval.
