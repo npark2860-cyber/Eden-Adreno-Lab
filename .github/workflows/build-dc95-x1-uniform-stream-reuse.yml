@@ -1,6 +1,11 @@
 name: Build dc95 X1 Uniform Stream Reuse
 
 on:
+  push:
+    branches:
+      - exp/x1-uniform-stream-reuse
+    paths:
+      - .github/workflows/build-dc95-x1-uniform-stream-reuse.yml
   workflow_dispatch:
 
 concurrency:
