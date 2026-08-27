@@ -2,6 +2,11 @@ name: Build dc95 X1 Frame Build Attribution
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-frame-build-attribution
+    paths:
+      - .github/x1-frame-build-attribution-build-once
 
 concurrency:
   group: dc95-x1-frame-build-attribution-${{ github.ref }}
