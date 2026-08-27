@@ -1,4 +1,4 @@
-# Handoff Prompt — Eden Adreno X1 frame cadence attribution
+# Handoff Prompt — Eden Adreno X1 swap-interval cadence result
 
 Use this prompt when continuing in a new tab.
 
@@ -19,7 +19,7 @@ Do not reconstruct state from old chat. First read these GitHub documents and tr
 1. `CURRENT_HANDOFF.md`
 2. `DEBUG_HISTORY.md`
 3. `LAB_BOOTSTRAP.md`
-4. `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`
+4. `NEXT_ACTION_SWAP_INTERVAL_3_AB.md`
 5. `HANDOFF_PROMPT.md`
 
 Then verify actual branch HEAD and Actions state against the documents before doing anything else.
@@ -43,56 +43,57 @@ Retain these confirmed facts:
 - gameplay fast Uniform selection was almost entirely adaptive `fastSkip`; `fastAlignment=0`
 - classic cached Uniform path is mostly clean
 - sampled repeated fast Uniform payloads were 97%+ same fingerprint; same-frame classified repeats were 99%+ same fingerprint
-- the Uniform cache A/B build succeeded once and only once
-- A/B ON completely removed adaptive fast streams but did not break the ~20 FPS gameplay ceiling; cost migrated into classic buffer copy/outside-RP/synchronization
-- paired OFF runtime shows a distinct ~30 FPS light/title regime and ~19.5–19.6 FPS gameplay regime
-- do not call this a proven hardcoded 20-FPS cap yet
-- existing Vulkan swapchain Target_60 pacing time is tiny in the ~20 FPS regime, so do not blame that pacing path without new evidence
+- Uniform classic-cache fallback A/B did not break the gameplay ceiling and moved cost into copy/outside-RP/synchronization
 
-Exact dc95 frame-cadence source facts already checked:
+Frame-cadence build — SUCCESS, exactly one authorized attempt:
 
-- VI `Conductor` is based on 60-Hz `FrameNs`
-- `HardwareComposer::ComposeLocked()` reads layer `item.swap_interval` but ends with `m_frame_number += 1; return 1;`
-- a host composite is requested only when a new framebuffer is acquired
-- `nvdisp_disp0::WaitForComposite()` delegates to `system.GPU().WaitForComposite()`
-- `nvdisp_disp0::Composite()` delegates to `system.GPU().RequestComposite(...)`
+- workflow `Build dc95 X1 Frame Cadence Attribution`
+- run `33060773960`
+- job `98478699166`
+- attempt 1
+- build HEAD `d49d5a20b17a4e6861aad036474600697ac14fc8`
+- artifact `Eden-dc95-X1-frame-cadence-attribution`
+- artifact id `9642483710`
+- SHA-256 `b9140318047ac09462751ad5c6dc1d598122cc82c2ea78bfe03a5c33fc91f870`
 
-Current diagnostic purpose:
+Runtime log:
 
-Find where the nominal ~50-ms gameplay cadence first appears by recording, on the same host steady clock:
+`eden_log(20260827-104943).txt`
 
-- `[X1-CADENCE][QUEUE]`: successful guest QueueBuffer production
-- `[X1-CADENCE][ACQUIRE]`: new main/overlay framebuffer acquisition by Nvnflinger
-- `[X1-CADENCE][VI]`: each active compositor tick and WaitForComposite/ComposeLocked duration
+CONFIRMED runtime result:
 
-Prepared files:
+- stable guest QueueBuffer frames 562-910 use `swap=2`
+- that regime has median queue interval 33.352 ms and effective rate ~29.42 FPS
+- stable guest QueueBuffer frames 911-1758 use `swap=3`
+- that regime has median queue interval 49.985 ms and effective rate ~17.48 FPS because additional 3-tick opportunities are missed
+- main acquire median follows the same pattern: ~33.506 ms for swap 2, ~50.044 ms for swap 3
+- VI compositor itself remains ~60 Hz: median ~16.6 ms
+- WaitForComposite is not the continuous missing interval; median 0 ms in gameplay and only four >1 ms events in the stable swap-3 segment
 
-- `tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py`
-- `tools/adreno_lab/analyze_x1_frame_cadence.py`
-- `.github/workflows/build-dc95-x1-frame-cadence-attribution.yml`
-- `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`
+Critical meaning:
 
-Workflow:
+> The user's '30 FPS title / almost always <=20 FPS gameplay / rarely 22-23' observation is explained by the main guest BufferQueue raw swap interval changing from 2 to 3. swap 2 gives nominal 60/2=30 FPS opportunities; swap 3 gives nominal 60/3=20 FPS opportunities; misses only lower FPS further.
 
-`Build dc95 X1 Frame Cadence Attribution`
+Exact dc95 source ownership is also confirmed:
 
-It is `workflow_dispatch` only. Static preparation must have zero Actions runs before authorization.
+- `QueueBufferInput` contains `s32 swap_interval`
+- it is directly read from the guest `InputParcel` via `parcel.ReadFlattened(*this)`
+- `BufferQueueProducer::QueueBuffer()` assigns that value directly to `item.swap_interval`
+- HardwareComposer honors it for main-layer acquire spacing and release-frame bookkeeping
+- this raw 3 is therefore already present before host Vulkan Present; do not blame Qualcomm Vulkan, Mailbox, or Target_60 for creating the 20-FPS step
 
-The cadence transplant is observation-only and may modify only:
+Still unknown:
 
-- `src/core/hle/service/nvnflinger/buffer_queue_producer.cpp`
-- `src/core/hle/service/nvnflinger/hardware_composer.cpp`
-
-The workflow hashes and requires no cadence-transplant change to:
-
-- VI conductor
-- GPU core composite path
-- Vulkan swapchain
-- Vulkan scheduler
-- nvhost_ctrl syncpoint event path
-
-Do not change VSync, speed limiter, Mailbox, Target_60, swap interval, scheduling, fences, waits, barriers, render-pass behavior, alias behavior, or game mods for this diagnostic.
+- why TOTK selects/sends swap interval 3 in this runtime
+- whether it is purely a symptom of missing the 30-FPS budget
+- whether Eden's acquire/release policy helps create a feedback ceiling once raw 3 is active
 
 NEXT ACTION:
 
-Read `NEXT_ACTION_FRAME_CADENCE_ATTRIBUTION.md`, then stop before Actions unless the user gives a fresh explicit build authorization. If authorized, run exactly one attempt of `Build dc95 X1 Frame Cadence Attribution`. If successful, test one run containing both the ~30-FPS title/light segment and steady ~20-FPS gameplay with X1 present logging enabled, then analyze with `analyze_x1_frame_cadence.py`.
+Read `NEXT_ACTION_SWAP_INTERVAL_3_AB.md`.
+
+The next diagnostic is **proposal only**: a main non-overlay A/B that preserves/logs raw guest interval 3 but, when enabled, uses an effective composer acquire/release interval 2 only for raw interval exactly 3.
+
+Purpose: distinguish `swap=3 is only a symptom` from `swap=3 also participates in a feedback ceiling`.
+
+Do not implement or build this A/B without fresh explicit user approval. No current ARM64 build authorization exists.
