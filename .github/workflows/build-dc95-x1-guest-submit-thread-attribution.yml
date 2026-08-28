@@ -2,6 +2,11 @@ name: Build dc95 X1 Guest Submit Thread Attribution
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-guest-submit-thread-attribution
+    paths:
+      - .github/x1-guest-submit-thread-attribution-build-once
 
 concurrency:
   group: dc95-x1-guest-submit-thread-attribution-${{ github.ref }}
