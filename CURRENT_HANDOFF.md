@@ -238,7 +238,7 @@ New aggregate record:
 - `DmaPusher::DispatchCalls` total / loop / tail.
 - Dma synchronization wait.
 - `ProcessCommands` total + command word count.
-- CallMethod / CallMultiMethod counts without per-method wall-clock timers.
+- no per-method wall-clock timer or per-method atomic counter is used.
 
 Prepared files:
 
