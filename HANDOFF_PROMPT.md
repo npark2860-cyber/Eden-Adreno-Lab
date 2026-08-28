@@ -1,4 +1,4 @@
-# Handoff Prompt — Eden Adreno X1 GPU Submit Gap Attribution
+# Handoff Prompt — Eden Adreno X1 Guest Submit Thread Attribution
 
 Use this prompt when continuing in a new tab.
 
@@ -12,7 +12,7 @@ GitHub repository:
 
 Current experiment branch:
 
-`exp/x1-gpu-submit-gap-attribution`
+`exp/x1-guest-submit-thread-attribution`
 
 Do not reconstruct state from old chat. First read these GitHub documents and treat them as source of truth:
 
@@ -21,9 +21,10 @@ Do not reconstruct state from old chat. First read these GitHub documents and tr
 3. `DEBUG_HISTORY_20260827_CONTINUED.md`
 4. `DEBUG_HISTORY_20260828_CONTINUED.md`
 5. `DEBUG_HISTORY_20260828_GPU_SUBMIT.md`
-6. `LAB_BOOTSTRAP.md`
-7. `NEXT_ACTION_GPU_SUBMIT_GAP_ATTRIBUTION.md`
-8. `HANDOFF_PROMPT.md`
+6. `DEBUG_HISTORY_20260828_GUEST_SUBMIT.md`
+7. `LAB_BOOTSTRAP.md`
+8. `NEXT_ACTION_GUEST_SUBMIT_THREAD_ATTRIBUTION.md`
+9. `HANDOFF_PROMPT.md`
 
 Then verify actual branch HEAD and Actions state against the documents before doing anything else.
 
@@ -42,86 +43,82 @@ Retain all closed facts in `CURRENT_HANDOFF.md`, especially:
 
 - alias trivial dedupe is closed
 - wholesale classic-cache Uniform fallback did not break the gameplay ceiling
-- raw swap interval originates in guest QueueBuffer input, but raw swap / HWC interval gating is not the root renderer-performance cause
-- DFPS changes cadence/workload shape but is not the root ~45-50 ms frame-production cause
-- slow gameplay Dequeue free-slot wait is ~0.001 ms; BufferQueue backpressure is closed as root cause
+- raw swap / HardwareComposer gating and DFPS are not the root ~45-50 ms frame-production cause
+- slow gameplay Dequeue free-slot wait is ~0.001 ms; BufferQueue backpressure is closed
 - Frame-Build attribution found only ~9-12 ms/frame in measured Vulkan Draw/Dispatch/Clear scopes
-- GPU Command Attribution then found the missing time is dominated by GPU worker queue `PopWait`, not by DmaPusher processing
+- GPU Command Attribution found ~32-37 ms/frame of GPU worker queue `PopWait`; GPU worker is starved for upstream work
+- GPU Submit Gap Attribution found candidate NVDRV service gap, confirmed nvhost_gpu submit gap and actual `PushGPUEntries` gap are effectively identical (~26 ms/submit in stable slow windows)
+- NVDRV service, GPFIFO prep, channel lock and `SubmitGPFIFOImpl` are tiny and are closed as owners of the ~25-30 ms submit gap
+- therefore the current causal boundary is **before the guest GPU-submit ioctl reaches NVDRV**
 
-GPU Command Attribution completed successfully:
+GPU Submit Gap build completed successfully:
 
-- workflow `Build dc95 X1 GPU Command Attribution`
-- run `33129866149`
-- job `98716608240`
+- workflow `Build dc95 X1 GPU Submit Gap Attribution`
+- run `33133440904`
+- job `98728039155`
 - attempt 1
-- build HEAD `dafee3f7f08832dbd39aedf7f2c2607bf1b6112b`
-- artifact id `9670361329`
-- SHA-256 `5c0d99f3539dd46e79b8b3002ef48216acbcb7de1282c5078b5fb411dd389758`
-- cleanup HEAD `368752c0cd9f98b1a94b7599e9a9a687eb1cc8a0`
+- build HEAD `f65f93825979cde816aa41fc148deb042039416a`
+- artifact id `9671670627`
+- SHA-256 `0ef8e4172d812e4cfda90792f9bb2df0868dd192504cf2d3b11d30dcfbcdb313`
+- cleanup HEAD `d17eb7314b2809c95e53874dbc7f64808df67006`
 
 Runtime log:
 
-`eden_log(20260828-011332).txt`
+`eden_log(20260828-030445).txt`
 
-Representative slow 120-frame windows:
+Note: that runtime accidentally still had swap 3->2 clamp and Descriptor Ring ON. The structural submit-gap result remains valid, but both should be OFF in the next clean run.
 
-- frame 1200: wall ~52.69 ms/frame, GPU worker queueWait ~32.39 ms/frame, active ~20.29 ms/frame, ProcessCommands ~17.18 ms/frame, PushCommand total 3.903 ms / 395 calls, blockWait 0
-- frame 1320: wall ~52.60 ms/frame, GPU worker queueWait ~36.58 ms/frame, active ~16.01 ms/frame, ProcessCommands ~15.47 ms/frame, PushCommand total 3.578 ms / 366 calls, blockWait 0
+Exact new observation point:
 
-Conclusion:
+- `HLERequestContext::GetThread()` exposes the originator guest `KThread`.
+- exact dc95 `KThread` exposes thread ID, CPU time, core, priority and saved PC.
+- exact dc95 `KScheduler::SwitchThread()` updates `KThread::GetCpuTime()` from the same `CoreTiming().GetClockTicks()` time base.
 
-> the GPU worker is starved for upstream submissions for roughly ~30-35 ms/frame; the next target is upstream of `GPUThread::PushCommand`.
-
-Exact source path:
-
-`NVDRV::Ioctl1/Ioctl2`
--> `Module::Ioctl1/Ioctl2`
--> `nvhost_gpu::Ioctl1/Ioctl2`
--> `SubmitGPFIFOBase1/SubmitGPFIFOBase2`
--> `SubmitGPFIFOImpl`
--> `GPU::PushGPUEntries`
--> `GPUThread::SubmitList`
--> `PushCommand`
-
-Current work is the runtime-selectable GPU submit-gap attribution layer.
+Current work is the runtime-selectable **Guest Submit Thread Attribution** layer.
 
 New control:
 
-`X1 Log: GPU Submit Gap Attribution`
+`X1 Log: Guest Submit Thread Attribution`
 
-It emits `[X1-GPUSUBMIT]` 120-frame aggregates for:
+New record:
 
-- gaps between candidate NVDRV submit service entries
-- gaps between confirmed nvhost_gpu submit-device entries
-- NVDRV IPC buffer read / device dispatch / output write time
-- GPFIFO CommandList allocation and command-header read/copy time
-- SubmitGPFIFOImpl channel-lock / init / fence / syncpoint time
-- wait/main/fence PushGPUEntries call time
-- gaps between actual PushGPUEntries calls
+`[X1-GUESTSUBMIT]`
 
-Primary next split:
+It reports 120-frame aggregates for:
 
-- large submit gaps + tiny service/impl work => guest/upstream CPU is not issuing GPU submissions promptly
-- large NVDRV service time => HLE/NVDRV service path
-- large Base/lock/impl time => nvhost GPU submission path
+- active GPU-submit originator thread count
+- dominant guest thread ID and submit share
+- same-thread submit wall gaps
+- guest CoreTiming tick delta
+- submitter KThread CPU-time tick delta
+- derived `cpuShare`
+- saved caller PC and PC stability
+- current/active core and priority
+
+Primary split:
+
+- high dominant share + high cpuShare => one guest GPU producer is CPU-bound; next target guest code / Dynarmic execution
+- high dominant share + low cpuShare => submitter is mostly waiting/preempted; next target targeted kernel wait/SVC attribution
+- multiple material submitter threads => attribute per-thread before deeper scheduler tracing
 
 Prepared files:
 
-- `src/video_core/x1_gpu_submit_profiler.h`
-- `tools/adreno_lab/transplant_dc95_gpu_submit_gap_attribution.py`
-- `tools/adreno_lab/analyze_x1_gpu_submit_gap_attribution.py`
-- `.github/workflows/build-dc95-x1-gpu-submit-gap-attribution.yml`
-- `NEXT_ACTION_GPU_SUBMIT_GAP_ATTRIBUTION.md`
+- `src/video_core/x1_guest_submit_profiler.h`
+- `tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py`
+- `tools/adreno_lab/analyze_x1_guest_submit_thread_attribution.py`
+- `.github/workflows/build-dc95-x1-guest-submit-thread-attribution.yml`
+- `NEXT_ACTION_GUEST_SUBMIT_THREAD_ATTRIBUTION.md`
 
 Workflow:
 
-`Build dc95 X1 GPU Submit Gap Attribution`
+`Build dc95 X1 Guest Submit Thread Attribution`
 
 It must remain `workflow_dispatch` only.
 
 Recommended future runtime after a successful build:
 
 ON:
+- Guest Submit Thread Attribution
 - GPU Submit Gap Attribution
 - GPU Command Attribution
 - Frame Build Attribution
@@ -136,6 +133,6 @@ OFF:
 
 NEXT ACTION:
 
-Read `NEXT_ACTION_GPU_SUBMIT_GAP_ATTRIBUTION.md`, verify branch/HEAD/workflow state, and finish static/pre-Actions validation. Stop before ARM64 Actions.
+Read `NEXT_ACTION_GUEST_SUBMIT_THREAD_ATTRIBUTION.md`, verify branch/HEAD/workflow state, and finish static/pre-Actions validation. Stop before ARM64 Actions.
 
-No current ARM64 build authorization exists. A fresh explicit user authorization is required for exactly one GPU-submit-gap build attempt.
+No current ARM64 build authorization exists. A fresh explicit user authorization is required for exactly one guest-submit-thread build attempt.
