@@ -43,6 +43,16 @@ public:
         target_switches.store(0, std::memory_order_relaxed);
         slot_overflow.store(0, std::memory_order_relaxed);
         frame_id.store(0, std::memory_order_relaxed);
+        signal_slot_overflow.store(0, std::memory_order_relaxed);
+        target_wait_start_ns.store(0, std::memory_order_relaxed);
+        target_wait_tid.store(0, std::memory_order_relaxed);
+        wait_begun.store(0, std::memory_order_relaxed);
+        wait_done.store(0, std::memory_order_relaxed);
+        wait_matched_signal.store(0, std::memory_order_relaxed);
+        wait_missing_signal.store(0, std::memory_order_relaxed);
+        signals_without_wait.store(0, std::memory_order_relaxed);
+        latest_signal_ns.store(0, std::memory_order_relaxed);
+        latest_signal_slot.store(0, std::memory_order_relaxed);
         frames_since_report = 0;
         report_start = Clock::now();
         for (auto& slot : slots) {
@@ -51,10 +61,21 @@ public:
             slot.timeout_ref_ns.store(0, std::memory_order_relaxed);
             slot.ResetCounters();
         }
+        for (auto& slot : signal_slots) {
+            slot.thread_key.store(0, std::memory_order_relaxed);
+            slot.type.store(0, std::memory_order_relaxed);
+            slot.value_ref.store(0, std::memory_order_relaxed);
+            slot.count_ref.store(0, std::memory_order_relaxed);
+            slot.ResetCounters();
+        }
     }
 
     [[nodiscard]] bool Enabled() const noexcept {
         return enabled.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool ShouldTrackSignalAddress(u64 address) const noexcept {
+        return Enabled() && armed.load(std::memory_order_acquire) && address == TargetSignalAddress;
     }
 
     CallToken BeginCall(u64 thread_id, u64 address, u32 arbitration_type,
@@ -85,6 +106,79 @@ public:
         }
 
         return CallToken{NowNs(), slot_index, true};
+    }
+
+    void BeginTargetWait(u64 thread_id, u64 address, u64 start_ns) noexcept {
+        if (!ShouldTrackSignalAddress(address) || thread_id == 0 || start_ns == 0) {
+            return;
+        }
+        target_wait_tid.store(thread_id, std::memory_order_release);
+        target_wait_start_ns.store(start_ns, std::memory_order_release);
+        wait_begun.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void EndTargetWait(u64 thread_id, u64 address, u64 start_ns) noexcept {
+        if (!ShouldTrackSignalAddress(address) || thread_id == 0 || start_ns == 0) {
+            return;
+        }
+
+        const u64 end_ns = NowNs();
+        wait_done.fetch_add(1, std::memory_order_relaxed);
+
+        const u64 signal_ns = latest_signal_ns.load(std::memory_order_acquire);
+        const u32 encoded_slot = latest_signal_slot.load(std::memory_order_relaxed);
+        if (signal_ns >= start_ns && signal_ns <= end_ns && encoded_slot != 0 &&
+            encoded_slot <= SignalSlotCount) {
+            wait_matched_signal.fetch_add(1, std::memory_order_relaxed);
+            auto& signal_slot = signal_slots[encoded_slot - 1];
+            const u64 signal_to_end_ns = end_ns - signal_ns;
+            signal_slot.matched_waits.fetch_add(1, std::memory_order_relaxed);
+            signal_slot.signal_to_wait_end_total_ns.fetch_add(signal_to_end_ns,
+                                                               std::memory_order_relaxed);
+            AtomicMax(signal_slot.signal_to_wait_end_max_ns, signal_to_end_ns);
+        } else {
+            wait_missing_signal.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        u64 expected = start_ns;
+        target_wait_start_ns.compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
+                                                     std::memory_order_relaxed);
+    }
+
+    void RecordSignal(u64 thread_id, u64 address, u32 signal_type, s32 value, s32 count) noexcept {
+        if (!ShouldTrackSignalAddress(address) || thread_id == 0) {
+            return;
+        }
+
+        const u32 slot_index = FindOrClaimSignalSlot(thread_id, signal_type, value, count);
+        if (slot_index >= SignalSlotCount) {
+            signal_slot_overflow.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+
+        const u64 now_ns = NowNs();
+        auto& slot = signal_slots[slot_index];
+        slot.calls.fetch_add(1, std::memory_order_relaxed);
+
+        if (slot.value_ref.load(std::memory_order_acquire) != value) {
+            slot.value_mismatch.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (slot.count_ref.load(std::memory_order_acquire) != count) {
+            slot.count_mismatch.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        const u64 wait_start_ns = target_wait_start_ns.load(std::memory_order_acquire);
+        if (wait_start_ns != 0 && now_ns >= wait_start_ns) {
+            const u64 wait_to_signal_ns = now_ns - wait_start_ns;
+            slot.during_wait.fetch_add(1, std::memory_order_relaxed);
+            slot.wait_to_signal_total_ns.fetch_add(wait_to_signal_ns, std::memory_order_relaxed);
+            AtomicMax(slot.wait_to_signal_max_ns, wait_to_signal_ns);
+        } else {
+            signals_without_wait.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        latest_signal_slot.store(slot_index + 1, std::memory_order_relaxed);
+        latest_signal_ns.store(now_ns, std::memory_order_release);
     }
 
     void EndCall(const CallToken& token, bool success, bool timed_out) noexcept {
@@ -223,12 +317,15 @@ public:
                  AvgMs(d.total_ns, d.completed), ToMs(d.max_ns), d.success, d.timed_out, d.other,
                  d.timeout_ref_ns, d.timeout_mismatch, d.inflight);
 
+        ReportSignals(frame, frames);
         armed.store(true, std::memory_order_release);
     }
 
 private:
     static constexpr u64 ReportFrames = 120;
     static constexpr u32 SlotCount = 8;
+    static constexpr u32 SignalSlotCount = 8;
+    static constexpr u64 TargetSignalAddress = 0x210adbc120ULL;
 
     struct Slot {
         std::atomic<u64> address_key{0};
@@ -259,6 +356,50 @@ private:
         }
     };
 
+    struct SignalSlot {
+        std::atomic<u64> thread_key{0};
+        std::atomic<u32> type{0};
+        std::atomic<s32> value_ref{0};
+        std::atomic<s32> count_ref{0};
+        std::atomic<u64> calls{0};
+        std::atomic<u64> value_mismatch{0};
+        std::atomic<u64> count_mismatch{0};
+        std::atomic<u64> during_wait{0};
+        std::atomic<u64> wait_to_signal_total_ns{0};
+        std::atomic<u64> wait_to_signal_max_ns{0};
+        std::atomic<u64> matched_waits{0};
+        std::atomic<u64> signal_to_wait_end_total_ns{0};
+        std::atomic<u64> signal_to_wait_end_max_ns{0};
+
+        void ResetCounters() noexcept {
+            calls.store(0, std::memory_order_relaxed);
+            value_mismatch.store(0, std::memory_order_relaxed);
+            count_mismatch.store(0, std::memory_order_relaxed);
+            during_wait.store(0, std::memory_order_relaxed);
+            wait_to_signal_total_ns.store(0, std::memory_order_relaxed);
+            wait_to_signal_max_ns.store(0, std::memory_order_relaxed);
+            matched_waits.store(0, std::memory_order_relaxed);
+            signal_to_wait_end_total_ns.store(0, std::memory_order_relaxed);
+            signal_to_wait_end_max_ns.store(0, std::memory_order_relaxed);
+        }
+    };
+
+    struct SignalSnapshot {
+        u64 thread_id{};
+        u32 type{};
+        s32 value_ref{};
+        s32 count_ref{};
+        u64 calls{};
+        u64 value_mismatch{};
+        u64 count_mismatch{};
+        u64 during_wait{};
+        u64 wait_to_signal_total_ns{};
+        u64 wait_to_signal_max_ns{};
+        u64 matched_waits{};
+        u64 signal_to_wait_end_total_ns{};
+        u64 signal_to_wait_end_max_ns{};
+    };
+
     u32 FindOrClaimSlot(u64 address, u32 arbitration_type, s64 timeout_ns) noexcept {
         const u64 key = address + 1;
         for (u32 i = 0; i < SlotCount; ++i) {
@@ -282,6 +423,116 @@ private:
         return SlotCount;
     }
 
+    u32 FindOrClaimSignalSlot(u64 thread_id, u32 signal_type, s32 value, s32 count) noexcept {
+        const u64 key = thread_id + 1;
+        for (u32 i = 0; i < SignalSlotCount; ++i) {
+            auto& slot = signal_slots[i];
+            const u64 existing = slot.thread_key.load(std::memory_order_acquire);
+            if (existing == key && slot.type.load(std::memory_order_acquire) == signal_type) {
+                return i;
+            }
+            if (existing != 0) {
+                continue;
+            }
+
+            u64 expected = 0;
+            if (slot.thread_key.compare_exchange_strong(expected, key, std::memory_order_acq_rel,
+                                                        std::memory_order_relaxed)) {
+                slot.type.store(signal_type, std::memory_order_release);
+                slot.value_ref.store(value, std::memory_order_release);
+                slot.count_ref.store(count, std::memory_order_release);
+                return i;
+            }
+        }
+        return SignalSlotCount;
+    }
+
+    void ReportSignals(u64 frame, u64 frames) {
+        std::array<SignalSnapshot, SignalSlotCount> snapshots{};
+        u64 total_calls{};
+        u64 active_slots{};
+
+        for (u32 i = 0; i < SignalSlotCount; ++i) {
+            auto& slot = signal_slots[i];
+            SignalSnapshot snap{};
+            const u64 encoded_thread = slot.thread_key.load(std::memory_order_acquire);
+            if (encoded_thread != 0) {
+                snap.thread_id = encoded_thread - 1;
+                snap.type = slot.type.load(std::memory_order_acquire);
+                snap.value_ref = slot.value_ref.load(std::memory_order_acquire);
+                snap.count_ref = slot.count_ref.load(std::memory_order_acquire);
+            }
+            snap.calls = slot.calls.exchange(0, std::memory_order_relaxed);
+            snap.value_mismatch = slot.value_mismatch.exchange(0, std::memory_order_relaxed);
+            snap.count_mismatch = slot.count_mismatch.exchange(0, std::memory_order_relaxed);
+            snap.during_wait = slot.during_wait.exchange(0, std::memory_order_relaxed);
+            snap.wait_to_signal_total_ns =
+                slot.wait_to_signal_total_ns.exchange(0, std::memory_order_relaxed);
+            snap.wait_to_signal_max_ns =
+                slot.wait_to_signal_max_ns.exchange(0, std::memory_order_relaxed);
+            snap.matched_waits = slot.matched_waits.exchange(0, std::memory_order_relaxed);
+            snap.signal_to_wait_end_total_ns =
+                slot.signal_to_wait_end_total_ns.exchange(0, std::memory_order_relaxed);
+            snap.signal_to_wait_end_max_ns =
+                slot.signal_to_wait_end_max_ns.exchange(0, std::memory_order_relaxed);
+
+            total_calls += snap.calls;
+            if (snap.calls != 0 || snap.matched_waits != 0) {
+                ++active_slots;
+            }
+            snapshots[i] = snap;
+        }
+
+        std::sort(snapshots.begin(), snapshots.end(), [](const SignalSnapshot& lhs,
+                                                         const SignalSnapshot& rhs) {
+            if (lhs.matched_waits != rhs.matched_waits) {
+                return lhs.matched_waits > rhs.matched_waits;
+            }
+            return lhs.calls > rhs.calls;
+        });
+
+        const auto& a = snapshots[0];
+        const auto& b = snapshots[1];
+        const auto& c = snapshots[2];
+        const auto& d = snapshots[3];
+
+        LOG_INFO(HW_GPU,
+                 "[X1-ADDRSIG] frame={} frames={} addr={:#x} targetTid={:#x} slots={} sigCalls={} "
+                 "waitBegin={} waitDone={} matched={} missing={} noActive={} overflow={} "
+                 "top0={:#x}/{}/{}x/v{}/vvar{}/cnt{}/cvar{}/during{}/w2s{:.3f}avg/{:.3f}max/match{}/s2e{:.3f}avg/{:.3f}max "
+                 "top1={:#x}/{}/{}x/v{}/vvar{}/cnt{}/cvar{}/during{}/w2s{:.3f}avg/{:.3f}max/match{}/s2e{:.3f}avg/{:.3f}max "
+                 "top2={:#x}/{}/{}x/v{}/vvar{}/cnt{}/cvar{}/during{}/w2s{:.3f}avg/{:.3f}max/match{}/s2e{:.3f}avg/{:.3f}max "
+                 "top3={:#x}/{}/{}x/v{}/vvar{}/cnt{}/cvar{}/during{}/w2s{:.3f}avg/{:.3f}max/match{}/s2e{:.3f}avg/{:.3f}max",
+                 frame, frames, TargetSignalAddress,
+                 target_wait_tid.load(std::memory_order_relaxed), active_slots, total_calls,
+                 wait_begun.exchange(0, std::memory_order_relaxed),
+                 wait_done.exchange(0, std::memory_order_relaxed),
+                 wait_matched_signal.exchange(0, std::memory_order_relaxed),
+                 wait_missing_signal.exchange(0, std::memory_order_relaxed),
+                 signals_without_wait.exchange(0, std::memory_order_relaxed),
+                 signal_slot_overflow.exchange(0, std::memory_order_relaxed),
+                 a.thread_id, SignalTypeName(a.type), a.calls, a.value_ref, a.value_mismatch,
+                 a.count_ref, a.count_mismatch, a.during_wait,
+                 AvgMs(a.wait_to_signal_total_ns, a.during_wait), ToMs(a.wait_to_signal_max_ns),
+                 a.matched_waits, AvgMs(a.signal_to_wait_end_total_ns, a.matched_waits),
+                 ToMs(a.signal_to_wait_end_max_ns),
+                 b.thread_id, SignalTypeName(b.type), b.calls, b.value_ref, b.value_mismatch,
+                 b.count_ref, b.count_mismatch, b.during_wait,
+                 AvgMs(b.wait_to_signal_total_ns, b.during_wait), ToMs(b.wait_to_signal_max_ns),
+                 b.matched_waits, AvgMs(b.signal_to_wait_end_total_ns, b.matched_waits),
+                 ToMs(b.signal_to_wait_end_max_ns),
+                 c.thread_id, SignalTypeName(c.type), c.calls, c.value_ref, c.value_mismatch,
+                 c.count_ref, c.count_mismatch, c.during_wait,
+                 AvgMs(c.wait_to_signal_total_ns, c.during_wait), ToMs(c.wait_to_signal_max_ns),
+                 c.matched_waits, AvgMs(c.signal_to_wait_end_total_ns, c.matched_waits),
+                 ToMs(c.signal_to_wait_end_max_ns),
+                 d.thread_id, SignalTypeName(d.type), d.calls, d.value_ref, d.value_mismatch,
+                 d.count_ref, d.count_mismatch, d.during_wait,
+                 AvgMs(d.wait_to_signal_total_ns, d.during_wait), ToMs(d.wait_to_signal_max_ns),
+                 d.matched_waits, AvgMs(d.signal_to_wait_end_total_ns, d.matched_waits),
+                 ToMs(d.signal_to_wait_end_max_ns));
+    }
+
     static const char* TypeName(u32 type) noexcept {
         switch (type) {
         case 0:
@@ -290,6 +541,19 @@ private:
             return "decLess";
         case 2:
             return "equal";
+        default:
+            return "unknown";
+        }
+    }
+
+    static const char* SignalTypeName(u32 type) noexcept {
+        switch (type) {
+        case 0:
+            return "signal";
+        case 1:
+            return "incEq";
+        case 2:
+            return "modWaitEq";
         default:
             return "unknown";
         }
@@ -324,6 +588,18 @@ private:
     std::atomic<u64> slot_overflow{0};
     std::atomic<u64> frame_id{0};
     std::array<Slot, SlotCount> slots{};
+
+    std::atomic<u64> signal_slot_overflow{0};
+    std::atomic<u64> target_wait_start_ns{0};
+    std::atomic<u64> target_wait_tid{0};
+    std::atomic<u64> wait_begun{0};
+    std::atomic<u64> wait_done{0};
+    std::atomic<u64> wait_matched_signal{0};
+    std::atomic<u64> wait_missing_signal{0};
+    std::atomic<u64> signals_without_wait{0};
+    std::atomic<u64> latest_signal_ns{0};
+    std::atomic<u32> latest_signal_slot{0};
+    std::array<SignalSlot, SignalSlotCount> signal_slots{};
 
     u64 frames_since_report{};
     TimePoint report_start{};
