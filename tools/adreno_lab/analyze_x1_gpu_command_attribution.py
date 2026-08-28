@@ -57,7 +57,6 @@ def main() -> int:
     count_keys = [
         "workerPop", "submitCalls", "pushCalls", "blockCalls", "schedCalls",
         "dmaCalls", "steps", "syncWaitCalls", "processCalls", "words",
-        "callMethod", "callMulti", "multiMethods",
     ]
     for key in count_keys:
         values = [per_frame(row, key) for row in rows]
