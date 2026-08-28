@@ -2,11 +2,6 @@ name: Build dc95 X1 GPU Submit Gap Attribution
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/x1-gpu-submit-gap-attribution
-    paths:
-      - '.github/x1-gpu-submit-gap-authorized-build.trigger'
 
 concurrency:
   group: dc95-x1-gpu-submit-gap-attribution-${{ github.ref }}
