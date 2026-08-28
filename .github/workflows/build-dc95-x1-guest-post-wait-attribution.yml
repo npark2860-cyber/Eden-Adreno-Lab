@@ -1,0 +1,357 @@
+name: Build dc95 X1 Guest Post Wait Attribution
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dc95-x1-guest-post-wait-attribution-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: dc95 ARM64 / X1 guest post-wait attribution
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout Eden CI workflow used by dc95-era nightlies
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify exact dc95 checkout
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+
+      - name: Install dc95-era Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Prepare compile-validated P0.2 non-scheduler patches
+        shell: bash
+        run: |
+          set -e
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          for f in \
+            src/video_core/renderer_vulkan/vk_buffer_cache.cpp \
+            src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp \
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
+            test -s "$out"
+          done
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
+      - name: Apply P0.2 non-scheduler source hooks
+        shell: bash
+        working-directory: eden
+        run: |
+          set -e
+          for p in \
+            ../profiler-patches/vk_buffer_cache.cpp.patch \
+            ../profiler-patches/vk_compute_pipeline.cpp.patch \
+            ../profiler-patches/vk_graphics_pipeline.cpp.patch \
+            ../profiler-patches/vk_staging_buffer_pool.cpp.patch \
+            ../profiler-patches/vk_update_descriptor.cpp.patch; do
+            git apply --ignore-whitespace "$p"
+          done
+
+      - name: Recreate complete current X1 diagnostic chain
+        shell: bash
+        run: |
+          set -e
+          python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+          python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+          python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+          python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_other_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_texture_fill_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_copy_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_payload_fingerprint.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_cache_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py eden
+          python lab/tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_diagnostic_harness.py eden
+
+      - name: Recreate frame-build attribution layer
+        shell: bash
+        run: |
+          set -e
+          cp lab/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h eden/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_frame_build_attribution.py eden
+
+      - name: Recreate GPU-command attribution layer
+        shell: bash
+        run: |
+          set -e
+          cp lab/src/video_core/x1_gpu_command_profiler.h eden/src/video_core/x1_gpu_command_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_gpu_command_attribution.py eden
+
+      - name: Recreate GPU-submit-gap attribution layer
+        shell: bash
+        run: |
+          set -e
+          cp lab/src/video_core/x1_gpu_submit_profiler.h eden/src/video_core/x1_gpu_submit_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_gpu_submit_gap_attribution.py eden
+
+      - name: Recreate guest-submit-thread attribution layer
+        shell: bash
+        run: |
+          set -e
+          cp lab/src/video_core/x1_guest_submit_profiler.h eden/src/video_core/x1_guest_submit_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py eden
+
+      - name: Recreate NVDRV IPC-dispatch attribution layer
+        shell: bash
+        run: |
+          set -e
+          cp lab/src/core/x1_nvdrv_ipc_dispatch_profiler.h eden/src/core/x1_nvdrv_ipc_dispatch_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_nvdrv_ipc_dispatch_gap.py eden
+
+      - name: Snapshot pre-guest-wait state
+        shell: bash
+        run: |
+          set -e
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_guest_post_wait_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_guest_post_wait_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_nvdrv_ipc_dispatch_gap.py \
+            lab/tools/adreno_lab/analyze_x1_nvdrv_ipc_dispatch_gap.py \
+            lab/tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_guest_submit_thread_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_gpu_submit_gap_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_gpu_submit_gap_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_gpu_command_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_gpu_command_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_frame_build_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_frame_cadence.py \
+            lab/tools/adreno_lab/analyze_x1_dequeue_attribution.py
+
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          grep -q 'x1_nvdrv_ipc_dispatch_gap_log' eden/src/common/settings.h
+          grep -q '\[X1-IPCDISPATCH\]' eden/src/core/x1_nvdrv_ipc_dispatch_profiler.h
+
+          mkdir -p pre-guestwait/intended pre-guestwait/critical
+          cp eden/src/common/settings.h pre-guestwait/intended/settings.h
+          cp eden/src/yuzu/configuration/configure_debug.h pre-guestwait/intended/configure_debug.h
+          cp eden/src/yuzu/configuration/configure_debug.cpp pre-guestwait/intended/configure_debug.cpp
+          cp eden/src/core/hle/kernel/k_thread.cpp pre-guestwait/intended/k_thread.cpp
+          cp eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp pre-guestwait/intended/nvdrv_interface.cpp
+          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp pre-guestwait/intended/vk_rasterizer.cpp
+
+          sha256sum eden/src/core/hle/kernel/k_thread.h > pre-guestwait/critical/k-thread-h.sha256
+          sha256sum eden/src/core/hle/kernel/k_thread_queue.cpp > pre-guestwait/critical/k-thread-queue.sha256
+          sha256sum eden/src/core/hle/kernel/k_client_session.cpp > pre-guestwait/critical/k-client-session.sha256
+          sha256sum eden/src/core/hle/kernel/k_server_session.cpp > pre-guestwait/critical/k-server-session.sha256
+          sha256sum eden/src/core/hle/kernel/k_scheduler.cpp > pre-guestwait/critical/k-scheduler.sha256
+          sha256sum eden/src/core/hle/kernel/global_scheduler_context.cpp > pre-guestwait/critical/global-scheduler.sha256
+          sha256sum eden/src/core/hle/kernel/svc/svc_ipc.cpp > pre-guestwait/critical/svc-ipc.sha256
+          sha256sum eden/src/core/hle/service/server_manager.cpp > pre-guestwait/critical/server-manager.sha256
+          sha256sum eden/src/core/hle/service/os/multi_wait.cpp > pre-guestwait/critical/multi-wait.sha256
+          sha256sum eden/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp > pre-guestwait/critical/nvhost-gpu.sha256
+          sha256sum eden/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp > pre-guestwait/critical/nvhost-ctrl.sha256
+          sha256sum eden/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp > pre-guestwait/critical/producer.sha256
+          sha256sum eden/src/core/hle/service/nvnflinger/hardware_composer.cpp > pre-guestwait/critical/composer.sha256
+          sha256sum eden/src/core/hle/service/vi/conductor.cpp > pre-guestwait/critical/conductor.sha256
+          sha256sum eden/src/video_core/gpu.cpp > pre-guestwait/critical/gpu.sha256
+          sha256sum eden/src/video_core/gpu_thread.cpp > pre-guestwait/critical/gpu-thread.sha256
+          sha256sum eden/src/video_core/control/scheduler.cpp > pre-guestwait/critical/control-scheduler.sha256
+          sha256sum eden/src/video_core/dma_pusher.cpp > pre-guestwait/critical/dma-pusher.sha256
+          sha256sum eden/src/video_core/renderer_vulkan/vk_swapchain.cpp > pre-guestwait/critical/swapchain.sha256
+          sha256sum eden/src/video_core/renderer_vulkan/vk_scheduler.cpp > pre-guestwait/critical/vk-scheduler.sha256
+          sha256sum eden/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp > pre-guestwait/critical/vk-graphics-pipeline.sha256
+          sha256sum eden/src/core/x1_nvdrv_ipc_dispatch_profiler.h > pre-guestwait/critical/ipc-dispatch-profiler.sha256
+          sha256sum eden/src/video_core/x1_guest_submit_profiler.h > pre-guestwait/critical/guest-submit-profiler.sha256
+          sha256sum eden/src/video_core/x1_gpu_submit_profiler.h > pre-guestwait/critical/gpu-submit-profiler.sha256
+          sha256sum eden/src/video_core/x1_gpu_command_profiler.h > pre-guestwait/critical/gpu-command-profiler.sha256
+
+      - name: Apply runtime-selectable guest post-wait attribution
+        shell: bash
+        run: |
+          set -e
+          cp lab/src/core/x1_guest_post_wait_profiler.h eden/src/core/x1_guest_post_wait_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_guest_post_wait_attribution.py eden
+
+      - name: Verify guest post-wait attribution before configure
+        shell: bash
+        run: |
+          set -e
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+
+          grep -q 'x1_guest_post_wait_attribution_log' eden/src/common/settings.h
+          grep -q 'X1 Log: Guest Post Wait Attribution' eden/src/yuzu/configuration/configure_debug.cpp
+          grep -q '\[X1-GUESTWAIT\]' eden/src/core/x1_guest_post_wait_profiler.h
+          grep -q 'RecordThreadStateTransition' eden/src/core/hle/kernel/k_thread.cpp
+          grep -q 'RecordCandidateHandlerEntry' eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp
+          grep -q 'RecordCandidateHandlerComplete' eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp
+          grep -q 'X1GuestPostWaitProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+
+          for f in pre-guestwait/critical/*.sha256; do sha256sum -c "$f"; done
+
+          check_count() {
+            local before="$1" after="$2" token="$3"
+            local b a
+            b=$(grep -oF "$token" "$before" | wc -l | tr -d ' ')
+            a=$(grep -oF "$token" "$after" | wc -l | tr -d ' ')
+            test "$b" = "$a" || { echo "ERROR token count changed: $token $b -> $a" >&2; exit 1; }
+          }
+
+          check_count pre-guestwait/intended/k_thread.cpp eden/src/core/hle/kernel/k_thread.cpp 'this->SetWaitReasonForDebugging({});'
+          check_count pre-guestwait/intended/k_thread.cpp eden/src/core/hle/kernel/k_thread.cpp 'm_thread_state.store('
+          check_count pre-guestwait/intended/k_thread.cpp eden/src/core/hle/kernel/k_thread.cpp 'KScheduler::OnThreadStateChanged('
+          check_count pre-guestwait/intended/k_thread.cpp eden/src/core/hle/kernel/k_thread.cpp 'BeginWait('
+          check_count pre-guestwait/intended/k_thread.cpp eden/src/core/hle/kernel/k_thread.cpp 'EndWait('
+          check_count pre-guestwait/intended/nvdrv_interface.cpp eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp 'nvdrv->Ioctl1('
+          check_count pre-guestwait/intended/nvdrv_interface.cpp eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp 'nvdrv->Ioctl2('
+          check_count pre-guestwait/intended/nvdrv_interface.cpp eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp 'RecordNvdrvHandlerEntry('
+          check_count pre-guestwait/intended/nvdrv_interface.cpp eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp 'RecordNvdrvHandlerComplete('
+
+          test "$(grep -oF 'RecordThreadStateTransition(' eden/src/core/hle/kernel/k_thread.cpp | wc -l | tr -d ' ')" = "1"
+          test "$(grep -oF 'RecordCandidateHandlerEntry(' eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp | wc -l | tr -d ' ')" = "2"
+          test "$(grep -oF 'RecordCandidateHandlerComplete(' eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp | wc -l | tr -d ' ')" = "2"
+
+          {
+            diff -u pre-guestwait/intended/settings.h eden/src/common/settings.h || true
+            diff -u pre-guestwait/intended/configure_debug.h eden/src/yuzu/configuration/configure_debug.h || true
+            diff -u pre-guestwait/intended/configure_debug.cpp eden/src/yuzu/configuration/configure_debug.cpp || true
+            diff -u pre-guestwait/intended/k_thread.cpp eden/src/core/hle/kernel/k_thread.cpp || true
+            diff -u pre-guestwait/intended/nvdrv_interface.cpp eden/src/core/hle/service/nvdrv/nvdrv_interface.cpp || true
+            diff -u pre-guestwait/intended/vk_rasterizer.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp || true
+          } > guest-post-wait-only.diff
+          test -s guest-post-wait-only.diff
+
+          if grep -E '^\+.*(BeginWait\(|EndWait\(|WaitHost\(|StallApplication\(|sleep_for|sleep_until|Sleep\(|SetPriority\(|SetCoreMask\(|Reschedule|YieldTo|PushGPUEntries\(|item\.swap_interval[[:space:]]*=|default_max_buffer_count[[:space:]]*=|SetTarget|SpeedLimit)' guest-post-wait-only.diff; then
+            echo 'ERROR: behavior-changing wait/scheduling/GPU policy leaked into guest post-wait diff' >&2
+            exit 1
+          fi
+
+          git -C eden status --short
+
+      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure dc95 ARM64 standard build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+
+      - name: Build dc95 ARM64 X1 guest post-wait attribution
+        shell: msys2 {0}
+        working-directory: eden
+        run: cmake --build build
+
+      - name: Package with Eden CI Windows packager
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: dc95cd09ee-x1-guest-post-wait-attribution
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Add analyzers and metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force extras | Out-Null
+          Copy-Item lab/tools/adreno_lab/analyze_x1_guest_post_wait_attribution.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_nvdrv_ipc_dispatch_gap.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_guest_submit_thread_attribution.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_gpu_submit_gap_attribution.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_gpu_command_attribution.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_frame_build_attribution.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_frame_cadence.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_dequeue_attribution.py extras/ -Force
+          @'
+          Experiment: X1 exact-dc95 guest post-wait attribution
+          Exact Eden source: dc95cd09eea9749250fe31a3072684d341d19417
+          Branch: exp/x1-guest-post-wait-attribution
+
+          New control:
+          - X1 Log: Guest Post Wait Attribution
+
+          Recommended first run:
+          - Guest Post Wait Attribution ON
+          - NVDRV IPC Dispatch Gap ON
+          - Guest Submit Thread Attribution ON
+          - GPU Submit Gap Attribution ON
+          - GPU Command Attribution ON
+          - Frame Build Attribution ON
+          - Frame Cadence ON
+          - Dequeue Attribution ON
+          - all behavioral A/B controls OFF
+          - Scheduler/Present/Pipeline/Upload/QCOM heavy logs OFF
+          - Descriptor Ring OFF
+
+          [X1-GUESTWAIT] reports:
+          - candidate C -> next candidate handler-entry window
+          - tracked wait time/share by None/Sleep/IPC/Synchronization/ConditionVar/Arbitration/Suspended
+          - residual window time not explained by completed KThread waits
+          - top three SVC IDs by tracked wait duration
+          '@ | Set-Content -Encoding UTF8 extras/GUEST_POST_WAIT_ATTRIBUTION.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-dc95-X1-guest-post-wait-attribution
+          path: |
+            eden/artifacts/*
+            extras/*
+          if-no-files-found: error
+          retention-days: 14
