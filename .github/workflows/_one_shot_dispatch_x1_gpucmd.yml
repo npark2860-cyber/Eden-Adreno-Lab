@@ -1,0 +1,23 @@
+name: One-shot dispatch X1 GPU Command Attribution
+
+on:
+  push:
+    paths:
+      - '.github/ONE_SHOT_X1_GPU_COMMAND_ATTRIBUTION'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch exactly one ARM64 target workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api --method POST \
+            repos/${GH_REPO}/actions/workflows/build-dc95-x1-gpu-command-attribution.yml/dispatches \
+            -f ref='exp/x1-gpu-command-attribution'
