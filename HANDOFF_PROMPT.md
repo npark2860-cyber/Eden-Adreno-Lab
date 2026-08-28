@@ -76,7 +76,7 @@ It emits `[X1-GPUCMD]` 120-frame aggregates for:
 - `Tegra::Control::Scheduler::Push` total / bind / DmaPusher dispatch
 - `DmaPusher::DispatchCalls` loop / tail / sync wait
 - `ProcessCommands` total + command-word volume
-- CallMethod / CallMultiMethod counts without per-method timers
+- no per-method wall-clock timer or per-method atomic counter is used
 
 Primary next split:
 
