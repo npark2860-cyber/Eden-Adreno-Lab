@@ -1,139 +1,165 @@
-# Handoff Prompt — Eden Adreno X1 Guest Post Wait Attribution
+# Handoff Prompt — Eden Adreno X1 Address Arbiter Attribution
 
 Use this prompt when continuing in a new tab.
 
 ---
 
-Eden Windows ARM64 / Snapdragon X / Adreno X1-85 performance diagnosis를 이어간다.
+Eden Windows ARM64 / Snapdragon X Elite / Adreno X1-85 performance diagnosis를 이어간다.
 
 GitHub repository:
 
 `npark2860-cyber/Eden-Adreno-Lab`
 
-Current experiment branch:
+Current branch:
 
 `exp/x1-guest-post-wait-attribution`
 
-Do not reconstruct state from old chat. First read these GitHub documents and treat them as source of truth:
+Do not reconstruct state from old chat. GitHub documents are source of truth.
 
-1. `CURRENT_HANDOFF.md`
-2. `NEXT_ACTION_GUEST_POST_WAIT_ATTRIBUTION.md`
-3. `DEBUG_HISTORY_20260828_GUEST_POST_WAIT.md`
-4. `NEXT_ACTION_NVDRV_IPC_DISPATCH_GAP.md` — completed predecessor
-5. `DEBUG_HISTORY_20260828_IPC_DISPATCH.md`
-6. `GUEST_SUBMIT_WAIT_SOURCE_MAP.md`
+First read:
+
+1. `LAB_BOOTSTRAP.md`
+2. `CURRENT_HANDOFF.md`
+3. `DEBUG_HISTORY.md`
+4. `DEBUG_HISTORY_20260827_CONTINUED.md`
+5. `DEBUG_HISTORY_20260828_CONTINUED.md`
+6. `DEBUG_HISTORY_20260828_GPU_SUBMIT.md`
 7. `DEBUG_HISTORY_20260828_GUEST_SUBMIT.md`
-8. `DEBUG_HISTORY_20260828_GPU_SUBMIT.md`
-9. `DEBUG_HISTORY_20260828_CONTINUED.md`
-10. `LAB_BOOTSTRAP.md`
-11. `HANDOFF_PROMPT.md`
+8. `DEBUG_HISTORY_20260828_GUEST_POST_WAIT.md`
+9. `NEXT_ACTION_GUEST_POST_WAIT_ATTRIBUTION.md` — completed
+10. `NEXT_ACTION_ADDRESS_ARBITER_ATTRIBUTION.md` — current next action
+11. `NEXT_ACTION_NVDRV_IPC_DISPATCH_GAP.md` — completed predecessor
+12. `GUEST_SUBMIT_WAIT_SOURCE_MAP.md`
+13. `HANDOFF_PROMPT.md`
 
-Then verify actual branch HEAD and Actions state against the documents before doing anything else.
+Then verify actual branch HEAD/workflow state before editing anything.
 
 Fixed Eden baseline — never change without explicit baseline-change procedure:
 
 `eden-emulator/mirror`
 `dc95cd09eea9749250fe31a3072684d341d19417`
 
-Hard build rule:
+Guest Post Wait experiment cleanup/code anchor before documentation:
 
-- never start or rerun ARM64 Actions without fresh explicit user authorization
-- one authorization = exactly one build attempt
-- if that attempt fails, stop; no retry without another explicit authorization
+`d9df8d7f594c3030ee518a2bd489a15708ad87b4`
 
-Retain the closed causal chain in `CURRENT_HANDOFF.md`, especially:
+Documentation commits may advance the branch HEAD. Verify that changes after this code anchor are documentation-only unless later source work is explicitly recorded.
 
-- BufferQueue free-slot wait is not the slow-gameplay owner
-- HWC swap gating / DFPS / raw swap are not the root frame-production cause
-- measured Vulkan Draw/Configure/Dispatch/Clear explains only a minority of the ~50 ms frame
-- GPU worker spends a large fraction of slow frames in queue `PopWait`, waiting for upstream command supply
-- lower NVDRV / GPFIFO submission is fast after candidate handler entry
-- one guest thread `tid=0x53` owns essentially all candidate GPU submits and has only ~1-2% CPU share
-- request -> `nvservices` handler dispatch is only ~0.02 ms/request and is NOT the missing 20-30 ms owner
+Hard ARM64 rule:
 
-Completed NVDRV IPC Dispatch Gap runtime:
+- never build/rebuild/rerun ARM64 Actions without fresh explicit user authorization
+- one authorization = exactly one attempt
+- failure does not authorize a retry
+- current ARM64 authorization = NONE
 
-`eden_log(20260828-061910).txt`
+Persistent Guest Post Wait workflow:
 
-Representative results:
+`.github/workflows/build-dc95-x1-guest-post-wait-attribution.yml`
 
-- frame 840: `guestPostAvg=16.840 ms`, `ipcDispatchAvg=0.021 ms`, `serviceReplyAvg=0.014 ms`
-- frame 1320: `guestPostAvg=26.743 ms`, `ipcDispatchAvg=0.017 ms`, `serviceReplyAvg=0.039 ms`
-- frame 1440: `guestPostAvg=29.091 ms`, `ipcDispatchAvg=0.027 ms`, `serviceReplyAvg=0.033 ms`
+must remain `workflow_dispatch` only.
 
-Critical conclusion:
+Completed approved Guest Post Wait build:
 
-> The live missing interval is previous candidate NVDRV completion/reply-adjacent C -> next candidate sync-request issue A on the guest side.
+- run `33150086343`
+- job `98779808729`
+- build HEAD `d4cbe0ba893a61650583926434261565242bca3f`
+- success
+- artifact `Eden-dc95-X1-guest-post-wait-attribution`
+- artifact id `9678004761`
+- size `31,349,148` bytes
+- SHA-256 `4c310923a53b3cfd337893329b1fbd41e317a79200139ae559064a520e882ee9`
 
-Do not reopen host `nvservices` scheduling/head-of-line unless new evidence contradicts these measurements.
+The earlier run `33149694136` failed before ARM compile because WSL `bash` was selected instead of Git Bash. Corrected one-shot workflow/marker were removed after the successful build.
 
-Exact dc95 KThread facts for the current pass:
+Retain the closed causal chain from `CURRENT_HANDOFF.md`:
 
-- wait reasons are None / Sleep / IPC / Synchronization / ConditionVar / Arbitration / Suspended
-- BeginWait moves a thread to Waiting
-- KThreadQueue EndWait/CancelWait move it back to Runnable
-- KThread::SetState is the common transition point and clears the debug wait reason before applying the new base state
+- BufferQueue free-slot/backpressure is not the primary owner
+- cadence/raw swap3/DFPS are downstream symptoms, not root frame-production cause
+- measured RasterizerVulkan work explains only a minority of the slow frame
+- GPU worker is starved in queueWait waiting for upstream command supply
+- lower NVDRV/GPFIFO path is fast once candidate handler starts
+- guest `tid=0x53` owns essentially all candidate submits and is only ~1-2% CPU-share
+- NVDRV IPC dispatch/service is ~0.02-0.05 ms/request and not the missing 20-30 ms
 
-Current prepared experiment:
+Completed Guest Post Wait runtime:
 
-`X1 Log: Guest Post Wait Attribution`
+`eden_log(20260828-080040).txt`
 
-New record:
+Environment:
 
-`[X1-GUESTWAIT]`
+- exact dc95
+- TOTK 1.2.1
+- Windows 11 25H2 build 26220.9223
+- Adreno X1-85 / driver 512.863.0 / Vulkan 1.3.295
+- swap3->2 clamp OFF
+- Descriptor Ring happened to remain ON but sampled DBUF `alloc=0`, `reuseWait=0`; do not rerun only because of this.
 
-It measures the dynamic candidate submitter's post-NVDRV interval and reports:
+Critical runtime result:
 
-- candidate-window total/average/max
-- completed KThread wait total and `waitShare`
-- residual window time
-- wait time/count by None/Sleep/IPC/Synchronization/ConditionVar/Arbitration/Suspended
-- top three SVC IDs by tracked wait duration
-- sanity counters
+> The dominant submitter's C -> next candidate request interval is overwhelmingly KThread Waiting (~96-99% in steady reports), not CPU execution and not nvservices dispatch.
 
-The current candidate request's own IPC wait is excluded. The next candidate handler entry is used as the window-end proxy; prior IPC-dispatch measurement shows handler-entry minus exact sync-send is only ~0.02 ms/request.
+Fast AddressArbiter examples:
 
-Interpretation:
+- frame 240: `1.253 ms/frame`
+- frame 480: `1.080`
+- frame 600: `2.595`
+- frame 720: `1.112`
+- frame 840: `1.030`
 
-- high waitShare -> follow only the dominant wait reason/SVC
-- low waitShare + persistent ~1-2% submitter CPU share -> Runnable residency / scheduler competitor attribution
-- mixed -> preserve both components and instrument only the dominant remainder
+Transition/slow:
 
-Prepared files:
+- frame 360, raw swap2: `23.771 ms/frame`
+- frame 960 transition->swap3: `57.526`
+- frame 1080 stable slow: `26.751`
+- frame 1200 stable slow: `50.103`
 
-- `src/core/x1_guest_post_wait_profiler.h`
-- `tools/adreno_lab/transplant_dc95_guest_post_wait_attribution.py`
-- `tools/adreno_lab/analyze_x1_guest_post_wait_attribution.py`
-- `.github/workflows/build-dc95-x1-guest-post-wait-attribution.yml`
-- `NEXT_ACTION_GUEST_POST_WAIT_ATTRIBUTION.md`
-- `DEBUG_HISTORY_20260828_GUEST_POST_WAIT.md`
+Critical counterexample:
 
-Workflow:
+- frame 1320 stable slow: wall `50.227 ms/frame`, `guestPostAvg=24.228 ms`, `waitShare=98.89%`
+- `Arbitration=8.615 ms/frame`
+- `None=40.741 ms/frame`
 
-`Build dc95 X1 Guest Post Wait Attribution`
+Therefore do NOT conclude that Arbitration alone owns the entire slowdown.
 
-It must remain `workflow_dispatch` only.
+Current defensible conclusion:
 
-Recommended runtime after a future successful build:
+> Guest-post slowdown is KThread Waiting dominated. A once-per-frame AddressArbiter wait frequently expands sharply with slowdown, but unclassified None waits can also dominate a stable-slow window.
 
-ON:
-- Guest Post Wait Attribution
-- NVDRV IPC Dispatch Gap
-- Guest Submit Thread Attribution
-- GPU Submit Gap Attribution
-- GPU Command Attribution
-- Frame Build Attribution
-- Frame Cadence
-- Dequeue Attribution
+Profiler/source correctness already reviewed:
 
-OFF:
-- Descriptor Ring
-- swap 3 -> 2 clamp A/B
-- all behavioral A/B controls
-- Scheduler/Present/Pipeline/Upload/QCOM heavy logs
+- `BeginWait()` enters Waiting before wait reason is assigned
+- profiler classifies at Waiting exit using old reason captured before baseline clear, so recorded Arbitration duration is valid
+- `topSvc0=0x0` is broken attribution because exact dc95 never populates `current_svc_id` and the transplant installs no recorder
+- reply-wake exclusion is count-consistent in steady windows
+
+Exact dc95 Arbitration mapping:
+
+`Svc::WaitForAddress` (`0x34`)
+-> AddressArbiter
+-> `WaitIfLessThan` / `DecrementAndWaitIfLessThan` / `WaitIfEqual`
+-> KThread reason `Arbitration`.
+
+Wake side:
+
+`Svc::SignalToAddress` (`0x35`).
+
+Mutex `ArbitrateLock` and process-wide condition-variable waits use `ConditionVar` reason, not `Arbitration`.
+
+`arbN=120` in every non-startup 120-frame report means one completed AddressArbiter wait per rendered frame for `tid=0x53`.
 
 NEXT ACTION:
 
-Read `NEXT_ACTION_GUEST_POST_WAIT_ATTRIBUTION.md`, verify branch/HEAD/workflow and Actions count. Static preparation is complete. Stop before ARM64 Actions unless the user gives fresh explicit authorization for exactly one build attempt.
+Read `NEXT_ACTION_ADDRESS_ARBITER_ATTRIBUTION.md` and prepare only Stage A:
 
-No current ARM64 build authorization exists.
+- direct `Svc::WaitForAddress` observation for target `tid=0x53` / existing guest-post window
+- aggregate by `(guest address, ArbitrationType)`
+- record count, timeout, total/avg/max blocked duration, and result/timeout status if semantics remain unchanged
+- no per-event logs
+- no generic SVC profiler
+- no scheduler profiler
+
+Only if one address is proven dominant should a later Stage B instrument `SignalToAddress` for that exact address to identify signaler/waker.
+
+If a frame-1320-like `None` wait remains dominant after Stage A, separately identify only the unclassified BeginWait source class for target `tid=0x53`.
+
+Static/source preparation may proceed. Stop before any ARM64 Actions attempt unless the user gives fresh explicit authorization.
