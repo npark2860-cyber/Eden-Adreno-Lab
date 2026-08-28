@@ -1,4 +1,4 @@
-# NEXT ACTION — X1 Guest Submit Thread Attribution
+# NEXT ACTION — X1 Guest Submit Thread Attribution — COMPLETED
 
 Updated: 2026-08-28 KST
 
@@ -6,168 +6,96 @@ Updated: 2026-08-28 KST
 
 - Eden: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - Lab branch: `exp/x1-guest-submit-thread-attribution`
-- predecessor cleanup: `exp/x1-gpu-submit-gap-attribution@d17eb7314b2809c95e53874dbc7f64808df67006`
 
 Do not change the Eden baseline.
 
 **ARM64 Actions rule: no build or rerun without fresh explicit user authorization. One authorization = exactly one attempt.**
 
-## Why this experiment exists
+## Build — completed
 
-GPU-command attribution showed that slow gameplay spends roughly 30-35 ms/frame with the asynchronous GPU worker idle in queue `PopWait`, while actual command processing is roughly 15-20 ms/frame.
+- workflow: `Build dc95 X1 Guest Submit Thread Attribution`
+- run: `33139365151`
+- job: `98746513852`
+- attempt: 1
+- build HEAD: `9d8f7ea603051db6eb8f9e9e6e1477583b554622`
+- artifact: `Eden-dc95-X1-guest-submit-thread-attribution`
+- artifact id: `9673831416`
+- size: 31,341,758 bytes
+- SHA-256: `fd19f1995af224f91d092b820e84394b1612b84884925fe9404228e2f4096db4`
+- result: success
+- reruns: 0
+- one-shot trigger removed
 
-GPU-submit-gap attribution then moved the boundary above NVDRV:
+## Runtime — completed
 
-- slow gameplay is ~50-55 ms/frame class,
-- candidate NVDRV submit-service gap, confirmed nvhost_gpu device-submit gap and actual `PushGPUEntries` gap are effectively identical,
-- stable slow windows are roughly ~26 ms per submit interval with ~2 main submits/frame,
-- NVDRV service work is only roughly ~0.05-0.06 ms/frame,
-- `SubmitGPFIFOImpl` is roughly ~0.01-0.02 ms/frame,
-- channel lock / copy / fence / syncpoint overhead is tiny.
+Log:
 
-Therefore the missing interval already exists **before the submit ioctl reaches NVDRV**.
+`eden_log(20260828-045417).txt`
 
-The next question is no longer whether NVDRV is slow. It is:
+Key clean setting:
 
-> Which guest thread issues the GPU submit ioctls, and between consecutive submits is that thread actually consuming guest CPU time or mostly waiting/preempted?
+- `x1_ab_clamp_main_swap_interval_3_to_2=false`
 
-## Exact-source basis
+Descriptor Ring remained ON, but the decisive guest-thread attribution is unaffected.
 
-`HLERequestContext` retains the originator `Kernel::KThread` for the synchronous IPC request and exposes it through `ctx.GetThread()`.
+### Result
 
-Exact dc95 `KThread` exposes:
+- one guest KThread `tid=0x53` owns essentially all candidate GPU-submit ioctls;
+- dominant share ~100%;
+- priority 30;
+- observed core 1;
+- saved submit-entry PC overwhelmingly `0x8522f458`;
+- slow-gameplay `cpuShare` only ~1-2%, representative weighted value ~1.4%.
 
-- `GetThreadId()`
-- `GetCpuTime()`
-- `GetCurrentCore()`
-- `GetActiveCore()`
-- `GetPriority()`
-- `GetContext().pc`
+Conclusion:
 
-Exact dc95 scheduler updates `KThread::GetCpuTime()` from the same `CoreTiming().GetClockTicks()` time base at context switches. Because a synchronous NVDRV request blocks/deschedules the originator before the HLE service handles it, the CPU-time snapshot at NVDRV entry is suitable for comparing consecutive submit requests from the same thread.
+> The dominant GPU submitter is not CPU-bound between observed NVDRV handler entries. Most of the wall interval is spent not executing guest CPU instructions.
 
-## New runtime control
+## Exact-source refinement
 
-`X1 Log: Guest Submit Thread Attribution`
+Subsequent exact dc95 source review found that this result must be interpreted together with the synchronous HLE IPC architecture.
 
-Setting:
+For synchronous IPC:
 
-`x1_guest_submit_thread_attribution_log`
+- `KServerSession::OnRequest()` sets the originator KThread wait reason to `IPC` and calls `BeginWait()`;
+- reply wakes it through `EndWait()`.
 
-Default OFF.
+Nvidia HLE services are launched as a detached host-core process:
 
-New record:
+`RunOnHostCoreProcess("nvservices", Nvidia::LoopProcess)`
 
-`[X1-GUESTSUBMIT]`
+One Nvidia `ServerManager` services `nvdrv`, `nvdrv:a`, `nvdrv:s`, `nvdrv:t`, and `nvmemp`; no additional Nvidia host service workers are started in that path.
 
-## What it measures
+Therefore the previous NVDRV handler-body timing does not distinguish:
 
-For candidate GPU submit ioctls only (`'H'/0x8` and `'H'/0x1b`, aligned with the existing GPU-submit profiler):
+1. guest waits/works a long time before issuing the next sync IPC, from
+2. guest issues the sync IPC promptly and then sleeps while the host `nvservices` loop is late dispatching it.
 
-- originator guest thread ID,
-- submit count by originator thread,
-- dominant submitter share,
-- same-thread wall-clock gap between consecutive submit requests,
-- guest `CoreTiming` tick delta between those requests,
-- originator `KThread::GetCpuTime()` tick delta between those requests,
-- `cpuShare = thread CPU tick delta / elapsed guest tick delta`,
-- saved guest PC at submit request,
-- same-PC vs PC-change count,
-- current core / active core / priority.
+See:
 
-Up to 8 submitter thread IDs are tracked. This is deliberately small because the expected GPU producer set is tiny and the goal is attribution, not a general thread profiler.
+- `GUEST_SUBMIT_WAIT_SOURCE_MAP.md`
+- `DEBUG_HISTORY_20260828_GUEST_SUBMIT.md`
 
-## Why CPU-share is the decisive first split
+## Superseded next action
 
-### Case A — one dominant thread, high CPU share
+Do not add a broad wait-reason profiler yet.
 
-If one thread owns most submits and its `cpuShare` is high across the slow windows:
+The decisive next experiment is now:
 
-> The guest GPU producer is CPU-bound between submit requests.
+`NEXT_ACTION_NVDRV_IPC_DISPATCH_GAP.md`
 
-The next step should then identify which guest code / emulator CPU path consumes that execution time. A targeted PC/block sampler or Dynarmic-side attribution becomes justified.
+It must split:
 
-### Case B — one dominant thread, low CPU share
+- previous NVDRV reply -> next `Svc::SendSyncRequest` entry,
+- `SendSyncRequest` entry -> NVDRV handler entry,
+- handler entry -> reply completion.
 
-If one thread owns most submits but its `cpuShare` is low while wall gaps remain ~25-30 ms:
+This tells us whether the missing interval belongs to guest-side post-reply coordination or to host `nvservices` dispatch/wakeup/head-of-line latency.
 
-> The submitter spends most of the interval not executing guest CPU instructions.
+## Current build state
 
-Then instrument only that thread's kernel wait/synchronization/SVC transitions to determine whether it is waiting on IPC, synchronization, condition variables, arbitration, sleep, or scheduler preemption.
+Guest-submit-thread experiment: completed successfully.
 
-### Case C — multiple submitter threads
+Next IPC-dispatch experiment: not built.
 
-If dominant share is low or thread IDs alternate materially:
-
-> GPU production is distributed across guest threads.
-
-Then attribute each thread separately before adding deeper scheduler instrumentation.
-
-## Caller PC caveat
-
-The saved PC is useful as submit-callsite identity evidence. It does **not** by itself prove that the intervening 25-30 ms executes at that PC. Do not infer a hot function solely from repeated submit-entry PC values.
-
-## Prepared files
-
-- `src/video_core/x1_guest_submit_profiler.h`
-- `tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py`
-- `tools/adreno_lab/analyze_x1_guest_submit_thread_attribution.py`
-- `.github/workflows/build-dc95-x1-guest-submit-thread-attribution.yml`
-
-## Safety design
-
-The new pass modifies only generated:
-
-- `src/common/settings.h`
-- `src/yuzu/configuration/configure_debug.h/.cpp`
-- `src/core/hle/service/nvdrv/nvdrv_interface.cpp`
-- `src/video_core/renderer_vulkan/vk_rasterizer.cpp`
-- plus the new profiler header.
-
-It must not change:
-
-- kernel scheduler behavior,
-- service framework / HLE IPC behavior,
-- nvhost_gpu submission behavior,
-- GPU worker / DmaPusher behavior,
-- Vulkan scheduler/present/render behavior,
-- BufferQueue/HWC/VI behavior.
-
-Workflow hashes those critical files before and after the pass. It also verifies existing `ReadBuffer`, `nvdrv->Ioctl1/2` and GPU-submit service-record call counts remain unchanged.
-
-No sleep, wait, reschedule, state, priority, core-mask, swap, buffer-count, speed-limit or `PushGPUEntries` behavior may be added by this pass.
-
-## Recommended runtime after a future successful build
-
-Use the same TOTK 1.2.1 gameplay route, DFPS OFF first.
-
-ON:
-
-- Guest Submit Thread Attribution
-- GPU Submit Gap Attribution
-- GPU Command Attribution
-- Frame Build Attribution
-- Frame Cadence
-- Dequeue Attribution
-
-OFF:
-
-- `X1 A/B: Clamp Main Swap Interval 3 To 2`
-- Descriptor Ring
-- Uniform cache A/B
-- Draw/Dispatch skip A/B
-- Scheduler/Present/Pipeline/Upload/QCOM heavy logs
-
-The previous GPU-submit runtime accidentally still had swap-clamp and Descriptor Ring ON. They are not needed for this experiment and should be OFF for the clean run.
-
-## Build state
-
-Static preparation only.
-
-**Stop before ARM64 Actions.**
-
-A fresh explicit user authorization is required for exactly one attempt of:
-
-`Build dc95 X1 Guest Submit Thread Attribution`
-
-If it fails, stop. No retry without another fresh authorization.
+Current ARM64 build authorization: **none**.
