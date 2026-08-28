@@ -141,6 +141,8 @@ def main() -> int:
     kthread.write_text(text, encoding="utf-8")
 
     # The exact dc95 user-exception claim path also enters Waiting without assigning a debug reason.
+    # This comment+call pair is unique in exact dc95, so use a strict global one-shot replacement
+    # instead of assuming the name of the next function.
     kprocess = root / "src/core/hle/kernel/k_process.cpp"
     text = kprocess.read_text(encoding="utf-8")
     text = replace_once(
@@ -158,14 +160,7 @@ def main() -> int:
             Core::X1WakerStageDProfiler::NoneWaitSite::ProcessUserException);
         cur_thread->BeginWait(kernel, std::addressof(wait_queue));
 '''
-    text = replace_once_in_region(
-        text,
-        "bool KProcess::EnterUserException",
-        "void KProcess::LeaveUserException",
-        anchor,
-        replacement,
-        "KProcess user-exception direct BeginWait site",
-    )
+    text = replace_once(text, anchor, replacement, "KProcess user-exception direct BeginWait site")
     kprocess.write_text(text, encoding="utf-8")
 
     # Reuse the existing Address Arbiter logging switch and frame report cadence.
