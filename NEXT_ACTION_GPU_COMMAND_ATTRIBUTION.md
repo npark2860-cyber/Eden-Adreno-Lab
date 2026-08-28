@@ -62,9 +62,8 @@ Default OFF.
 - Step count
 - synchronization wait time
 - `ProcessCommands` total + command word count
-- CallMethod / CallMultiMethod counts only
 
-No per-method wall-clock timer is used, intentionally minimizing profiler overhead.
+The profiler intentionally avoids per-method timing or atomic per-method counters so that the command hot path is disturbed as little as possible.
 
 ## Interpretation
 
