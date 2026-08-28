@@ -1,4 +1,4 @@
-# CURRENT HANDOFF — Eden Adreno X1 Address Arbiter Signal Owner
+# CURRENT HANDOFF — Eden Adreno X1 Waker Attribution
 
 Updated: 2026-08-28 KST
 
@@ -7,36 +7,37 @@ Updated: 2026-08-28 KST
 - repository: `npark2860-cyber/Eden-Adreno-Lab`
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
-- Stage A branch: `exp/x1-address-arbiter-attribution`
-- current Stage B source branch: `exp/x1-address-arbiter-signal-owner`
-- Stage B source anchor before build trigger: `5709778bc0459887fbd7ab55232f9fcebbe20e2e`
-- Stage B ARM64 build HEAD: `f7391ee756a748fad61dcd07b535649b54057862`
+- current source branch: `exp/x1-address-arbiter-signal-owner`
+- Stage B dynamic-latch runtime record: `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
 **ARM64 build rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
 
-## Stage B ARM64 build — SUCCESS
+## Latest ARM64 build — SUCCESS
 
-Approved one-shot build:
+Dynamic-address Stage B build:
 
-- run `33164528739`
-- job `98826665494`
+- run `33168281215`
+- job `98838856202`
 - attempt `1`
-- build HEAD `f7391ee756a748fad61dcd07b535649b54057862`
+- build branch `exp/x1-address-arbiter-signal-owner-build`
+- build HEAD `b2dbc9dbe7cb69a5856850d5d60750355f186b19`
 - conclusion `success`
+- exact dc95 verification `success`
+- dynamic-latch verification `success`
 - configure `success`
 - ARM64 compile `success`
 - package `success`
 - artifact upload `success`
-- artifact `Eden-dc95-X1-address-arbiter-attribution`
-- artifact id `9683706155`
-- size `31,386,491` bytes
-- SHA-256 `586dc8edf5bdff7102a0fb403363efc26538209d21728b238cdd5e31df8e3e5e`
+- artifact `Eden-dc95-X1-address-arbiter-dynamic-latch`
+- artifact id `9685245645`
+- size `31,385,379` bytes
+- SHA-256 `a421cb6beaa7528ba024a1fee943c2c9a80bbb353142963e0391d2d00e67cfd7`
 
-The build-trigger commit differs from the Stage B source anchor only by the temporary one-shot ARM64 workflow file. The Stage B source itself is the same. The temporary ARM64 workflow was removed after the successful build. No rerun was performed.
+The temporary one-shot ARM64 workflow was removed after the successful run. No rerun occurred.
 
-Persistent workflow remains manual-only (`workflow_dispatch`).
+The persistent source-branch workflow remains manual-only (`workflow_dispatch`).
 
 ## Closed causal chain retained
 
@@ -60,93 +61,85 @@ Do not reopen without new evidence:
 
 ## Address Arbiter Stage A — COMPLETE
 
-Corrected runtime:
+Corrected Stage A runtime proved one stable gameplay wait key within a process:
 
-`eden_log(20260828-102127).txt`
+- victim / dominant submitter: `tid=0x53`
+- operation: `WaitIfEqual` (`ArbitrationType=2`)
+- timeout: `-1`
+- one active gameplay key
+- no post-warmup slot overflow
+- no timeout completions
+- direct `WaitForAddress` duration reconciles essentially one-for-one with reason-level `Arbitration`.
 
-Proven stable gameplay wait key:
+The absolute guest address is **not process-invariant**. Observed across runs:
 
-- target guest thread: `tid=0x53`
-- guest address: **`0x210adbc120`**
-- operation: **`WaitIfEqual`** (`ArbitrationType=2`)
-- timeout: **`-1`**
-- timeout completions: `0`
-- alternate gameplay address/type keys: none observed
-- post-warmup slot overflow: `0`
+- `0x210adbc120`
+- `0x210b5bc120`
+- `0x210b1bc120`
 
-The same exact key persists across fast swap2, transition, and stable swap3 states.
+Therefore never hardcode the absolute guest VA across runs. The profiler now dynamically latches the current run's first post-warmup target-thread `WaitIfEqual(timeout=-1)` address.
 
-Representative direct wait averages:
+## Address Arbiter Stage B — COMPLETE
 
-- frame 840: `1.027 ms`, raw swap2 `120/120`
-- frame 960: `3.601 ms`, mostly swap2
-- frame 1080: `61.725 ms`, swap3 majority
-- frame 1200: `45.593 ms`, raw swap3 `120/120`
-- frame 1320: `41.227 ms`, raw swap3 `120/120`
-- frame 1440: `40.159 ms`, raw swap3 `120/120`
+Runtime:
 
-Direct `WaitForAddress` duration reconciles essentially exactly with the existing reason-level `Arbitration` bucket (correlation approximately `0.999999`).
+`eden_log(20260828-122253).txt`
+
+Dynamic target in this run:
+
+- victim: `tid=0x53`
+- wait address: **`0x210b1bc120`**
+- wait: `WaitIfEqual`
+- timeout: `-1`
+
+Matching signal owner:
+
+- sole observed waker: **`tid=0x4f`**
+- signal type: **`SignalAndIncrementIfEqual`** (`incEq`)
+- value argument: `1`, stable
+- count argument: `-1`, stable
+- normal gameplay: one matching signal per rendered frame
+- signal slots: `1`
+- post-warmup missing/no-active/overflow: `0`
+
+Representative timing:
+
+| frame | raw swap2 | raw swap3 | direct wait avg | wait -> signal (`w2s`) | signal -> return (`s2e`) |
+|---:|---:|---:|---:|---:|---:|
+| 240 | 120 | 0 | 1.331 ms | 1.322 ms | 0.009 ms |
+| 360 | 98 | 22 | 25.090 ms | 25.078 ms | 0.013 ms |
+| 1560 | 120 | 0 | 1.072 ms | 1.062 ms | 0.011 ms |
+| 1800 | 15 | 105 | 70.368 ms | 70.270 ms | 0.098 ms |
+| 1920 | 0 | 120 | 40.185 ms | 40.177 ms | 0.008 ms |
+| 2040 | 0 | 120 | 45.026 ms | 45.020 ms | 0.007 ms |
+| 2160 | 0 | 120 | 50.797 ms | 50.778 ms | 0.019 ms |
+
+At report precision, `direct wait ~= w2s + s2e` to within about `0.001 ms` average per call.
 
 Therefore:
 
-> The dominant GPU submitter is delayed by one stable once-per-frame guest `WaitForAddress(0x210adbc120, WaitIfEqual, timeout=-1)`. Its duration expands sharply in the slow regime. The blocked synchronization object/key is known; the producer/waker is the remaining causal question.
+> `tid=0x53` is not spending the 40-70 ms slow-regime delay after being signaled. Almost the entire synchronous wait occurs **before** the matching signal. `tid=0x4f` is the producer/waker whose `SignalToAddress` arrives late; once it signals, `tid=0x53` returns essentially immediately.
 
-Full Stage A record:
+This closes the late-waker-vs-wake-completion question.
 
-- `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_CORRECTED.md`
-- `NEXT_ACTION_ADDRESS_ARBITER_ATTRIBUTION.md`
+## Current causal frontier — Stage C
 
-## Stage B implementation — exact-address signal owner
+Exact next question:
 
-Stage B is observation-only and reuses the existing Address Arbiter diagnostic control.
+> What is guest thread `tid=0x4f` doing between consecutive matching signals, and which state/wait/SVC or guest code path becomes long before `SignalToAddress`?
 
-It instruments only `SignalToAddress` where:
+Next instrumentation must remain narrow and observation-only:
 
-`address == 0x210adbc120`
+1. dynamically latch the current run's signal-owner TID from the exact target-address signal; do not hardcode `0x4f` across runs without proof;
+2. attribute only that waker thread between consecutive matching signals;
+3. aggregate KThread wait reasons and runnable/CPU residual for the waker;
+4. retain current/last SVC attribution for that waker if cheap;
+5. capture guest PC/LR at the matching `SignalToAddress` call site if accessible cheaply and read-only;
+6. compare fast swap2, transition, and stable swap3 windows.
 
-It records aggregated `[X1-ADDRSIG]` data per 120 rendered frames:
+Do **not** add all-thread scheduler tracing, a generic all-SVC profiler, per-event log flood, waits/sleeps/locks, thread-priority/core changes, or GPU/BufferQueue/cadence behavior changes.
 
-- signaling guest thread ID
-- SignalType
-- count argument
-- relevant value argument
-- calls/result status
-- wait-start -> matching signal timing (`w2s`)
-- matching signal -> target wait return timing (`s2e`)
-- unmatched/cross-generation counters for sanity
-
-No all-address signal tracing, generic SVC profiler, scheduler tracing, new locks/waits/sleeps, priority/core changes, or GPU/BufferQueue/cadence policy changes were added.
-
-Ubuntu exact-dc95 static verification run `33164398004` succeeded before the ARM64 build. It verified transplant anchors, exact wait/signal call counts, and unchanged signal/wait semantics.
-
-## Current next runtime question
-
-Run the Stage B artifact with the same controlled TOTK 1.2.1 scenario.
-
-Enable:
-
-- `X1 Log: Address Arbiter Attribution`
-- `X1 Log: Guest Post Wait Attribution`
-- the existing correlation logs needed to compare cadence/submit timing
-
-Keep all behavioral A/B controls OFF, especially swap3->2 clamp.
-
-Primary output: `[X1-ADDRSIG]`.
-
-Answer only:
-
-1. which guest thread ID signals `0x210adbc120`?
-2. is it the sole/dominant signaler across fast and slow windows?
-3. which SignalType/count/value is used?
-4. is there approximately one matching signal per rendered frame?
-5. does `wait-start -> signal (w2s)` expand from low ms to roughly the same 40-60 ms seen in slow `WaitForAddress`?
-6. does `signal -> wait-return (s2e)` remain near-zero?
-
-If `w2s` owns the long wait and `s2e` is tiny, the next causal target is the identified waker thread's work immediately before `SignalToAddress`.
-
-If `s2e` is unexpectedly large, do not assume late producer; inspect AddressArbiter wake/scheduling semantics minimally.
-
-Do not claim the final root cause until this runtime identifies the waker and timing relationship.
+Do not chase `None` unless a controlled stable-slow window shows the proven waker->signal edge is small while the frame remains slow.
 
 ## ARM64 status
 
