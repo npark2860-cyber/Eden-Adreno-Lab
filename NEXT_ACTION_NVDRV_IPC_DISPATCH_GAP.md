@@ -1,137 +1,188 @@
-# NEXT ACTION — NVDRV IPC Dispatch Gap Attribution
+# NEXT ACTION — X1 NVDRV IPC Dispatch Gap Attribution
 
 Updated: 2026-08-28 KST
 
 ## Fixed baseline
 
 - Eden: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
-- Current lab branch: `exp/x1-guest-submit-thread-attribution`
-- Current cleanup lineage: `352867995e8c1623bfe2274f2125ffb4e10e4e2e` plus documentation-only updates
+- Current lab branch: `exp/x1-nvdrv-ipc-dispatch-gap`
+- predecessor source-review HEAD: `exp/x1-guest-submit-thread-attribution@5dfb93b831d59526083ab8616a61dda179ce9b4f`
 
 Do not change the Eden baseline.
 
 **ARM64 Actions rule: no build or rerun without fresh explicit user authorization. One authorization = exactly one attempt.**
 
-## Why the previous interpretation must be refined
+## Why this experiment exists
 
-Guest-submit-thread runtime established:
+Completed runtime attribution established:
 
-- one guest thread (`tid=0x53`) owns essentially all candidate GPU-submit requests;
-- its submit-entry PC is overwhelmingly `0x8522f458`;
-- its slow-gameplay CPU share between observed NVDRV handler entries is only about 1-2%;
-- therefore it is not CPU-bound between those observations.
+- GPU worker spends roughly 30-35 ms/frame idle waiting for command supply;
+- lower NVDRV GPFIFO preparation is tiny once the candidate handler starts;
+- one guest thread `tid=0x53` owns essentially all candidate GPU-submit requests;
+- its observed CPU share between candidate handler entries is only about 1-2%.
 
-Exact dc95 source then showed an important architectural boundary:
+Exact dc95 source then refined the boundary:
 
-- synchronous IPC puts the originator guest KThread into `IPC` wait;
-- Nvidia HLE services run in a detached host-core process named `nvservices`;
+- synchronous IPC sleeps the originator KThread in `IPC` wait;
+- Nvidia services run through a detached host `nvservices` process;
 - one `ServerManager` services `nvdrv`, `nvdrv:a`, `nvdrv:s`, `nvdrv:t`, and `nvmemp`;
-- the Nvidia loop does not start additional host service workers;
-- the host dummy KThread sleeps on a host condition variable while `ServerManager::WaitAny()` waits for signaled sessions.
+- there are no additional Nvidia host service workers in this path.
 
-Existing GPU-submit-gap timers start at or inside the NVDRV handler. They do not measure request-to-handler dispatch latency.
+Therefore the missing interval may be either:
 
-Therefore we must distinguish:
+1. guest-side post-reply work/wait before the next NVDRV sync request is issued, or
+2. request-to-handler dispatch delay after the guest has already issued the sync IPC and gone to sleep.
 
-> Did the guest issue the next submit late, or did it issue it promptly and then sleep while `nvservices` serviced it late?
+## Prepared runtime control
 
-## Decisive measurement
+`X1 Log: NVDRV IPC Dispatch Gap`
 
-For candidate GPU-submit ioctls only, capture these timestamps:
+Setting:
 
-- `A`: `Svc::SendSyncRequest` entry for the originator guest KThread;
-- `B`: NVDRV `Ioctl1/Ioctl2` handler entry for that same KThread/request;
-- `C`: NVDRV handler/reply completion;
-- `A_next`: next matching sync-request entry from the same guest KThread.
+`x1_nvdrv_ipc_dispatch_gap_log`
 
-Report:
+Default OFF.
 
-- `guestPostReply = A_next - C_prev`
-- `ipcDispatch = B - A`
-- `serviceReply = C - B`
-- request count / dominant thread ID / max values
+New report:
 
-Use one 120-frame aggregate aligned with the existing X1 reports.
+`[X1-IPCDISPATCH]`
 
-## Pairing strategy
+## Exact measurement
 
-A synchronous KThread cannot issue a second synchronous IPC before the first reply completes.
+### A — generic sync-request send boundary
 
-Therefore a small per-KThread record is sufficient:
+In `SendSyncRequestImpl()`, immediately before the existing:
 
-- on generic `Svc::SendSyncRequest` entry, store current KThread pointer/ID + wall timestamp;
-- at NVDRV candidate-submit handler entry, read the latest sync-request timestamp for `ctx.GetThread()` and compute `ipcDispatch`;
-- at NVDRV handler/reply completion, record completion timestamp for that originator;
-- at the next matching sync-request entry from that thread, compute `guestPostReply` from the previous NVDRV completion.
+`session->SendSyncRequest(...)`
 
-Do not add a general all-request trace.
+record current guest KThread ID + `steady_clock` timestamp.
+
+The generic path uses only a fixed-size lock-free atomic table when the profiler is enabled. No general IPC line logging or mutex is added at A.
+
+### B — candidate NVDRV handler entry
+
+For candidate GPU-submit `Ioctl1/Ioctl2` requests:
+
+- pair `ctx.GetThread()` with its latest A timestamp;
+- compute `ipcDispatch = B - A`;
+- compute `guestPostReply = A - previous candidate C` for that thread.
+
+### C — candidate handler completion / reply-adjacent proxy
+
+A `SCOPE_EXIT` records handler completion after response construction.
+
+Exact `ServerManager::CompleteSyncRequest()` directly follows service completion with `SendReplyHLE()` on the same host loop, so C is a conservative reply-adjacent boundary.
+
+## 120-frame fields
+
+The dominant candidate submitter report includes:
+
+- request count and dominant share;
+- ioctl1 / ioctl2 counts;
+- `guestPostAvg`, total and max;
+- `ipcDispatchAvg`, total and max;
+- `serviceReplyAvg`, total and max;
+- missing A/B pairing counters;
+- generic sync-entry count.
+
+Analyzer:
+
+`tools/adreno_lab/analyze_x1_nvdrv_ipc_dispatch_gap.py`
 
 ## Interpretation
 
-### Case A — `guestPostReply` dominates
+### Case A — `guestPostAvg` dominates
 
-If `C_prev -> A_next` is roughly the missing 20-30 ms while `A -> B` is tiny:
+> The prior NVDRV request completed, but the guest waits/works elsewhere before issuing the next candidate submit request.
 
-> The submitter thread receives the NVDRV reply promptly but does not issue the next submit until much later.
+Next target:
 
-Then inspect the submitter's non-NVDRV SVC/wait transitions and/or the producer thread(s) that wake it.
+- targeted non-NVDRV SVC/wait transitions for `tid=0x53`;
+- producer threads/events that wake or feed the submitter.
 
-### Case B — `ipcDispatch` dominates
+### Case B — `ipcDispatchAvg` dominates
 
-If `A -> B` is roughly the missing 20-30 ms:
+> The guest issues the request promptly and sleeps in IPC, but the host `nvservices` loop enters the candidate handler late.
 
-> The guest already issued the NVDRV request and is sleeping in IPC; the host Nvidia service path is late dispatching it.
+Next target:
 
-Then investigate:
+1. Windows host scheduling/wakeup latency of `nvservices`;
+2. single-thread `ServerManager` head-of-line delay;
+3. blocking Nvidia ioctl occupancy.
 
-1. Windows scheduling/wakeup latency of `nvservices` host thread;
-2. single-thread ServerManager head-of-line delay from other Nvidia requests;
-3. any blocking Nvidia ioctl occupying the event loop.
+### Case C — `serviceReplyAvg` dominates
 
-### Case C — both material
+This would contradict the existing lower-NVDRV timing and requires reopening the handler/reply path.
 
-Attribute each part separately; do not collapse them into "guest wait".
+## Prepared files
 
-## Exact source references to preserve
+- `src/core/x1_nvdrv_ipc_dispatch_profiler.h`
+- `tools/adreno_lab/transplant_dc95_nvdrv_ipc_dispatch_gap.py`
+- `tools/adreno_lab/analyze_x1_nvdrv_ipc_dispatch_gap.py`
+- `.github/workflows/build-dc95-x1-nvdrv-ipc-dispatch-gap.yml`
+- `DEBUG_HISTORY_20260828_IPC_DISPATCH.md`
 
+## Static safety design
+
+The pass may modify generated:
+
+- `src/common/settings.h`
+- `src/yuzu/configuration/configure_debug.h/.cpp`
 - `src/core/hle/kernel/svc/svc_ipc.cpp`
-- `src/core/hle/kernel/k_client_session.cpp`
-- `src/core/hle/kernel/k_server_session.cpp`
-- `src/core/hle/service/services.cpp`
-- `src/core/hle/service/server_manager.cpp`
-- `src/core/hle/service/os/multi_wait.cpp`
-- `src/core/hle/kernel/k_thread.cpp`
-- `src/core/hle/kernel/k_scheduler.cpp`
-- `src/core/hle/kernel/global_scheduler_context.cpp`
-- `src/core/hle/service/nvdrv/nvdrv.cpp`
 - `src/core/hle/service/nvdrv/nvdrv_interface.cpp`
-- `src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp`
+- `src/video_core/renderer_vulkan/vk_rasterizer.cpp`
+- plus the new profiler header.
 
-See `GUEST_SUBMIT_WAIT_SOURCE_MAP.md` for the static map.
+The workflow hashes and requires unchanged:
 
-## Safety constraints
-
-The next profiler must be observation-only.
-
-Do not change:
-
-- scheduling policy / thread priority / core mask;
-- dummy-thread wake behavior;
-- `ServerManager` worker count;
-- IPC semantics or deferral behavior;
-- NVDRV ioctl behavior;
-- syncpoint/fence behavior;
-- GPU submission behavior;
+- KClient/KServer session implementation;
+- KThread / KScheduler / GlobalSchedulerContext;
+- `services.cpp`, `server_manager.cpp`, `multi_wait.cpp`;
+- nvhost GPU/ctrl;
 - BufferQueue/HWC/VI;
-- Vulkan rendering behavior;
-- speed limit / VSync / frame pacing.
+- GPU worker / DmaPusher;
+- Vulkan swapchain/scheduler/graphics pipeline;
+- prior GPU-command, GPU-submit and guest-submit profiler headers.
 
-No experimental multithreading of `nvservices` yet. First prove where the latency resides.
+Existing sync request / NVDRV service / previous profiler call counts are preserved.
+
+The pass must not add `BeginWait`, `EndWait`, dummy-thread behavior, extra server workers, `WaitHost`, `StallApplication`, sleeps, scheduling/priority/core changes, GPU submission behavior, swap/buffer-count/target/speed changes.
+
+## Recommended first runtime after a future successful build
+
+Use the same TOTK 1.2.1 gameplay route, DFPS OFF first.
+
+ON:
+
+- NVDRV IPC Dispatch Gap
+- Guest Submit Thread Attribution
+- GPU Submit Gap Attribution
+- GPU Command Attribution
+- Frame Build Attribution
+- Frame Cadence
+- Dequeue Attribution
+
+OFF:
+
+- swap 3 -> 2 clamp A/B
+- Descriptor Ring
+- all behavioral A/B controls
+- Scheduler/Present/Pipeline/Upload/QCOM heavy logs
 
 ## Build state
 
-No new instrumentation has been built for this split.
+Static preparation complete.
 
-Current ARM64 build authorization: **none**.
+Workflow:
 
-Do not start Actions until a future instrumentation branch is prepared and the user gives fresh explicit authorization.
+`Build dc95 X1 NVDRV IPC Dispatch Gap`
+
+Normal trigger must remain:
+
+`workflow_dispatch` only.
+
+- IPC-dispatch ARM64 build attempts: 0
+- IPC-dispatch reruns: 0
+- current ARM64 build authorization: **none**
+
+**Stop before ARM64 Actions. A fresh explicit user authorization is required for exactly one build attempt.**
