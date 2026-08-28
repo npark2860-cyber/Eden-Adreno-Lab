@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add observation-only X1 WaitForAddress attribution over the guest-post-wait harness."""
+"""Add observation-only X1 WaitForAddress and exact-address signal attribution."""
 
 from pathlib import Path
 import sys
@@ -86,8 +86,8 @@ def main() -> int:
         text,
         anchor,
         anchor + '''    x1_address_arbiter_attribution_log_checkbox->setToolTip(
-        tr("Aggregate WaitForAddress calls for the dynamic GPU submitter during its post-submit "
-           "window by guest address and arbitration type. Requires Guest Post Wait Attribution."));
+        tr("Aggregate WaitForAddress calls for the dynamic GPU submitter and exact-address "
+           "SignalToAddress wake ownership. Requires Guest Post Wait Attribution."));
 
 ''',
         "address-arbiter tooltip",
@@ -196,15 +196,33 @@ def main() -> int:
                        x1_tid, address, static_cast<u32>(arb_type), timeout_ns)
                  : Core::X1AddressArbiterProfiler::CallToken{};
 
+    if (x1_token.active) {
+        x1_address_arbiter_profiler.BeginTargetWait(x1_tid, address, x1_token.start_ns);
+    }
+
     const Result result =
         GetCurrentProcess(system.Kernel()).WaitAddressArbiter(address, arb_type, value, timeout);
 
     if (x1_token.active) {
         x1_address_arbiter_profiler.EndCall(x1_token, R_SUCCEEDED(result), ResultTimedOut == result);
+        x1_address_arbiter_profiler.EndTargetWait(x1_tid, address, x1_token.start_ns);
     }
     R_RETURN(result);
 '''
     text = replace_once(text, anchor, replacement, "direct WaitForAddress attribution")
+
+    anchor = '''    R_RETURN(GetCurrentProcess(system.Kernel())
+                 .SignalAddressArbiter(address, signal_type, value, count));
+'''
+    replacement = '''    auto& x1_address_arbiter_profiler = Core::X1AddressArbiterProfiler::Get();
+    if (x1_address_arbiter_profiler.ShouldTrackSignalAddress(address)) {
+        const u64 x1_signal_tid = GetCurrentThread(system.Kernel()).GetThreadId();
+        x1_address_arbiter_profiler.RecordSignal(
+            x1_signal_tid, address, static_cast<u32>(signal_type), value, count);
+    }
+
+''' + anchor
+    text = replace_once(text, anchor, replacement, "exact-address SignalToAddress attribution")
     svc.write_text(text, encoding="utf-8")
 
     rasterizer = root / "src/video_core/renderer_vulkan/vk_rasterizer.cpp"
@@ -254,7 +272,16 @@ bool RasterizerVulkan::AccelerateConditionalRendering() {
         settings: ["x1_address_arbiter_attribution_log"],
         ui_cpp: ["X1 Log: Address Arbiter Attribution"],
         guest_profiler: ["IsTargetThreadWindowOpen"],
-        svc: ["X1AddressArbiterProfiler", "BeginCall", "EndCall"],
+        svc: [
+            "X1AddressArbiterProfiler",
+            "BeginCall",
+            "EndCall",
+            "BeginTargetWait",
+            "EndTargetWait",
+            "ShouldTrackSignalAddress",
+            "RecordSignal",
+        ],
+        profiler: ["[X1-ADDRSIG]", "0x210adbc120ULL"],
         rasterizer: [
             "X1AddressArbiterProfiler::Get().Initialize",
             "X1AddressArbiterProfiler::Get().FrameEnd",
@@ -266,7 +293,7 @@ bool RasterizerVulkan::AccelerateConditionalRendering() {
             if marker not in final:
                 raise RuntimeError(f"{path}: required marker missing: {marker}")
 
-    print("Transplanted exact dc95 X1 Address Arbiter attribution")
+    print("Transplanted exact dc95 X1 Address Arbiter wait + signal-owner attribution")
     return 0
 
 
