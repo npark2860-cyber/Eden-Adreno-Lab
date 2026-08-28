@@ -1,4 +1,4 @@
-# Handoff Prompt — Eden Adreno X1 Guest Submit Thread Attribution
+# Handoff Prompt — Eden Adreno X1 NVDRV IPC Dispatch Gap
 
 Use this prompt when continuing in a new tab.
 
@@ -12,18 +12,18 @@ GitHub repository:
 
 Current experiment branch:
 
-`exp/x1-guest-submit-thread-attribution`
+`exp/x1-nvdrv-ipc-dispatch-gap`
 
 Do not reconstruct state from old chat. First read these GitHub documents and treat them as source of truth:
 
 1. `CURRENT_HANDOFF.md`
-2. `DEBUG_HISTORY.md`
-3. `DEBUG_HISTORY_20260827_CONTINUED.md`
-4. `DEBUG_HISTORY_20260828_CONTINUED.md`
-5. `DEBUG_HISTORY_20260828_GPU_SUBMIT.md`
-6. `DEBUG_HISTORY_20260828_GUEST_SUBMIT.md`
-7. `LAB_BOOTSTRAP.md`
-8. `NEXT_ACTION_GUEST_SUBMIT_THREAD_ATTRIBUTION.md`
+2. `GUEST_SUBMIT_WAIT_SOURCE_MAP.md`
+3. `NEXT_ACTION_NVDRV_IPC_DISPATCH_GAP.md`
+4. `DEBUG_HISTORY_20260828_IPC_DISPATCH.md`
+5. `DEBUG_HISTORY_20260828_GUEST_SUBMIT.md`
+6. `DEBUG_HISTORY_20260828_GPU_SUBMIT.md`
+7. `DEBUG_HISTORY_20260828_CONTINUED.md`
+8. `LAB_BOOTSTRAP.md`
 9. `HANDOFF_PROMPT.md`
 
 Then verify actual branch HEAD and Actions state against the documents before doing anything else.
@@ -39,85 +39,62 @@ Hard build rule:
 - one authorization = exactly one build attempt
 - if that attempt fails, stop; no retry without another explicit authorization
 
-Retain all closed facts in `CURRENT_HANDOFF.md`, especially:
+Retain the closed facts in `CURRENT_HANDOFF.md`, especially:
 
-- alias trivial dedupe is closed
-- wholesale classic-cache Uniform fallback did not break the gameplay ceiling
-- raw swap / HardwareComposer gating and DFPS are not the root ~45-50 ms frame-production cause
-- slow gameplay Dequeue free-slot wait is ~0.001 ms; BufferQueue backpressure is closed
-- Frame-Build attribution found only ~9-12 ms/frame in measured Vulkan Draw/Dispatch/Clear scopes
-- GPU Command Attribution found ~32-37 ms/frame of GPU worker queue `PopWait`; GPU worker is starved for upstream work
-- GPU Submit Gap Attribution found candidate NVDRV service gap, confirmed nvhost_gpu submit gap and actual `PushGPUEntries` gap are effectively identical (~26 ms/submit in stable slow windows)
-- NVDRV service, GPFIFO prep, channel lock and `SubmitGPFIFOImpl` are tiny and are closed as owners of the ~25-30 ms submit gap
-- therefore the current causal boundary is **before the guest GPU-submit ioctl reaches NVDRV**
+- BufferQueue free-slot wait is not the slow-gameplay owner
+- HWC swap gating / DFPS / raw swap are not the root frame-production cause
+- measured Vulkan Draw/Configure/Dispatch/Clear explains only a minority of the ~50 ms frame
+- GPU worker spends ~30-35 ms/frame in queue `PopWait`, waiting for upstream command supply
+- lower NVDRV / GPFIFO submission is fast after candidate handler entry
+- one guest thread `tid=0x53` owns essentially all candidate GPU submits and has only ~1-2% CPU share between observed candidate-handler entries
 
-GPU Submit Gap build completed successfully:
+Critical exact-source correction:
 
-- workflow `Build dc95 X1 GPU Submit Gap Attribution`
-- run `33133440904`
-- job `98728039155`
-- attempt 1
-- build HEAD `f65f93825979cde816aa41fc148deb042039416a`
-- artifact id `9671670627`
-- SHA-256 `0ef8e4172d812e4cfda90792f9bb2df0868dd192504cf2d3b11d30dcfbcdb313`
-- cleanup HEAD `d17eb7314b2809c95e53874dbc7f64808df67006`
+- synchronous IPC sleeps the originator KThread in IPC wait
+- Nvidia services run on a detached host process named `nvservices`
+- one Nvidia `ServerManager` services `nvdrv`, `nvdrv:a`, `nvdrv:s`, `nvdrv:t`, and `nvmemp`
+- no additional Nvidia host workers are started in that path
+- therefore previous handler-entry timing did NOT distinguish guest-side post-reply delay from host-service request-dispatch delay
 
-Runtime log:
+Current prepared experiment:
 
-`eden_log(20260828-030445).txt`
-
-Note: that runtime accidentally still had swap 3->2 clamp and Descriptor Ring ON. The structural submit-gap result remains valid, but both should be OFF in the next clean run.
-
-Exact new observation point:
-
-- `HLERequestContext::GetThread()` exposes the originator guest `KThread`.
-- exact dc95 `KThread` exposes thread ID, CPU time, core, priority and saved PC.
-- exact dc95 `KScheduler::SwitchThread()` updates `KThread::GetCpuTime()` from the same `CoreTiming().GetClockTicks()` time base.
-
-Current work is the runtime-selectable **Guest Submit Thread Attribution** layer.
-
-New control:
-
-`X1 Log: Guest Submit Thread Attribution`
+`X1 Log: NVDRV IPC Dispatch Gap`
 
 New record:
 
-`[X1-GUESTSUBMIT]`
+`[X1-IPCDISPATCH]`
 
-It reports 120-frame aggregates for:
+It splits:
 
-- active GPU-submit originator thread count
-- dominant guest thread ID and submit share
-- same-thread submit wall gaps
-- guest CoreTiming tick delta
-- submitter KThread CPU-time tick delta
-- derived `cpuShare`
-- saved caller PC and PC stability
-- current/active core and priority
+- `guestPostAvg`: previous candidate handler completion -> current candidate generic sync-request send boundary
+- `ipcDispatchAvg`: generic sync-request send boundary -> candidate NVDRV handler entry
+- `serviceReplyAvg`: candidate handler entry -> handler completion / reply-adjacent boundary
 
-Primary split:
+Interpretation:
 
-- high dominant share + high cpuShare => one guest GPU producer is CPU-bound; next target guest code / Dynarmic execution
-- high dominant share + low cpuShare => submitter is mostly waiting/preempted; next target targeted kernel wait/SVC attribution
-- multiple material submitter threads => attribute per-thread before deeper scheduler tracing
+- `guestPostAvg` dominates => guest-side post-reply work/wait
+- `ipcDispatchAvg` dominates => host `nvservices` wake/scheduling/head-of-line path
+- `serviceReplyAvg` dominates => reopen handler/reply path
 
 Prepared files:
 
-- `src/video_core/x1_guest_submit_profiler.h`
-- `tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py`
-- `tools/adreno_lab/analyze_x1_guest_submit_thread_attribution.py`
-- `.github/workflows/build-dc95-x1-guest-submit-thread-attribution.yml`
-- `NEXT_ACTION_GUEST_SUBMIT_THREAD_ATTRIBUTION.md`
+- `src/core/x1_nvdrv_ipc_dispatch_profiler.h`
+- `tools/adreno_lab/transplant_dc95_nvdrv_ipc_dispatch_gap.py`
+- `tools/adreno_lab/analyze_x1_nvdrv_ipc_dispatch_gap.py`
+- `.github/workflows/build-dc95-x1-nvdrv-ipc-dispatch-gap.yml`
+- `NEXT_ACTION_NVDRV_IPC_DISPATCH_GAP.md`
+- `DEBUG_HISTORY_20260828_IPC_DISPATCH.md`
 
 Workflow:
 
-`Build dc95 X1 Guest Submit Thread Attribution`
+`Build dc95 X1 NVDRV IPC Dispatch Gap`
 
 It must remain `workflow_dispatch` only.
 
-Recommended future runtime after a successful build:
+Recommended runtime after a future successful build:
 
 ON:
+- NVDRV IPC Dispatch Gap
 - Guest Submit Thread Attribution
 - GPU Submit Gap Attribution
 - GPU Command Attribution
@@ -133,6 +110,6 @@ OFF:
 
 NEXT ACTION:
 
-Read `NEXT_ACTION_GUEST_SUBMIT_THREAD_ATTRIBUTION.md`, verify branch/HEAD/workflow state, and finish static/pre-Actions validation. Stop before ARM64 Actions.
+Read `NEXT_ACTION_NVDRV_IPC_DISPATCH_GAP.md`, verify branch/HEAD/workflow and Actions count. Static preparation is complete. Stop before ARM64 Actions unless the user gives fresh explicit authorization for exactly one build attempt.
 
-No current ARM64 build authorization exists. A fresh explicit user authorization is required for exactly one guest-submit-thread build attempt.
+No current ARM64 build authorization exists.
