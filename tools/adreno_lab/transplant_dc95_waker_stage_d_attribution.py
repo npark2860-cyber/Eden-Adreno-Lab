@@ -38,6 +38,16 @@ def main() -> int:
     if not profiler.exists():
         raise RuntimeError("x1_waker_stage_d_profiler.h must be copied before this pass")
 
+    profiler_text = profiler.read_text(encoding="utf-8")
+    if '#include <limits>\n' not in profiler_text:
+        profiler_text = replace_once(
+            profiler_text,
+            '#include <cstddef>\n',
+            '#include <cstddef>\n#include <limits>\n',
+            "Stage D profiler numeric_limits include",
+        )
+        profiler.write_text(profiler_text, encoding="utf-8")
+
     # Matching SignalToAddress: keep Stage C intact, add Stage D samples at the same observation point.
     svc = root / "src/core/hle/kernel/svc/svc_address_arbiter.cpp"
     text = svc.read_text(encoding="utf-8")
@@ -93,44 +103,37 @@ def main() -> int:
 '''
     text = replace_once(text, anchor, replacement, "Stage D KThread transition observation")
 
-    wait_anchor = '''                        m_pinned_waiter_list.push_back(GetCurrentThread(kernel));
-                        GetCurrentThread(kernel).BeginWait(kernel, std::addressof(wait_queue));
-'''
-    wait_replacement = '''                        m_pinned_waiter_list.push_back(GetCurrentThread(kernel));
-                        Core::X1WakerStageDProfiler::Get().ArmNoneWaitSite(
-                            GetCurrentThread(kernel).GetThreadId(),
-                            Core::X1WakerStageDProfiler::NoneWaitSite::ThreadSetActivityPinned);
-                        GetCurrentThread(kernel).BeginWait(kernel, std::addressof(wait_queue));
-'''
-    text = replace_once_in_region(
-        text,
-        "Result KThread::SetActivity",
-        "Result KThread::GetCoreMask",
-        wait_anchor,
-        wait_replacement,
-        "SetActivity pinned direct BeginWait site",
-    )
-
     wait_anchor = '''                    m_pinned_waiter_list.push_back(GetCurrentThread(kernel));
                     GetCurrentThread(kernel).BeginWait(kernel, std::addressof(wait_queue));
 '''
     wait_replacement = '''                    m_pinned_waiter_list.push_back(GetCurrentThread(kernel));
                     Core::X1WakerStageDProfiler::Get().ArmNoneWaitSite(
                         GetCurrentThread(kernel).GetThreadId(),
-                        Core::X1WakerStageDProfiler::NoneWaitSite::ThreadSetCoreMaskPinned);
+                        Core::X1WakerStageDProfiler::NoneWaitSite::ThreadSetActivityPinned);
                     GetCurrentThread(kernel).BeginWait(kernel, std::addressof(wait_queue));
 '''
     text = replace_once_in_region(
         text,
-        "Result KThread::SetCoreMask",
         "Result KThread::SetActivity",
+        "Result KThread::GetThreadContext3",
         wait_anchor,
         wait_replacement,
-        "SetCoreMask pinned direct BeginWait site",
-    ) if text.find("Result KThread::SetCoreMask") < text.find("Result KThread::SetActivity") else replace_once_in_region(
+        "SetActivity pinned direct BeginWait site",
+    )
+
+    wait_anchor = '''                        m_pinned_waiter_list.push_back(GetCurrentThread(kernel));
+                        GetCurrentThread(kernel).BeginWait(kernel, std::addressof(wait_queue));
+'''
+    wait_replacement = '''                        m_pinned_waiter_list.push_back(GetCurrentThread(kernel));
+                        Core::X1WakerStageDProfiler::Get().ArmNoneWaitSite(
+                            GetCurrentThread(kernel).GetThreadId(),
+                            Core::X1WakerStageDProfiler::NoneWaitSite::ThreadSetCoreMaskPinned);
+                        GetCurrentThread(kernel).BeginWait(kernel, std::addressof(wait_queue));
+'''
+    text = replace_once_in_region(
         text,
         "Result KThread::SetCoreMask",
-        "Result KThread::Sleep",
+        "void KThread::SetBasePriority",
         wait_anchor,
         wait_replacement,
         "SetCoreMask pinned direct BeginWait site",
@@ -199,6 +202,7 @@ def main() -> int:
             "ProcessUserException",
             "runUnschedAvg",
             "lr0=",
+            "#include <limits>",
         ],
         svc: [
             "X1WakerStageDProfiler",
