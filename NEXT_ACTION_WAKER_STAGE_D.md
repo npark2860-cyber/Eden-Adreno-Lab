@@ -1,4 +1,4 @@
-# NEXT ACTION — Waker Stage D
+# NEXT ACTION — Waker Stage D Runtime
 
 Updated: 2026-08-29 KST
 
@@ -9,100 +9,144 @@ Read first:
 - `CURRENT_HANDOFF.md`
 - `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_C_RUNTIME.md`
+- `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
 
 Fixed Eden baseline:
 
 `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 
-Never change it without explicit approval.
+Current Stage D branch:
+
+`exp/x1-waker-stage-d-cpu-scheduler`
+
+Never change the baseline without explicit approval.
 
 ARM64 build authorization: **NONE**.
 
-## Closed Stage C result
+## Established before Stage D runtime
 
-The dynamically discovered waker remains `tid=0x4f` in the measured run and signals the dynamically latched target address once per rendered frame.
+Stage B remains closed:
 
-Stage C shows:
+- victim / submitter in measured runs: `tid=0x53`
+- dynamic waker in measured runs: `tid=0x4f`
+- matching `SignalAndIncrementIfEqual`, value `1`, count `-1`
+- long victim wait is almost entirely wait-start -> signal
+- signal -> victim return is essentially immediate
 
-- fast swap2 inter-signal ~= 33.7 ms
-- stable slow swap3 inter-signal ~= 55.0 ms
-- stable slowdown increment ~= +21.3 ms/signal
-- Waiting increment ~= +6.5 ms/signal
+Stage C total interval split remains valid:
+
+- stable fast inter-signal ~= 33.7 ms
+- stable slow inter-signal ~= 55.0 ms
+- slowdown increment ~= +21.3 ms/signal
+- total KThread Waiting increment ~= +6.5 ms/signal
 - Stage-C residual increment ~= +14.8 ms/signal
-- named waker wait reasons are essentially absent
-- almost all waker Waiting is debug reason `None`
-- matching SignalToAddress PC is almost invariant at `0x85f16528`, while LR varies
-- `lastWaitSvc=0x0` is non-informative
 
-Do not equate Stage-C residual with CPU work. It also includes runnable-but-unscheduled time.
+### Stage C reason-breakdown correction
 
-## Exact Stage D questions
+Do **not** use Stage C `none/sleep/ipc/sync/cond/arb` breakdown as causal evidence.
 
-1. How much waker time between matching signals is actual guest CPU execution?
-2. How much of the Stage-C residual is runnable/unscheduled scheduler delay?
-3. Which direct `BeginWait` site owns `ThreadState::Waiting + reason=None` for the waker?
-4. Which LR/caller sites dominate matching SignalToAddress?
+Stage C captured wait reason at entry into `ThreadState::Waiting`. Exact dc95 commonly sets Arbitration / ConditionVar / Synchronization / Sleep **after** `BeginWait`, so named waits could be misreported as `None`.
 
-## Minimal instrumentation
+Stage D corrects completed waits using:
 
-Keep Stage D waker-only, dynamically latched, observation-only.
+> exit reason if non-None, otherwise entry reason fallback
 
-### A. Waker CPU delta
+Therefore the prior claim that another named waker wait was disproved is withdrawn. Stage C proved total Waiting versus residual only.
 
-At each matching SignalToAddress for the dynamically latched waker:
+## Stage D implementation — READY / STATIC VALIDATED
 
-- read `KThread::GetCpuTime()`
-- compute delta from previous matching signal
-- aggregate total/avg/max over the 120-frame report
-- derive:
-  - `cpuAvg`
-  - `runnableUnscheduledAvg = residualAvg - cpuAvg` with defensive floor at zero
+New report:
 
-Optionally record current core, active core and priority only as aggregate/latest metadata. Do not alter them.
+`[X1-WAKERD]`
 
-### B. `reason=None` wait-site owner
+It remains dynamically waker-latched and observation-only.
 
-Do not add generic all-kernel tracing.
+Per 120 rendered frames it reports:
 
-Instrument only exact dc95 direct `BeginWait(...)` paths which can produce Waiting without assigning a debug wait reason, and gate each record with `ShouldTrackThread(dynamic_waker_tid)`.
+- inter-signal avg/max
+- corrected Waiting avg and reason totals
+- residual avg
+- estimated waker CPU avg/max from `GetCpuTime()` in the same `GetClockTicks()` domain
+- estimated runnable-unscheduled avg/max = max(residual - CPU, 0)
+- reason-less direct wait-site totals for:
+  - unknown
+  - `KThread::SetActivity` pinned wait
+  - `KThread::SetCoreMask` pinned wait
+  - `KProcess::EnterUserException`
+- priority / active core / current core latest metadata
+- matching signal PC
+- top-4 LR histogram + overflow
+- malformed/sanity counters
 
-Use a fixed enum and aggregate total/count/max per site. Initial source candidates include:
+CPU caveat:
 
-- KThread pinned-wait paths in `k_thread.cpp`
-- KProcess user-exception wait path in `k_process.cpp`
+`GetCpuTime()` is updated at context switches, so use 120-frame aggregate trends rather than individual signal intervals as exact CPU accounting.
 
-Before implementation, rescan exact dc95 direct `BeginWait` call sites and verify which paths already set Sleep/IPC/Synchronization/ConditionVar/Arbitration. Do not assume the candidate list is exhaustive without that scan.
+## Static validation
 
-### C. Signal LR histogram
+Successful Ubuntu-only validation:
 
-Current PC is almost invariant and may simply be the common SVC wrapper.
+- run `33216436564`
+- job `99000993229`
+- conclusion `success`
 
-Add a small fixed-size LR histogram at matching SignalToAddress:
+No ARM64 run occurred.
 
-- top 4 LR values
-- calls/count share
-- no per-event logging
-- preserve PC latest/reference for correlation
+## Runtime procedure after fresh ARM64 authorization
 
-## Runtime interpretation
+One authorization = one ARM64 attempt.
 
-If CPU time explains most of the residual increase:
+Build the current Stage D source against exact dc95 and run the same TOTK field scenario long enough to obtain both stable raw swap2 and stable raw swap3 windows if possible.
 
-> follow the dominant LR/caller path upstream in guest code; waker is doing more guest work before signaling.
+Collect at minimum:
 
-If runnable-unscheduled explains most residual:
+- `[X1-WAKERD]`
+- `[X1-WAKER]`
+- `[X1-ADDRSIG]`
+- `[X1-ADDRARB]`
+- `[X1-GUESTWAIT]`
+- raw cadence / QueueBuffer swap interval
 
-> next target is only the waker's scheduling competition/priority/core residency before SignalToAddress, not broad scheduler tracing.
+Compare stable-fast versus stable-slow 120-frame blocks.
 
-If one `None` wait site explains the additional Waiting:
+## Decision tree
 
-> follow only that kernel primitive/site and its producer/release owner.
+### A. CPU increase dominates
 
-If both are material, keep both branches quantified; do not collapse them into one root cause prematurely.
+If `cpuAvg` grows by roughly the same amount as the Stage-C residual increase while `runUnschedAvg` stays small:
+
+> the waker is doing materially more guest CPU work before signaling.
+
+Next target: dominant LR/caller path only. Do not broaden scheduler tracing.
+
+### B. Runnable-unscheduled dominates
+
+If CPU remains near fast-regime levels while `runUnschedAvg` expands materially:
+
+> the waker is ready but not getting CPU promptly enough.
+
+Next target: waker-only scheduling competition/core residency. Do not change priority/affinity before attribution.
+
+### C. Corrected named Waiting dominates
+
+If Arbitration / Sync / ConditionVar / Sleep / IPC expands materially after corrected classification:
+
+> follow only that wait primitive and its release/producer owner.
+
+### D. True reason-less direct site dominates
+
+If one focused None-site bucket expands materially:
+
+> follow only that exact site and its release condition.
+
+### E. Mixed result
+
+Keep CPU, runnable-unscheduled, named wait and reason-less wait as separately quantified branches. Do not collapse them into one root cause prematurely.
 
 ## Hard prohibitions
 
 - no ARM64 build/rerun without fresh explicit approval; one approval = one attempt
+- no automatic rerun after failure
 - no all-thread scheduler trace
 - no all-SVC profiler
 - no per-event log flood
