@@ -102,17 +102,6 @@ public:
         Add(counters.process_words, words);
     }
 
-    void CountCallMethod() noexcept {
-        if (Enabled()) Add(counters.call_method_calls, 1);
-    }
-
-    void CountCallMultiMethod(u64 methods) noexcept {
-        if (Enabled()) {
-            Add(counters.call_multi_calls, 1);
-            Add(counters.call_multi_methods, methods);
-        }
-    }
-
     void FrameEnd() {
         if (!Enabled()) return;
         const u64 frame = frame_id.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -157,10 +146,6 @@ public:
         const u64 process_calls = Take(counters.process_calls);
         const u64 process_ns = Take(counters.process_ns);
         const u64 process_words = Take(counters.process_words);
-        const u64 call_method_calls = Take(counters.call_method_calls);
-        const u64 call_multi_calls = Take(counters.call_multi_calls);
-        const u64 call_multi_methods = Take(counters.call_multi_methods);
-
         LOG_INFO(HW_GPU,
                  "[X1-GPUCMD] frame={} frames={} wall={:.3f}ms "
                  "workerPop={} queueWait={:.3f}ms active={:.3f}ms "
@@ -169,8 +154,7 @@ public:
                  "pushCalls={} push={:.3f}ms blockCalls={} blockWait={:.3f}ms "
                  "schedCalls={} sched={:.3f}ms bind={:.3f}ms dispatch={:.3f}ms "
                  "dmaCalls={} dma={:.3f}ms loop={:.3f}ms tail={:.3f}ms steps={} "
-                 "syncWaitCalls={} syncWait={:.3f}ms processCalls={} process={:.3f}ms words={} "
-                 "callMethod={} callMulti={} multiMethods={}",
+                 "syncWaitCalls={} syncWait={:.3f}ms processCalls={} process={:.3f}ms words={}",
                  frame, frames, ToMs(wall_ns), worker_pop_calls, ToMs(worker_queue_wait_ns),
                  ToMs(worker_active_ns), worker_submit_calls, ToMs(worker_submit_ns),
                  worker_tick_calls, ToMs(worker_tick_ns), worker_flush_calls, ToMs(worker_flush_ns),
@@ -180,7 +164,7 @@ public:
                  ToMs(scheduler_bind_ns), ToMs(scheduler_dispatch_ns), dma_dispatch_calls,
                  ToMs(dma_dispatch_total_ns), ToMs(dma_loop_ns), ToMs(dma_tail_ns), dma_step_calls,
                  dma_sync_wait_calls, ToMs(dma_sync_wait_ns), process_calls, ToMs(process_ns),
-                 process_words, call_method_calls, call_multi_calls, call_multi_methods);
+                 process_words);
     }
 
 private:
@@ -198,7 +182,6 @@ private:
         std::atomic<u64> scheduler_calls{0}, scheduler_total_ns{0}, scheduler_bind_ns{0}, scheduler_dispatch_ns{0};
         std::atomic<u64> dma_dispatch_calls{0}, dma_dispatch_total_ns{0}, dma_loop_ns{0}, dma_tail_ns{0}, dma_step_calls{0};
         std::atomic<u64> dma_sync_wait_calls{0}, dma_sync_wait_ns{0}, process_calls{0}, process_ns{0}, process_words{0};
-        std::atomic<u64> call_method_calls{0}, call_multi_calls{0}, call_multi_methods{0};
     } counters;
 
     std::atomic<bool> enabled{false};
