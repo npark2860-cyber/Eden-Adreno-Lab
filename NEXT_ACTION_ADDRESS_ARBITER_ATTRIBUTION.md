@@ -1,145 +1,132 @@
-# NEXT ACTION — X1 Address Arbiter Attribution
+# NEXT ACTION — X1 Address Arbiter Signal Owner (Stage B)
 
 Updated: 2026-08-28 KST
 
 ## Fixed baseline
 
 - Eden: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
-- current lab branch: `exp/x1-address-arbiter-attribution`
-- first built AddressArbiter code: `f2b1b6fed220597124274e873523a515e594c09a`
-- corrected post-runtime profiler source: `0d09c314b1aec644624996f1ca800a10e93c9fa4`
+- branch: `exp/x1-address-arbiter-attribution`
+- corrected Stage A source: `0d09c314b1aec644624996f1ca800a10e93c9fa4`
+- corrected ARM64 build HEAD: `ead9a3954f9420334db5a3eef3635dd44d2eb4bd`
 
 Never change the Eden baseline without explicit baseline-change approval.
 
 **ARM64 Actions rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
 
-## First Stage A attempt — build succeeded, runtime address table invalid
+## Stage A is complete
 
-Approved ARM64 build:
+Corrected runtime:
 
-- run `33156864030`
-- job `98801611676`
-- attempt `1`
-- conclusion `success`
-- build HEAD `f2b1b6fed220597124274e873523a515e594c09a`
-- artifact `Eden-dc95-X1-address-arbiter-attribution`
-- artifact id `9680703932`
-- SHA-256 `7ceef9df425fae50845aa2f63183e40a2d91d2c6205af8e62151e16dbadc9527`
+`eden_log(20260828-102127).txt`
 
-Runtime:
+Direct `Svc::WaitForAddress` attribution proves one stable gameplay key:
 
-`eden_log(20260828-093056).txt`
+- target guest thread: `tid=0x53`
+- guest address: **`0x210adbc120`**
+- arbitration type: **`WaitIfEqual`** (`type=2`)
+- timeout: **`-1`**
+- post-warmup active slots: `1`
+- post-warmup overflow: `0`
+- timeout completions: `0`
+- other-result completions: `0`
 
-Existing Guest Post Wait data is valid and strengthens the AddressArbiter correlation:
+The key remains unchanged across fast swap2, transition, and stable swap3 windows.
 
-- steady fast frame 480-840: `Arbitration ~= 0.9-2.1 ms/frame`
-- frame 960 transition to raw swap3: `Arbitration ~= 59.0 ms/frame`
-- stable raw-swap-3 frame 1080-1440: `Arbitration ~= 34.1-43.8 ms/frame`
-- `arbN=120` in each steady 120-frame gameplay report
-- slow-regime Arbitration is roughly 65-81% of tracked Waiting in this runtime
-- submitter remains `tid=0x53`, CPU share ~1-2%
-- IPC dispatch remains ~0.02-0.03 ms/request
+Representative direct wait averages:
 
-However `[X1-ADDRARB]` cannot identify the gameplay address in this build.
+- frame 840: `1.027 ms`, swap2 `120/120`
+- frame 960: `3.601 ms`, swap2 `111/120`
+- frame 1080: `61.725 ms`, swap3 `73/120`
+- frame 1200: `45.593 ms`, swap3 `120/120`
+- frame 1320: `41.227 ms`, swap3 `120/120`
+- frame 1440: `40.159 ms`, swap3 `120/120`
 
-Observed direct-profiler failure:
+Direct WaitForAddress duration reconciles essentially exactly with the existing reason-level Arbitration bucket (correlation approximately `0.999999`).
 
-- frame 120 startup: `slots=8`, `calls=8`, `overflow=1090`
-- later gameplay reports: `calls=0`, `overflow ~= 120`
-
-Root cause:
-
-- fixed 8-slot table retains `address_key` forever;
-- startup permanently occupies all eight slots;
-- later gameplay address/type keys are dropped as overflow.
-
-Do not interpret the stale later `top0..top3` addresses as gameplay objects.
+Therefore the blocked synchronization object/key is known. Do not spend another experiment re-proving Stage A.
 
 Full record:
 
-`DEBUG_HISTORY_20260828_ADDRESS_ARBITER.md`
+`DEBUG_HISTORY_20260828_ADDRESS_ARBITER_CORRECTED.md`
 
-## Corrected Stage A source prepared
+## Exact next causal question
 
-Source correction commit:
+> Which guest thread signals `0x210adbc120`, and does delayed signaling explain the long `WaitIfEqual` duration on `tid=0x53`?
 
-`0d09c314b1aec644624996f1ca800a10e93c9fa4`
+Exact dc95 wake path:
 
-Only `src/core/x1_address_arbiter_profiler.h` changed versus the built source.
+`Svc::SignalToAddress`
+-> current process `SignalAddressArbiter`
+-> `KAddressArbiter` wake handling.
 
-Correction:
+## Stage B — exact-address signal attribution only
 
-- direct AddressArbiter collection is disabled during the first 120 rendered frames;
-- the first report is startup warmup only;
-- collection arms after that first report;
-- address slots are explicitly cleared at profiler initialization;
-- slot count remains 8;
-- no new waits/sleeps/locks/scheduler changes/GPU policy changes.
+Instrument only `Svc::SignalToAddress` calls where:
 
-Rationale:
+`address == 0x210adbc120`
 
-- if gameplay uses one stable `(address, ArbitrationType)`, it should now be captured from frame 121 onward and remain countable across later reports;
-- if gameplay uses more than eight distinct keys, post-warmup overflow proves the object/address is not a single stable key and justifies only the next minimal refinement.
-
-## Next runtime question
-
-With the corrected profiler, answer only:
-
-1. does one gameplay guest address dominate the once/frame AddressArbiter wait?
-2. which `ArbitrationType` is used?
-3. is timeout stable, especially whether it is indefinite (`-1`)?
-4. do direct WaitForAddress blocked totals reconcile with `[X1-GUESTWAIT] Arbitration`?
-5. does the same address remain dominant across fast raw-swap-2, transition, and stable raw-swap-3 windows?
-
-Do not implement Stage B before these are answered.
-
-## Stage B — only if corrected Stage A proves one dominant address
-
-For that exact proven address only, instrument `Svc::SignalToAddress` / wake side to identify:
+Required aggregate fields per 120 rendered frames:
 
 - signaling guest thread ID
-- signal type/count
-- producer/waker timing needed to establish the dependency
+- `SignalType`
+- count argument / effective signaled count if readily available
+- cheap/read-only address value if it materially helps interpret signal semantics
+- total calls by signaling thread/type
+- signal timestamp distribution or enough timing information to connect signal occurrence to the target wait completion
 
-Do not trace all SignalToAddress traffic.
+Preferred first goal:
 
-## `None` fallback
+- determine whether one guest thread is the dominant/sole waker;
+- determine whether there is approximately one relevant signal per rendered frame;
+- determine whether long target waits end immediately after that signal;
+- identify whether waker timing itself shifts from fast to slow regime.
 
-The previous runtime had one stable-slow frame where `None` dominated; the new runtime did not reproduce that counterexample. Therefore do not branch into `None` tracing yet.
+## Correlation requirement
 
-Only if a corrected Stage A runtime again shows a stable-slow window where AddressArbiter is small and `None` dominates should we add a minimal unclassified-BeginWait source tag for `tid=0x53`.
+Keep the existing target `tid=0x53` and exact address fixed.
 
-## Safety invariants
+Compare the signal-side aggregate with the existing direct wait reports in the same 120-frame cadence:
 
-Must not change:
+- fast raw-swap-2 windows
+- transition windows
+- stable raw-swap-3 windows
 
-- Eden baseline
-- scheduling/priority/core affinity
-- KThread wait semantics
-- AddressArbiter comparison/update semantics
-- timeout semantics
-- signal/wake semantics
-- NVDRV submission behavior
-- GPU worker behavior
-- BufferQueue/HWC/VI/cadence
-- swap interval or frame target
+The result must answer whether the long wait is caused by a late producer/waker versus some other AddressArbiter semantic condition.
 
-No generic all-SVC profiler.
+## Scope constraints
 
-No broad scheduler tracing.
+Do **not**:
 
-No per-event AddressArbiter line logging.
+- trace all `SignalToAddress` traffic;
+- add a generic SVC profiler;
+- add broad scheduler tracing;
+- add per-event logging flood;
+- add waits/sleeps/locks;
+- alter address values;
+- alter `WaitIfEqual` comparison semantics;
+- alter `SignalToAddress` type/count semantics;
+- alter thread priority/core affinity;
+- alter NVDRV/GPU/BufferQueue/HWC/VI/cadence/swap policy.
+
+Observation-only, default OFF or gated by the existing Address Arbiter diagnostic control.
+
+## Separate `None` fallback
+
+Do not chase `None` now.
+
+The corrected Stage A runtime cleanly identifies the entire Arbitration bucket. `None` remains a separate wait class and should only be revisited if a future controlled runtime demonstrates a stable-slow window where the proven AddressArbiter wait is small while `None` dominates.
 
 ## Build state
 
-Corrected source is prepared but **not ARM64-built**.
+Stage B source has not been implemented or ARM64-built.
 
-No ARM64 build is authorized.
+Current ARM64 authorization: **NONE**.
 
-Before a future ARM64 attempt:
+Before any Stage B ARM64 attempt:
 
-1. verify current branch/source diff and exact dc95 anchors;
-2. verify persistent workflow is `workflow_dispatch` only;
-3. ensure any temporary push-trigger one-shot workflow cannot retrigger from source/doc commits;
-4. request fresh explicit authorization for exactly one ARM64 attempt;
-5. no automatic retry if it fails.
+1. implement only exact-address signal attribution;
+2. statically verify exact dc95 signal/wait call counts and unchanged semantics;
+3. verify persistent workflow remains `workflow_dispatch` only;
+4. verify branch diff contains only intended Stage B instrumentation/workflow/docs changes;
+5. request fresh explicit authorization for exactly one ARM64 attempt;
+6. no automatic retry on failure.
