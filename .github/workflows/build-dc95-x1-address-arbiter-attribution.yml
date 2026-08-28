@@ -1,15 +1,20 @@
-name: Build dc95 X1 Waker Stage C
+name: Build dc95 X1 Waker Stage D
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-waker-stage-d-cpu-scheduler
+    paths:
+      - .github/workflows/build-dc95-x1-address-arbiter-attribution.yml
 
 concurrency:
-  group: dc95-x1-waker-stage-c-${{ github.ref }}
+  group: dc95-x1-waker-stage-d-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: dc95 ARM64 / X1 Waker Stage C
+    name: dc95 ARM64 / X1 Waker Stage D
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -86,7 +91,7 @@ jobs:
           python lab/tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py eden
           python lab/tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py eden
           python lab/tools/adreno_lab/transplant_dc95_diagnostic_harness.py eden
-      - name: Recreate focused attribution layers including Stage C
+      - name: Recreate focused attribution layers through Stage C
         shell: bash
         run: |
           set -euo pipefail
@@ -106,17 +111,39 @@ jobs:
           python lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py eden
           cp lab/src/core/x1_waker_pre_signal_profiler.h eden/src/core/x1_waker_pre_signal_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py eden
-      - name: Verify Stage C before configure
+      - name: Apply Stage D CPU/scheduler attribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/core/x1_waker_stage_d_profiler.h eden/src/core/x1_waker_stage_d_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py eden
+      - name: Verify Stage D before configure
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
           git -C eden diff --check
-          python -m py_compile lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py lab/tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py lab/tools/adreno_lab/analyze_x1_address_arbiter_attribution.py lab/tools/adreno_lab/analyze_x1_waker_pre_signal_attribution.py
-          grep -q '\[X1-WAKER\]' eden/src/core/x1_waker_pre_signal_profiler.h
-          grep -q 'RecordMatchingSignal' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
-          grep -q 'RecordThreadStateTransition' eden/src/core/hle/kernel/k_thread.cpp
-          ! grep -q '0x4f' eden/src/core/x1_waker_pre_signal_profiler.h
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_address_arbiter_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_waker_pre_signal_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py
+          grep -q '\[X1-WAKERD\]' eden/src/core/x1_waker_stage_d_profiler.h
+          grep -q 'GetCpuTime()' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          grep -q 'GetClockTicks()' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          grep -q 'ThreadSetActivityPinned' eden/src/core/hle/kernel/k_thread.cpp
+          grep -q 'ThreadSetCoreMaskPinned' eden/src/core/hle/kernel/k_thread.cpp
+          grep -q 'ProcessUserException' eden/src/core/hle/kernel/k_process.cpp
+          grep -q 'X1WakerStageDProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+          ! grep -qi '0x4f' eden/src/core/x1_waker_stage_d_profiler.h
+          test "$(git -C eden show HEAD:src/core/hle/kernel/svc/svc_address_arbiter.cpp | grep -c 'SignalAddressArbiter(address')" = \
+               "$(grep -c 'SignalAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          test "$(git -C eden show HEAD:src/core/hle/kernel/k_thread.cpp | grep -c 'BeginWait(kernel')" = \
+               "$(grep -c 'BeginWait(kernel' eden/src/core/hle/kernel/k_thread.cpp)"
+          test "$(git -C eden show HEAD:src/core/hle/kernel/k_process.cpp | grep -c 'BeginWait(kernel')" = \
+               "$(grep -c 'BeginWait(kernel' eden/src/core/hle/kernel/k_process.cpp)"
       - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
         id: msys2
         uses: msys2/setup-msys2@v2
@@ -133,7 +160,7 @@ jobs:
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
-      - name: Build dc95 ARM64 X1 Stage C
+      - name: Build dc95 ARM64 X1 Stage D
         shell: msys2 {0}
         working-directory: eden
         run: cmake --build build
@@ -141,7 +168,7 @@ jobs:
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: dc95cd09ee-x1-waker-stage-c
+          ARTIFACT_REF: dc95cd09ee-x1-waker-stage-d
           MSYS_TOOLCHAIN: CLANGARM64
         run: ./.ci/package/windows.sh
       - name: Add analyzers and metadata
@@ -150,13 +177,14 @@ jobs:
           New-Item -ItemType Directory -Force extras | Out-Null
           Copy-Item lab/tools/adreno_lab/analyze_x1_address_arbiter_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_pre_signal_attribution.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_guest_post_wait_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_frame_cadence.py extras/ -Force
-          "Stage C waker pre-signal attribution; exact Eden dc95cd09eea9749250fe31a3072684d341d19417" | Set-Content -Encoding UTF8 extras/WAKER_STAGE_C.txt
+          "Stage D waker CPU/scheduler attribution; exact Eden dc95cd09eea9749250fe31a3072684d341d19417; lab source commit 13281a82b3fa48d0644cd9d24149d87ad70ff27d" | Set-Content -Encoding UTF8 extras/WAKER_STAGE_D.txt
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-dc95-X1-waker-stage-c
+          name: Eden-dc95-X1-waker-stage-d
           path: |
             eden/artifacts/*
             extras/*
