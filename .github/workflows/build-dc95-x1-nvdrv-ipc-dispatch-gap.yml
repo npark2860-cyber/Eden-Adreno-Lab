@@ -2,9 +2,6 @@ name: Build dc95 X1 NVDRV IPC Dispatch Gap
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.x1_nvdrv_ipc_dispatch_build_once'
 
 concurrency:
   group: dc95-x1-nvdrv-ipc-dispatch-gap-${{ github.ref }}
