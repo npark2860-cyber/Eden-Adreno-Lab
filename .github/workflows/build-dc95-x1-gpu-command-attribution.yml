@@ -180,7 +180,6 @@ jobs:
           grep -q 'RecordSchedulerPush' eden/src/video_core/control/scheduler.cpp
           grep -q 'RecordDmaDispatch' eden/src/video_core/dma_pusher.cpp
           grep -q 'RecordProcessCommands' eden/src/video_core/dma_pusher.cpp
-          grep -q 'CountCallMethod' eden/src/video_core/dma_pusher.cpp
           grep -q 'X1GpuCommandProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
 
           sha256sum -c pre-gpucmd/critical/producer.sha256
@@ -297,7 +296,6 @@ jobs:
           - DmaPusher DispatchCalls loop and tail
           - Dma sync wait
           - ProcessCommands time + command-word volume
-          - CallMethod / CallMultiMethod counts only (no per-method wall-clock timer)
           '@ | Set-Content -Encoding UTF8 extras/GPU_COMMAND_ATTRIBUTION.txt
 
       - name: Upload package
