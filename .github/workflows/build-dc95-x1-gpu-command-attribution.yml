@@ -2,6 +2,9 @@ name: Build dc95 X1 GPU Command Attribution
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/ONE_SHOT_X1_GPU_COMMAND_ATTRIBUTION'
 
 concurrency:
   group: dc95-x1-gpu-command-attribution-${{ github.ref }}
