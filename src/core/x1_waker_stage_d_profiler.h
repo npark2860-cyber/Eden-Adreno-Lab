@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <limits>
 
 #include "common/common_types.h"
 #include "common/logging.h"
