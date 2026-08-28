@@ -1,6 +1,6 @@
-# CURRENT HANDOFF — Eden Adreno X1 Waker Pre-Signal Attribution
+# CURRENT HANDOFF — Eden Adreno X1 Waker Attribution
 
-Updated: 2026-08-28 KST
+Updated: 2026-08-29 KST
 
 ## Fixed baseline
 
@@ -10,29 +10,36 @@ Updated: 2026-08-28 KST
 - current source branch: `exp/x1-waker-pre-signal-attribution`
 - Stage B runtime record: `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
 - Stage C implementation record: `DEBUG_HISTORY_20260828_WAKER_STAGE_C_IMPLEMENTED.md`
+- Stage C runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_C_RUNTIME.md`
+- next action: `NEXT_ACTION_WAKER_STAGE_D.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
 **ARM64 build rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
 
-## Latest ARM64 build — Stage B SUCCESS
+## Latest ARM64 build — Stage C SUCCESS
 
-Dynamic-address Stage B build:
-
-- run `33168281215`
-- job `98838856202`
+- run `33190793610`
+- job `98915420071`
 - attempt `1`
-- build branch `exp/x1-address-arbiter-signal-owner-build`
-- build HEAD `b2dbc9dbe7cb69a5856850d5d60750355f186b19`
+- branch `exp/x1-waker-pre-signal-attribution`
+- build HEAD `7fdb505cda0af8559e5cea600721dc2cb17ac38b`
 - conclusion `success`
-- artifact `Eden-dc95-X1-address-arbiter-dynamic-latch`
-- artifact id `9685245645`
-- size `31,385,379` bytes
-- SHA-256 `a421cb6beaa7528ba024a1fee943c2c9a80bbb353142963e0391d2d00e67cfd7`
+- exact dc95 verify `success`
+- Stage C apply/verify `success`
+- MSYS2 setup `success`
+- configure `success`
+- ARM64 compile `success`
+- package `success`
+- artifact upload `success`
+- artifact `Eden-dc95-X1-waker-stage-c`
+- artifact id `9694545153`
+- size `31,377,910` bytes
+- SHA-256 `c47e008a951ce3a974a9694d2b7ee8b06c4fd4379b387ad687a6e7b5f35e91b0`
 
-The temporary Stage B ARM64 workflow was removed after success. No rerun occurred.
+No rerun occurred.
 
-The persistent workflow on the source branch remains manual-only (`workflow_dispatch`).
+The temporary workflow-file-only push trigger used to create this one approved run was removed after success. The persistent workflow is back to manual-only `workflow_dispatch`.
 
 ## Closed causal chain retained
 
@@ -50,139 +57,155 @@ Do not reopen without new evidence:
 - slow Frame Build is roughly 48-55 ms/frame while measured Vulkan scopes explain only a minority.
 - GPU worker is mostly starved in queue wait; active GPU-command work is not the missing interval.
 - long inter-submit gap exists before NVDRV handler entry; handler/SubmitGPFIFO/locks/fence/syncpoint are tiny.
-- dominant guest submitter is the runtime thread observed as `tid=0x53` in the Stage A/B runs, with CPU share about 1-2%.
+- dominant guest submitter in tested runs = `tid=0x53`, CPU share about 1-2%.
 - NVDRV IPC dispatch is about 0.02-0.03 ms/request; host service scheduling is not the missing owner.
-- post-submit interval is generally 96-99% guest KThread `Waiting`.
+- post-submit interval is generally mostly guest KThread `Waiting`.
 
 ## Address Arbiter Stage A — COMPLETE
 
-Stage A proved one stable gameplay wait key within each process:
+Within each process the dominant submitter waits on one stable gameplay key:
 
-- victim / dominant submitter in tested runs: `tid=0x53`
-- operation: `WaitIfEqual` (`ArbitrationType=2`)
+- victim / submitter: `tid=0x53` in tested runs
+- operation: `WaitIfEqual`
 - timeout: `-1`
-- one active gameplay key
 - direct `WaitForAddress` duration reconciles essentially one-for-one with reason-level `Arbitration`.
 
-The absolute guest address is **not process-invariant**. Observed across runs:
+Absolute guest VA is not process-invariant. Observed:
 
 - `0x210adbc120`
 - `0x210b5bc120`
 - `0x210b1bc120`
 
-The profiler therefore dynamically latches the current run's first post-warmup target-thread `WaitIfEqual(timeout=-1)` address.
+The profiler dynamically latches the current run's first post-warmup target-thread `WaitIfEqual(timeout=-1)` address.
 
 ## Address Arbiter Stage B — COMPLETE
 
+Stage B proved the late-waker edge:
+
+- victim `tid=0x53`
+- sole observed waker `tid=0x4f` in tested runs
+- signal type `SignalAndIncrementIfEqual`
+- value `1`
+- count `-1`
+- normal gameplay one matching signal per rendered frame
+- missing/no-active/overflow `0`
+- `direct WaitForAddress ~= wait-start -> matching-signal (w2s)`
+- signal -> wait-return (`s2e`) is essentially zero
+
+Therefore the long submitter AddressArbiter delay happens **before** the waker signals. Once the matching signal arrives, the victim returns essentially immediately.
+
+## Stage C — RUNTIME COMPLETE
+
 Runtime:
 
-`eden_log(20260828-122253).txt`
+`eden_log(20260828-173023).txt`
 
-This run dynamically latched:
+Current run:
 
-- victim: `tid=0x53`
-- wait address: `0x210b1bc120`
-- wait: `WaitIfEqual`
-- timeout: `-1`
-- sole observed matching waker: `tid=0x4f`
-- signal type: `SignalAndIncrementIfEqual` (`incEq`)
-- value: `1`, stable
-- count: `-1`, stable
-- normal gameplay: one matching signal per rendered frame
-- missing/no-active/overflow: `0`
+- dynamic wait address `0x210b5bc120`
+- victim `tid=0x53`
+- dynamic waker `tid=0x4f`
+- waker switches `0`
+- matching signal sanity counters clean
 
-Representative slow timing:
+### Stable fast vs stable slow
 
-| frame | direct wait avg | wait -> signal (`w2s`) | signal -> return (`s2e`) |
-|---:|---:|---:|---:|
-| 1800 | 70.368 ms | 70.270 ms | 0.098 ms |
-| 1920 | 40.185 ms | 40.177 ms | 0.008 ms |
-| 2040 | 45.026 ms | 45.020 ms | 0.007 ms |
-| 2160 | 50.797 ms | 50.778 ms | 0.019 ms |
+Stable fast windows:
 
-Therefore:
+- frame 240, 480, 600, 720, 840
+- raw swap2 = 120/120
 
-> The 40-70 ms slow-regime delay occurs before the matching signal. Once the waker signals, the victim returns essentially immediately. The causal frontier is the signal-owner thread before `SignalToAddress`, not AddressArbiter wake-completion latency.
+Mean per matching signal:
 
-## Stage C — IMPLEMENTED / STATIC-VALIDATED
+- inter-signal **33.722 ms**
+- waker KThread Waiting **27.708 ms**
+- Stage-C residual **6.014 ms**
 
-Current branch:
+Stable slow windows:
 
-`exp/x1-waker-pre-signal-attribution`
+- frame 1200, 1320, 1440, 1560, 1680
+- raw swap3 = 120/120
 
-New source:
+Mean per matching signal:
 
-- `src/core/x1_waker_pre_signal_profiler.h`
-- `tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py`
-- `tools/adreno_lab/analyze_x1_waker_pre_signal_attribution.py`
+- inter-signal **55.022 ms**
+- waker KThread Waiting **34.183 ms**
+- Stage-C residual **20.839 ms**
 
-Stage C does **not** hardcode the observed `tid=0x4f`.
+Slow-minus-fast:
 
-The first signal that already matches Stage B's dynamically latched target address atomically latches its current guest TID as the current-run waker. Only that TID is then observed between consecutive matching signal entries.
+- inter-signal **+21.299 ms**
+- Waiting **+6.474 ms**
+- residual **+14.825 ms**
 
-Primary report:
+At this aggregate level about 70% of the stable slowdown increment lands in the current residual and about 30% in extra KThread Waiting. This is interval attribution, not a final root-cause percentage.
 
-`[X1-WAKER]`
+### Waker named wait reasons
 
-It records per 120 rendered frames:
+For `tid=0x4f`:
 
-- dynamically latched waker TID
-- matching signal count
-- matching signal-entry -> next matching signal-entry total/avg/max
-- waker KThread waiting duration and wait-reason breakdown
-- non-wait residual (`inter-signal - attributed wait`)
-- last wait SVC id
-- guest PC/LR at matching `SignalToAddress` entry, reference plus mismatch counts and latest values
-- sanity counters for waits, malformed intervals and alternate signaler TIDs
+- Sleep `0`
+- Synchronization `0`
+- ConditionVar `0`
+- Arbitration `0`
+- Suspended `0`
+- IPC only a few milliseconds total per 120-frame report
 
-The PC/LR are read-only from the current guest thread's saved `ThreadContext` at the matching SVC entry.
+Nearly all measured waker Waiting is reason `None`.
 
-No new checkbox was added. Stage C is gated by the existing `X1 Log: Address Arbiter Attribution` control.
+Important semantic rule:
 
-### Static validation — SUCCESS
+> Stage C `none=...` means the KThread was actually `Waiting`, but its debug wait-reason field was `None`. It does not mean CPU/runnable time.
 
-Ubuntu-only run:
+Exact dc95 contains direct `BeginWait` paths that do not assign a debug reason, so the enum is not exhaustive. Do not claim a particular unreasoned wait site owns the waker yet.
 
-- run `33172180578`
-- job `98851759971`
-- conclusion `success`
+### Signal callsite context
 
-Passed:
+Matching SignalToAddress PC is overwhelmingly:
 
-- exact dc95 reconstruction
-- Stage B dynamic-address reconstruction
-- Stage C transplant/analyzer Python compile
-- Stage C application
-- exact dc95 HEAD preservation
-- `git diff --check`
-- no hardcoded `0x4f`
-- original `WaitAddressArbiter` / `SignalAddressArbiter` counts unchanged
-- existing AddressArbiter `RecordSignal` count unchanged
-- core KThread state-store / scheduler callback / existing wait-token counts unchanged
-- behavior-changing wait/signal/scheduling/GPU-policy diff guard
+`0x85f16528`
 
-The temporary Ubuntu workflow was deleted after success.
+with very few PC mismatches in stable slow windows.
 
-Net Stage C source diff from parent `6bc91809fd81ee973935ca463ac187ed9f1d571f` contained only the three Stage C source/analyzer files before this documentation update.
-
-## Current causal frontier
-
-Exact runtime question after Stage C ARM64 build:
-
-> During the long 40-70 ms inter-signal interval, is the dynamically latched waker itself blocked in a specific KThread wait reason, or is most of the interval non-wait/runnable residual? Does the matching `SignalToAddress` PC/LR remain one stable guest call site?
+LR varies materially; common/latest values include `0x85ee2b40` and `0x85ee2a8c`.
 
 Interpretation:
 
-- if one wait reason expands with the slow regime, follow only that waker wait path next;
-- if wait share stays small and non-wait residual expands, move upstream into the waker's guest execution path/call site;
-- if PC/LR change by regime, split by the observed call sites before going deeper;
-- if PC/LR are stable, the delay is upstream of one stable signal site.
+- signal reaches one stable guest SVC site;
+- PC may simply be the common SVC wrapper;
+- current LR reference+mismatch output is insufficient to identify the dominant higher-level caller.
 
-Do not chase `None` in parallel unless a controlled stable-slow window shows the proven waker-before-signal interval is small while the frame remains slow.
+`lastWaitSvc=0x0` throughout and is non-informative.
+
+## Stage C conclusion
+
+Stage C rejects the simple hypothesis that the waker is delayed by another single named `Arbitration`, `Synchronization`, `ConditionVar`, or `Sleep` wait.
+
+Instead the stable slow-mode signal period expansion is split between:
+
+1. additional **unclassified KThread Waiting (`reason=None`)**, and
+2. a much larger **non-Waiting residual**.
+
+Do **not** equate residual with guest CPU work. It also includes runnable-but-unscheduled scheduler delay.
+
+## Current causal frontier — Stage D
+
+Exact questions:
+
+1. How much of the 20-21 ms stable-slow residual is actual waker guest CPU time?
+2. How much is runnable/unscheduled delay?
+3. Which exact direct `BeginWait` site owns the waker's `reason=None` Waiting time?
+4. Which LR/caller sites dominate matching SignalToAddress?
+
+Minimal next instrumentation is defined in `NEXT_ACTION_WAKER_STAGE_D.md`:
+
+- waker `GetCpuTime()` delta between consecutive matching signals;
+- derive CPU vs runnable/unscheduled residual;
+- fixed-enum attribution for only direct `BeginWait` sites that can produce `Waiting + reason=None`, dynamically waker-gated;
+- top-4 LR histogram at matching SignalToAddress;
+- no all-thread tracing, all-SVC tracing, per-event flood, wait/sleep insertion, priority/core changes, or GPU/cadence behavior changes.
 
 ## ARM64 status
-
-Stage C is **not ARM64-built yet**.
 
 Current ARM64 build authorization: **NONE**.
 
