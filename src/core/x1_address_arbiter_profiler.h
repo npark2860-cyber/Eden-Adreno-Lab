@@ -38,6 +38,7 @@ public:
             return;
         }
 
+        armed.store(false, std::memory_order_relaxed);
         target_tid.store(0, std::memory_order_relaxed);
         target_switches.store(0, std::memory_order_relaxed);
         slot_overflow.store(0, std::memory_order_relaxed);
@@ -45,6 +46,9 @@ public:
         frames_since_report = 0;
         report_start = Clock::now();
         for (auto& slot : slots) {
+            slot.address_key.store(0, std::memory_order_relaxed);
+            slot.type.store(0, std::memory_order_relaxed);
+            slot.timeout_ref_ns.store(0, std::memory_order_relaxed);
             slot.ResetCounters();
         }
     }
@@ -55,7 +59,7 @@ public:
 
     CallToken BeginCall(u64 thread_id, u64 address, u32 arbitration_type,
                         s64 timeout_ns) noexcept {
-        if (!Enabled() || thread_id == 0) {
+        if (!Enabled() || !armed.load(std::memory_order_acquire) || thread_id == 0) {
             return {};
         }
 
@@ -218,6 +222,8 @@ public:
                  d.address, TypeName(d.type), d.calls, d.completed, ToMs(d.total_ns),
                  AvgMs(d.total_ns, d.completed), ToMs(d.max_ns), d.success, d.timed_out, d.other,
                  d.timeout_ref_ns, d.timeout_mismatch, d.inflight);
+
+        armed.store(true, std::memory_order_release);
     }
 
 private:
@@ -312,6 +318,7 @@ private:
     }
 
     std::atomic<bool> enabled{false};
+    std::atomic<bool> armed{false};
     std::atomic<u64> target_tid{0};
     std::atomic<u64> target_switches{0};
     std::atomic<u64> slot_overflow{0};
