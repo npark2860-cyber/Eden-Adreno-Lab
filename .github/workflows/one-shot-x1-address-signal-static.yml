@@ -1,0 +1,153 @@
+name: One-shot X1 Address Signal Static Verify
+
+on:
+  push:
+    branches:
+      - exp/x1-address-arbiter-signal-owner
+    paths:
+      - .github/workflows/one-shot-x1-address-signal-static.yml
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout exact dc95
+        uses: actions/checkout@v7
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+
+      - name: Apply retained diagnostic chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          for f in \
+            src/video_core/renderer_vulkan/vk_buffer_cache.cpp \
+            src/video_core/renderer_vulkan/vk_compute_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp \
+            src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp \
+            src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
+            test -s "$out"
+            git -C eden apply --ignore-whitespace "../$out"
+          done
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
+          python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+          python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+          python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+          python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_other_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_texture_fill_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_copy_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_payload_fingerprint.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_cache_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py eden
+          python lab/tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_diagnostic_harness.py eden
+
+          cp lab/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h eden/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_frame_build_attribution.py eden
+          cp lab/src/video_core/x1_gpu_command_profiler.h eden/src/video_core/x1_gpu_command_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_gpu_command_attribution.py eden
+          cp lab/src/video_core/x1_gpu_submit_profiler.h eden/src/video_core/x1_gpu_submit_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_gpu_submit_gap_attribution.py eden
+          cp lab/src/video_core/x1_guest_submit_profiler.h eden/src/video_core/x1_guest_submit_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py eden
+          cp lab/src/core/x1_nvdrv_ipc_dispatch_profiler.h eden/src/core/x1_nvdrv_ipc_dispatch_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_nvdrv_ipc_dispatch_gap.py eden
+          cp lab/src/core/x1_guest_post_wait_profiler.h eden/src/core/x1_guest_post_wait_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_guest_post_wait_attribution.py eden
+
+      - name: Snapshot pre-AddressArbiter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_address_arbiter_attribution.py
+          mkdir -p pre
+          cp eden/src/common/settings.h pre/settings.h
+          cp eden/src/yuzu/configuration/configure_debug.h pre/configure_debug.h
+          cp eden/src/yuzu/configuration/configure_debug.cpp pre/configure_debug.cpp
+          cp eden/src/core/x1_guest_post_wait_profiler.h pre/x1_guest_post_wait_profiler.h
+          cp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp pre/svc_address_arbiter.cpp
+          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp pre/vk_rasterizer.cpp
+
+      - name: Apply Stage B exact-address signal attribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/core/x1_address_arbiter_profiler.h eden/src/core/x1_address_arbiter_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py eden
+
+      - name: Verify Stage B scope and invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+
+          grep -q '\[X1-ADDRARB\]' eden/src/core/x1_address_arbiter_profiler.h
+          grep -q '\[X1-ADDRSIG\]' eden/src/core/x1_address_arbiter_profiler.h
+          grep -q '0x210adbc120ULL' eden/src/core/x1_address_arbiter_profiler.h
+          grep -q 'BeginTargetWait' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          grep -q 'EndTargetWait' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          grep -q 'ShouldTrackSignalAddress' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          grep -q 'RecordSignal' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+
+          check_count() {
+            local before="$1" after="$2" token="$3"
+            local b a
+            b=$(grep -oF "$token" "$before" | wc -l | tr -d ' ')
+            a=$(grep -oF "$token" "$after" | wc -l | tr -d ' ')
+            test "$b" = "$a" || { echo "ERROR token count changed: $token $b -> $a" >&2; exit 1; }
+          }
+
+          check_count pre/svc_address_arbiter.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp 'WaitAddressArbiter('
+          check_count pre/svc_address_arbiter.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp 'SignalAddressArbiter('
+          check_count pre/svc_address_arbiter.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp 'IsValidArbitrationType('
+          check_count pre/svc_address_arbiter.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp 'IsValidSignalType('
+          check_count pre/svc_address_arbiter.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp 'Result WaitForAddress64('
+          check_count pre/svc_address_arbiter.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp 'Result SignalToAddress64('
+
+          test "$(grep -oF 'x1_address_arbiter_profiler.BeginCall(' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp | wc -l | tr -d ' ')" = 1
+          test "$(grep -oF 'x1_address_arbiter_profiler.EndCall(' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp | wc -l | tr -d ' ')" = 1
+          test "$(grep -oF 'x1_address_arbiter_profiler.BeginTargetWait(' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp | wc -l | tr -d ' ')" = 1
+          test "$(grep -oF 'x1_address_arbiter_profiler.EndTargetWait(' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp | wc -l | tr -d ' ')" = 1
+          test "$(grep -oF 'x1_address_arbiter_profiler.RecordSignal(' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp | wc -l | tr -d ' ')" = 1
+
+          {
+            diff -u pre/settings.h eden/src/common/settings.h || true
+            diff -u pre/configure_debug.h eden/src/yuzu/configuration/configure_debug.h || true
+            diff -u pre/configure_debug.cpp eden/src/yuzu/configuration/configure_debug.cpp || true
+            diff -u pre/x1_guest_post_wait_profiler.h eden/src/core/x1_guest_post_wait_profiler.h || true
+            diff -u pre/svc_address_arbiter.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp || true
+            diff -u pre/vk_rasterizer.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp || true
+          } > stage-b-only.diff
+          test -s stage-b-only.diff
+
+          if grep -E '^\+.*(BeginWait\(|EndWait\(|SignalAddressArbiter\(|WaitHost\(|StallApplication\(|sleep_for|sleep_until|Sleep\(|SetPriority\(|SetCoreMask\(|Reschedule|YieldTo|PushGPUEntries\(|item\.swap_interval[[:space:]]*=|default_max_buffer_count[[:space:]]*=|SetTarget|SpeedLimit)' stage-b-only.diff; then
+            echo 'ERROR: behavior-changing wait/signal/scheduling/GPU policy leaked into Stage B diff' >&2
+            exit 1
+          fi
+
+          echo 'Stage B static verification passed'
