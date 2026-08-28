@@ -135,3 +135,5 @@ jobs:
           python lab/tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py /tmp/stage-d.log | grep -q '55.000'
 
           echo 'Stage D static validation passed'
+
+# Static retry marker: user-exception anchor corrected; Ubuntu-only validation.
