@@ -408,29 +408,6 @@ void DmaPusher::SetState(const CommandHeader& command_header) {
 '''
     text = replace_once(text, anchor, replacement, "ProcessCommands timing end")
 
-    anchor = '''void DmaPusher::CallMethod(u32 argument) {
-    if (dma_state.method < non_puller_methods) {
-'''
-    replacement = '''void DmaPusher::CallMethod(u32 argument) {
-    auto& x1_gpu_command_profiler = VideoCore::X1GpuCommandProfiler::Get();
-    if (x1_gpu_command_profiler.Enabled()) {
-        x1_gpu_command_profiler.CountCallMethod();
-    }
-    if (dma_state.method < non_puller_methods) {
-'''
-    text = replace_once(text, anchor, replacement, "CallMethod count")
-
-    anchor = '''void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
-    if (dma_state.method < non_puller_methods) {
-'''
-    replacement = '''void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
-    auto& x1_gpu_command_profiler = VideoCore::X1GpuCommandProfiler::Get();
-    if (x1_gpu_command_profiler.Enabled()) {
-        x1_gpu_command_profiler.CountCallMultiMethod(num_methods);
-    }
-    if (dma_state.method < non_puller_methods) {
-'''
-    text = replace_once(text, anchor, replacement, "CallMultiMethod count")
     dma.write_text(text, encoding="utf-8")
 
     rasterizer = root / "src/video_core/renderer_vulkan/vk_rasterizer.cpp"
@@ -470,7 +447,7 @@ bool RasterizerVulkan::AccelerateConditionalRendering() {
         ui_cpp: ["X1 Log: GPU Command Attribution"],
         gpu_thread: ["RecordWorkerQueueWait", "RecordPushCommand"],
         scheduler: ["RecordSchedulerPush"],
-        dma: ["RecordDmaDispatch", "RecordProcessCommands", "CountCallMethod", "CountCallMultiMethod"],
+        dma: ["RecordDmaDispatch", "RecordProcessCommands"],
         rasterizer: ["X1GpuCommandProfiler::Get().Initialize", "X1GpuCommandProfiler::Get().FrameEnd"],
     }
     for path, markers in checks.items():
