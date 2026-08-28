@@ -108,9 +108,8 @@ Measurements:
 - DmaPusher::DispatchCalls loop / tail
 - Dma sync wait
 - ProcessCommands wall time and command word volume
-- CallMethod / CallMultiMethod counts
 
-Profiler intentionally avoids per-method steady-clock timers to reduce measurement perturbation.
+Profiler intentionally avoids both per-method wall-clock timers and per-method atomic counters to reduce measurement perturbation on the command hot path.
 
 Prepared files:
 
