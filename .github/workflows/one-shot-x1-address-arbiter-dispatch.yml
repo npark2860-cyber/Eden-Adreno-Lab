@@ -1,0 +1,26 @@
+name: One-shot X1 Address Arbiter Build Dispatch
+
+on:
+  push:
+    branches:
+      - exp/x1-address-arbiter-attribution
+    paths:
+      - .github/workflows/one-shot-x1-address-arbiter-dispatch.yml
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch persistent manual ARM64 workflow exactly once
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build-dc95-x1-address-arbiter-attribution.yml \
+            --repo "${{ github.repository }}" \
+            --ref exp/x1-address-arbiter-attribution
