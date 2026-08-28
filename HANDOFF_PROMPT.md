@@ -1,4 +1,4 @@
-# Handoff Prompt — Eden Adreno X1 GPU Command Attribution
+# Handoff Prompt — Eden Adreno X1 GPU Submit Gap Attribution
 
 Use this prompt when continuing in a new tab.
 
@@ -12,7 +12,7 @@ GitHub repository:
 
 Current experiment branch:
 
-`exp/x1-gpu-command-attribution`
+`exp/x1-gpu-submit-gap-attribution`
 
 Do not reconstruct state from old chat. First read these GitHub documents and treat them as source of truth:
 
@@ -20,9 +20,10 @@ Do not reconstruct state from old chat. First read these GitHub documents and tr
 2. `DEBUG_HISTORY.md`
 3. `DEBUG_HISTORY_20260827_CONTINUED.md`
 4. `DEBUG_HISTORY_20260828_CONTINUED.md`
-5. `LAB_BOOTSTRAP.md`
-6. `NEXT_ACTION_GPU_COMMAND_ATTRIBUTION.md`
-7. `HANDOFF_PROMPT.md`
+5. `DEBUG_HISTORY_20260828_GPU_SUBMIT.md`
+6. `LAB_BOOTSTRAP.md`
+7. `NEXT_ACTION_GPU_SUBMIT_GAP_ATTRIBUTION.md`
+8. `HANDOFF_PROMPT.md`
 
 Then verify actual branch HEAD and Actions state against the documents before doing anything else.
 
@@ -40,78 +41,101 @@ Hard build rule:
 Retain all closed facts in `CURRENT_HANDOFF.md`, especially:
 
 - alias trivial dedupe is closed
-- adaptive Uniform fast stream is mapped staging re-stream; wholesale classic-cache fallback did not fix gameplay
-- TOTK 1.4.2 raw main BufferQueue `swap=2 -> 3` explains the discrete 30 -> <=20 cadence shape in that run
-- raw swap originates in guest QueueBuffer input, not Qualcomm Vulkan Present
-- raw-3/effective-2 HardwareComposer A/B executed correctly but did not break the gameplay ceiling
-- Dequeue attribution closed 2-buffer backpressure as the slow-state cause
-- slow gameplay waits ~0.001 ms for a free slot and spends ~45-47 ms after Dequeue END before next Queue
-- heavy X1 diagnostic logs do not create that interval
-- DFPS ON can remain ~20-FPS class with raw swap=1
-- DFPS OFF can remain ~20-FPS class with raw swap=3
-- therefore DFPS and raw swap=3 are not the root renderer-performance cause
-- Frame-Build attribution showed only roughly ~9-12 ms/frame in measured Vulkan Draw/Dispatch/Clear scopes, leaving roughly ~37-39 ms/frame unexplained outside those scopes
+- wholesale classic-cache Uniform fallback did not break the gameplay ceiling
+- raw swap interval originates in guest QueueBuffer input, but raw swap / HWC interval gating is not the root renderer-performance cause
+- DFPS changes cadence/workload shape but is not the root ~45-50 ms frame-production cause
+- slow gameplay Dequeue free-slot wait is ~0.001 ms; BufferQueue backpressure is closed as root cause
+- Frame-Build attribution found only ~9-12 ms/frame in measured Vulkan Draw/Dispatch/Clear scopes
+- GPU Command Attribution then found the missing time is dominated by GPU worker queue `PopWait`, not by DmaPusher processing
 
-Frame-Build build completed successfully:
+GPU Command Attribution completed successfully:
 
-- workflow `Build dc95 X1 Frame Build Attribution`
-- run `33115424368`
-- job `98668715842`
+- workflow `Build dc95 X1 GPU Command Attribution`
+- run `33129866149`
+- job `98716608240`
 - attempt 1
-- build HEAD `a1eba5fdbea2455f24392629f594cbb99cc03e74`
-- artifact id `9665216124`
-- SHA-256 `43a83eeb51dd3ef9ba65f804a12f14f08dbf58796e84bed22e2147c9ab3af709`
-- cleanup HEAD `f54b732e86e2ef0dd57a402a03b8a76cbbedc0e1`
+- build HEAD `dafee3f7f08832dbd39aedf7f2c2607bf1b6112b`
+- artifact id `9670361329`
+- SHA-256 `5c0d99f3539dd46e79b8b3002ef48216acbcb7de1282c5078b5fb411dd389758`
+- cleanup HEAD `368752c0cd9f98b1a94b7599e9a9a687eb1cc8a0`
 
-Current work is the runtime-selectable GPU command attribution layer.
+Runtime log:
+
+`eden_log(20260828-011332).txt`
+
+Representative slow 120-frame windows:
+
+- frame 1200: wall ~52.69 ms/frame, GPU worker queueWait ~32.39 ms/frame, active ~20.29 ms/frame, ProcessCommands ~17.18 ms/frame, PushCommand total 3.903 ms / 395 calls, blockWait 0
+- frame 1320: wall ~52.60 ms/frame, GPU worker queueWait ~36.58 ms/frame, active ~16.01 ms/frame, ProcessCommands ~15.47 ms/frame, PushCommand total 3.578 ms / 366 calls, blockWait 0
+
+Conclusion:
+
+> the GPU worker is starved for upstream submissions for roughly ~30-35 ms/frame; the next target is upstream of `GPUThread::PushCommand`.
+
+Exact source path:
+
+`NVDRV::Ioctl1/Ioctl2`
+-> `Module::Ioctl1/Ioctl2`
+-> `nvhost_gpu::Ioctl1/Ioctl2`
+-> `SubmitGPFIFOBase1/SubmitGPFIFOBase2`
+-> `SubmitGPFIFOImpl`
+-> `GPU::PushGPUEntries`
+-> `GPUThread::SubmitList`
+-> `PushCommand`
+
+Current work is the runtime-selectable GPU submit-gap attribution layer.
 
 New control:
 
-`X1 Log: GPU Command Attribution`
+`X1 Log: GPU Submit Gap Attribution`
 
-It emits `[X1-GPUCMD]` 120-frame aggregates for:
+It emits `[X1-GPUSUBMIT]` 120-frame aggregates for:
 
-- asynchronous GPU worker queue PopWait vs active command handling
-- PushCommand total + synchronous block-wait
-- `Tegra::Control::Scheduler::Push` total / bind / DmaPusher dispatch
-- `DmaPusher::DispatchCalls` loop / tail / sync wait
-- `ProcessCommands` total + command-word volume
-- no per-method wall-clock timer or per-method atomic counter is used
+- gaps between candidate NVDRV submit service entries
+- gaps between confirmed nvhost_gpu submit-device entries
+- NVDRV IPC buffer read / device dispatch / output write time
+- GPFIFO CommandList allocation and command-header read/copy time
+- SubmitGPFIFOImpl channel-lock / init / fence / syncpoint time
+- wait/main/fence PushGPUEntries call time
+- gaps between actual PushGPUEntries calls
 
 Primary next split:
 
-- queueWait dominates => GPU worker is idle waiting for upstream/guest command supply
-- active/dma/process dominates => Eden command interpretation / method execution owns the missing time
-- blockWait material => upstream caller synchronously waits for GPU-worker completion
+- large submit gaps + tiny service/impl work => guest/upstream CPU is not issuing GPU submissions promptly
+- large NVDRV service time => HLE/NVDRV service path
+- large Base/lock/impl time => nvhost GPU submission path
 
 Prepared files:
 
-- `src/video_core/x1_gpu_command_profiler.h`
-- `tools/adreno_lab/transplant_dc95_gpu_command_attribution.py`
-- `tools/adreno_lab/analyze_x1_gpu_command_attribution.py`
-- `.github/workflows/build-dc95-x1-gpu-command-attribution.yml`
-- `NEXT_ACTION_GPU_COMMAND_ATTRIBUTION.md`
+- `src/video_core/x1_gpu_submit_profiler.h`
+- `tools/adreno_lab/transplant_dc95_gpu_submit_gap_attribution.py`
+- `tools/adreno_lab/analyze_x1_gpu_submit_gap_attribution.py`
+- `.github/workflows/build-dc95-x1-gpu-submit-gap-attribution.yml`
+- `NEXT_ACTION_GPU_SUBMIT_GAP_ATTRIBUTION.md`
 
 Workflow:
 
-`Build dc95 X1 GPU Command Attribution`
+`Build dc95 X1 GPU Submit Gap Attribution`
 
 It must remain `workflow_dispatch` only.
 
-Recommended first runtime after a future successful build:
+Recommended future runtime after a successful build:
 
-- same TOTK 1.2.1 gameplay route
-- DFPS OFF first
-- GPU Command Attribution ON
-- Frame Build Attribution ON
-- Frame Cadence ON
-- Dequeue Attribution ON
-- all behavioral A/B controls OFF
-- Scheduler/Present/Pipeline/Upload/QCOM heavy logs OFF
-- Descriptor Ring OFF
+ON:
+- GPU Submit Gap Attribution
+- GPU Command Attribution
+- Frame Build Attribution
+- Frame Cadence
+- Dequeue Attribution
+
+OFF:
+- swap 3 -> 2 clamp A/B
+- Descriptor Ring
+- all behavioral A/B controls
+- Scheduler/Present/Pipeline/Upload/QCOM heavy logs
 
 NEXT ACTION:
 
-Read `NEXT_ACTION_GPU_COMMAND_ATTRIBUTION.md`, verify branch/HEAD/workflow state, and finish static/pre-Actions validation. Stop before ARM64 Actions.
+Read `NEXT_ACTION_GPU_SUBMIT_GAP_ATTRIBUTION.md`, verify branch/HEAD/workflow state, and finish static/pre-Actions validation. Stop before ARM64 Actions.
 
-No current ARM64 build authorization exists. A fresh explicit user authorization is required for exactly one build attempt.
+No current ARM64 build authorization exists. A fresh explicit user authorization is required for exactly one GPU-submit-gap build attempt.
