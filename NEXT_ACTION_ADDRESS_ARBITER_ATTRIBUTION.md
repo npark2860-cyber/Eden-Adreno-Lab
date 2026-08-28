@@ -1,132 +1,134 @@
-# NEXT ACTION — X1 Address Arbiter Signal Owner (Stage B)
+# NEXT ACTION — X1 Waker Pre-Signal Attribution (Stage C)
 
 Updated: 2026-08-28 KST
 
 ## Fixed baseline
 
 - Eden: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
-- branch: `exp/x1-address-arbiter-attribution`
-- corrected Stage A source: `0d09c314b1aec644624996f1ca800a10e93c9fa4`
-- corrected ARM64 build HEAD: `ead9a3954f9420334db5a3eef3635dd44d2eb4bd`
+- current source branch: `exp/x1-address-arbiter-signal-owner`
+- Stage B runtime record: `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
 
 Never change the Eden baseline without explicit baseline-change approval.
 
 **ARM64 Actions rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
 
-## Stage A is complete
+## Stage A — closed
 
-Corrected runtime:
+The dominant GPU submitter `tid=0x53` performs one gameplay `WaitForAddress(..., WaitIfEqual, timeout=-1)` per rendered frame. Direct wait duration reconciles essentially exactly with reason-level `Arbitration`.
 
-`eden_log(20260828-102127).txt`
+The absolute guest VA relocates between runs, so the profiler dynamically latches the current process's target address instead of hardcoding it.
 
-Direct `Svc::WaitForAddress` attribution proves one stable gameplay key:
+## Stage B — closed
 
-- target guest thread: `tid=0x53`
-- guest address: **`0x210adbc120`**
-- arbitration type: **`WaitIfEqual`** (`type=2`)
-- timeout: **`-1`**
-- post-warmup active slots: `1`
-- post-warmup overflow: `0`
-- timeout completions: `0`
-- other-result completions: `0`
+Dynamic-latch runtime:
 
-The key remains unchanged across fast swap2, transition, and stable swap3 windows.
+`eden_log(20260828-122253).txt`
 
-Representative direct wait averages:
+This run latched target address `0x210b1bc120`.
 
-- frame 840: `1.027 ms`, swap2 `120/120`
-- frame 960: `3.601 ms`, swap2 `111/120`
-- frame 1080: `61.725 ms`, swap3 `73/120`
-- frame 1200: `45.593 ms`, swap3 `120/120`
-- frame 1320: `41.227 ms`, swap3 `120/120`
-- frame 1440: `40.159 ms`, swap3 `120/120`
+The matching signal path is unambiguous:
 
-Direct WaitForAddress duration reconciles essentially exactly with the existing reason-level Arbitration bucket (correlation approximately `0.999999`).
+- victim / GPU submitter: `tid=0x53`
+- sole observed waker: **`tid=0x4f`**
+- signal type: **`SignalAndIncrementIfEqual`** (`incEq`)
+- value: `1`
+- count: `-1`
+- approximately one matching signal per rendered frame
+- post-warmup missing/no-active/overflow: `0`
 
-Therefore the blocked synchronization object/key is known. Do not spend another experiment re-proving Stage A.
+Slow-regime timing proves late producer rather than slow wake completion:
 
-Full record:
+- frame 1800: direct `70.368 ms`, `w2s=70.270 ms`, `s2e=0.098 ms`
+- frame 1920: direct `40.185 ms`, `w2s=40.177 ms`, `s2e=0.008 ms`
+- frame 2040: direct `45.026 ms`, `w2s=45.020 ms`, `s2e=0.007 ms`
+- frame 2160: direct `50.797 ms`, `w2s=50.778 ms`, `s2e=0.019 ms`
 
-`DEBUG_HISTORY_20260828_ADDRESS_ARBITER_CORRECTED.md`
+Therefore do not spend another experiment re-proving the victim wait or AddressArbiter wake-completion path.
 
 ## Exact next causal question
 
-> Which guest thread signals `0x210adbc120`, and does delayed signaling explain the long `WaitIfEqual` duration on `tid=0x53`?
+> What delays the dynamically identified signal-owner thread before it calls the matching `SignalToAddress`?
 
-Exact dc95 wake path:
+In the observed run the waker is `tid=0x4f`, but Stage C should **not hardcode that TID across runs**. Latch the signal-owner TID from the current run's first matching target-address signal, just as Stage B now latches the target address.
 
-`Svc::SignalToAddress`
--> current process `SignalAddressArbiter`
--> `KAddressArbiter` wake handling.
+## Stage C — waker-only inter-signal attribution
 
-## Stage B — exact-address signal attribution only
+Instrument only the dynamically identified waker thread, and only while the AddressArbiter diagnostic is active.
 
-Instrument only `Svc::SignalToAddress` calls where:
+Preferred measurement window:
 
-`address == 0x210adbc120`
+`previous matching SignalToAddress completion -> next matching SignalToAddress entry`
+
+or an equivalent narrowly bounded interval that answers what consumed the time before the next wake.
 
 Required aggregate fields per 120 rendered frames:
 
-- signaling guest thread ID
-- `SignalType`
-- count argument / effective signaled count if readily available
-- cheap/read-only address value if it materially helps interpret signal semantics
-- total calls by signaling thread/type
-- signal timestamp distribution or enough timing information to connect signal occurrence to the target wait completion
+- dynamically latched waker TID
+- matching signal call count
+- inter-signal total/avg/max duration
+- waker KThread `Waiting` duration by existing wait-reason enum
+- runnable/CPU residual for the waker
+- dominant wait reason(s) in fast vs slow regimes
+- current/last SVC attribution for waker waits if cheap
+- guest PC and, if readily available/read-only, LR at matching `SignalToAddress` entry
+- stability/change count for PC/LR across the window
 
-Preferred first goal:
+The first goal is to decide which of these owns the 40-70 ms late-signal interval:
 
-- determine whether one guest thread is the dominant/sole waker;
-- determine whether there is approximately one relevant signal per rendered frame;
-- determine whether long target waits end immediately after that signal;
-- identify whether waker timing itself shifts from fast to slow regime.
+1. the waker is itself blocked in a specific KThread wait reason;
+2. the waker is runnable/CPU-active for most of the interval;
+3. the signal call site changes with regime;
+4. a single stable call site exists and the delay is upstream of it.
 
 ## Correlation requirement
 
-Keep the existing target `tid=0x53` and exact address fixed.
+Compare identical 120-frame windows with existing:
 
-Compare the signal-side aggregate with the existing direct wait reports in the same 120-frame cadence:
+- `[X1-ADDRSIG]`
+- `[X1-ADDRARB]`
+- `[X1-GUESTWAIT]`
+- Frame Build / GPU Submit / GPU Command correlation logs
+- raw QueueBuffer cadence
 
-- fast raw-swap-2 windows
-- transition windows
-- stable raw-swap-3 windows
+Use at least:
 
-The result must answer whether the long wait is caused by a late producer/waker versus some other AddressArbiter semantic condition.
+- fast raw-swap2 window
+- transition window
+- stable raw-swap3 window
 
 ## Scope constraints
 
 Do **not**:
 
-- trace all `SignalToAddress` traffic;
-- add a generic SVC profiler;
+- trace all guest threads;
 - add broad scheduler tracing;
-- add per-event logging flood;
+- add a generic all-SVC profiler;
+- emit per-event log flood;
+- hardcode `tid=0x4f` as process-invariant;
 - add waits/sleeps/locks;
-- alter address values;
-- alter `WaitIfEqual` comparison semantics;
-- alter `SignalToAddress` type/count semantics;
+- alter signal address/value/type/count;
 - alter thread priority/core affinity;
-- alter NVDRV/GPU/BufferQueue/HWC/VI/cadence/swap policy.
+- alter NVDRV/GPU/BufferQueue/HWC/VI/cadence/swap behavior.
 
 Observation-only, default OFF or gated by the existing Address Arbiter diagnostic control.
 
-## Separate `None` fallback
+## `None` fallback
 
-Do not chase `None` now.
+Do not chase `None` in parallel with Stage C.
 
-The corrected Stage A runtime cleanly identifies the entire Arbitration bucket. `None` remains a separate wait class and should only be revisited if a future controlled runtime demonstrates a stable-slow window where the proven AddressArbiter wait is small while `None` dominates.
+Only revisit it if a future controlled stable-slow window shows that the proven waker-before-signal interval is small while `None` becomes the dominant unexplained owner.
 
 ## Build state
 
-Stage B source has not been implemented or ARM64-built.
+Stage C has **not** been implemented or ARM64-built.
 
 Current ARM64 authorization: **NONE**.
 
-Before any Stage B ARM64 attempt:
+Before any Stage C ARM64 attempt:
 
-1. implement only exact-address signal attribution;
-2. statically verify exact dc95 signal/wait call counts and unchanged semantics;
+1. implement only dynamically latched waker pre-signal attribution;
+2. statically verify exact dc95 thread-state and signal call counts / unchanged semantics;
 3. verify persistent workflow remains `workflow_dispatch` only;
-4. verify branch diff contains only intended Stage B instrumentation/workflow/docs changes;
+4. verify branch diff contains only intended Stage C instrumentation/workflow/docs changes;
 5. request fresh explicit authorization for exactly one ARM64 attempt;
 6. no automatic retry on failure.
