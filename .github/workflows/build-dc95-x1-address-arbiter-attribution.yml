@@ -1,15 +1,15 @@
-name: Build dc95 X1 Waker Stage J
+name: Build dc95 X1 Waker Stage K
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: dc95-x1-waker-stage-j-${{ github.ref }}
+  group: dc95-x1-waker-stage-k-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: dc95 ARM64 / X1 Waker Stage J
+    name: dc95 ARM64 / X1 Waker Stage K
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -274,7 +274,7 @@ jobs:
           cp lab/src/core/x1_waker_stage_j_profiler.h eden/src/core/x1_waker_stage_j_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_stage_j_caller_depth.py eden
 
-      - name: Verify Stage J before configure
+      - name: Verify Stage J before Stage K
         shell: bash
         run: |
           set -euo pipefail
@@ -321,6 +321,74 @@ jobs:
           ! diff -u .x1-stage-j-precheck/rasterizer-pre-j.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
             grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
 
+      - name: Snapshot pre-Stage-K invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .x1-stage-k-precheck
+          mkdir -p .x1-stage-k-precheck
+          cp eden/src/core/hle/kernel/k_scheduler.cpp .x1-stage-k-precheck/kscheduler-pre-k.cpp
+          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp .x1-stage-k-precheck/rasterizer-pre-k.cpp
+          cp eden/src/core/x1_waker_stage_f_profiler.h .x1-stage-k-precheck/stage-f-pre-k.h
+          cp eden/src/core/x1_waker_stage_g_profiler.h .x1-stage-k-precheck/stage-g-pre-k.h
+          cp eden/src/core/x1_waker_stage_j_profiler.h .x1-stage-k-precheck/stage-j-pre-k.h
+          cp eden/src/core/loader/deconstructed_rom_directory.cpp .x1-stage-k-precheck/loader-pre-k.cpp
+
+      - name: Apply Stage K selected-producer grandparent depth
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/core/x1_waker_stage_k_profiler.h eden/src/core/x1_waker_stage_k_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py eden
+
+      - name: Verify Stage K before configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py
+
+          test "$(grep -c '\[X1-WAKERK\]' eden/src/core/x1_waker_stage_k_profiler.h)" = 1
+          test "$(grep -c 'x1_stage_k_memory.Read64' eden/src/core/hle/kernel/k_scheduler.cpp)" = 2
+          test "$(grep -c 'x1_stage_k_memory.IsValidVirtualAddressRange' eden/src/core/hle/kernel/k_scheduler.cpp)" = 2
+          test "$(grep -c 'X1WakerStageKProfiler::Get().RecordCpuSlice' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
+          test "$(grep -c 'X1WakerStageKProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
+          test "$(grep -c 'X1WakerStageKProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
+          grep -q 'x1_stage_k_parent_fp <= x1_stage_j_fp' eden/src/core/hle/kernel/k_scheduler.cpp
+          diff -u .x1-stage-k-precheck/stage-f-pre-k.h eden/src/core/x1_waker_stage_f_profiler.h
+          diff -u .x1-stage-k-precheck/stage-g-pre-k.h eden/src/core/x1_waker_stage_g_profiler.h
+          diff -u .x1-stage-k-precheck/stage-j-pre-k.h eden/src/core/x1_waker_stage_j_profiler.h
+          diff -u .x1-stage-k-precheck/loader-pre-k.cpp eden/src/core/loader/deconstructed_rom_directory.cpp
+
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('eden/src/core/hle/kernel/k_scheduler.cpp').read_text()
+          guard = 'GetTrackedProducerIndex(cur_thread->GetThreadId());\n    if (x1_stage_g_out_index >= 0) {\n        const auto& x1_stage_g_context = cur_thread->GetContext();'
+          if guard not in text:
+              raise SystemExit('Stage K is not inside the Stage F selected-producer guard')
+          start = text.index(guard)
+          end = text.index('    if (cur_process != nullptr)', start)
+          block = text[start:end]
+          if block.count('Read64') != 3:
+              raise SystemExit('Stage K selected-producer total Read64 count mismatch')
+          if block.count('x1_stage_k_memory.Read64') != 2:
+              raise SystemExit('Stage K must add exactly two Read64 sites')
+          if block.count('IsValidVirtualAddressRange') != 3:
+              raise SystemExit('Stage K selected-producer total range-check count mismatch')
+          if block.index('GetTrackedProducerIndex') > block.index('Read64'):
+              raise SystemExit('Stage K reads stack frame before producer selection')
+          PY
+
+          ! grep -Eqi '0x80|0x81|0x210b|0x2181|0x158528|0x158420|0x124a8c|0x124b40|0x127058|0x13178c|0x127e54|0x86a820|0x86be08|0x2a904cc' \
+            eden/src/core/x1_waker_stage_k_profiler.h
+          ! diff -u .x1-stage-k-precheck/kscheduler-pre-k.cpp eden/src/core/hle/kernel/k_scheduler.cpp | \
+            grep -E '^\+.*(SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until|WaitForAddress\(|SignalToAddress\()'
+          ! diff -u .x1-stage-k-precheck/rasterizer-pre-k.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
+            grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
+
       - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
         id: msys2
         uses: msys2/setup-msys2@v2
@@ -339,7 +407,7 @@ jobs:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
 
-      - name: Build dc95 ARM64 X1 Stage J
+      - name: Build dc95 ARM64 X1 Stage K
         shell: msys2 {0}
         working-directory: eden
         run: cmake --build build
@@ -348,7 +416,7 @@ jobs:
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: dc95cd09ee-x1-waker-stage-j
+          ARTIFACT_REF: dc95cd09ee-x1-waker-stage-k
           MSYS_TOOLCHAIN: CLANGARM64
         run: ./.ci/package/windows.sh
 
@@ -364,14 +432,15 @@ jobs:
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_g_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_j_caller_depth.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_guest_post_wait_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_frame_cadence.py extras/ -Force
-          "Stage J selected-producer saved-fp parent-LR attribution on top of Stage H module mapping; exact Eden dc95cd09eea9749250fe31a3072684d341d19417; Ubuntu static validation run 33249656888" | Set-Content -Encoding UTF8 extras/WAKER_STAGE_J.txt
+          "Stage K selected-producer grandparent-LR attribution on top of Stage J caller depth; exact Eden dc95cd09eea9749250fe31a3072684d341d19417; Ubuntu static validation run 33253036148" | Set-Content -Encoding UTF8 extras/WAKER_STAGE_K.txt
 
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-dc95-X1-waker-stage-j
+          name: Eden-dc95-X1-waker-stage-k
           path: |
             eden/artifacts/*
             extras/*
