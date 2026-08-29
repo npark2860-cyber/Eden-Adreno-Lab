@@ -1,15 +1,15 @@
-name: Build dc95 X1 Waker Stage G
+name: Build dc95 X1 Waker Stage H
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: dc95-x1-waker-stage-g-${{ github.ref }}
+  group: dc95-x1-waker-stage-h-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: dc95 ARM64 / X1 Waker Stage G
+    name: dc95 ARM64 / X1 Waker Stage H
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -155,7 +155,7 @@ jobs:
           cp lab/src/core/x1_waker_stage_g_profiler.h eden/src/core/x1_waker_stage_g_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_stage_g_attribution.py eden
 
-      - name: Verify Stage G before configure
+      - name: Verify Stage G before Stage H
         shell: bash
         run: |
           set -euo pipefail
@@ -213,6 +213,48 @@ jobs:
               raise SystemExit('Stage F dynamic producer accessor count mismatch')
           PY
 
+      - name: Snapshot pre-Stage-H invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .x1-stage-h-precheck
+          mkdir -p .x1-stage-h-precheck
+          cp eden/src/core/loader/deconstructed_rom_directory.cpp .x1-stage-h-precheck/deconstructed-pre-h.cpp
+          cp eden/src/core/hle/kernel/k_scheduler.cpp .x1-stage-h-precheck/kscheduler-pre-h.cpp
+          cp eden/src/core/x1_waker_stage_g_profiler.h .x1-stage-h-precheck/stage-g-pre-h.h
+          grep -c 'modules.insert_or_assign(load_addr, module)' .x1-stage-h-precheck/deconstructed-pre-h.cpp > .x1-stage-h-precheck/module-insert-count
+          grep -c 'LOG_DEBUG(Loader, "loaded module {} @ {:#x}", module, load_addr)' .x1-stage-h-precheck/deconstructed-pre-h.cpp > .x1-stage-h-precheck/module-debug-count
+
+      - name: Apply Stage H guest module mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_h_module_mapping.py eden
+
+      - name: Verify Stage H before configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_h_module_mapping.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py
+
+          test "$(grep -c '\[X1-WAKERH\]' eden/src/core/loader/deconstructed_rom_directory.cpp)" = 1
+          test "$(cat .x1-stage-h-precheck/module-insert-count)" = "$(grep -c 'modules.insert_or_assign(load_addr, module)' eden/src/core/loader/deconstructed_rom_directory.cpp)"
+          test "$(cat .x1-stage-h-precheck/module-debug-count)" = "$(grep -c 'LOG_DEBUG(Loader, "loaded module {} @ {:#x}", module, load_addr)' eden/src/core/loader/deconstructed_rom_directory.cpp)"
+          grep -q 'x1_address_arbiter_attribution_log.GetValue()' eden/src/core/loader/deconstructed_rom_directory.cpp
+          grep -q 'module={} base={:#x} end={:#x} size={:#x}' eden/src/core/loader/deconstructed_rom_directory.cpp
+          ! grep -Eqi '0x85f12528|0x85f12420|0x85edea8c|0x85edeb40|0x80|0x81' \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_h_module_mapping.py
+          ! grep -Eqi '0x85f12528|0x85f12420|0x85edea8c|0x85edeb40|0x80|0x81' \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py
+          diff -u .x1-stage-h-precheck/kscheduler-pre-h.cpp eden/src/core/hle/kernel/k_scheduler.cpp
+          diff -u .x1-stage-h-precheck/stage-g-pre-h.h eden/src/core/x1_waker_stage_g_profiler.h
+          ! git -C eden diff -- src/core/loader/deconstructed_rom_directory.cpp | \
+            grep -E '^\+.*(sleep_for|sleep_until|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield|QueueBuffer\(|swap_interval|gpu_fence_behavior|WaitForAddress\(|SignalToAddress\()'
+
       - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
         id: msys2
         uses: msys2/setup-msys2@v2
@@ -231,7 +273,7 @@ jobs:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
 
-      - name: Build dc95 ARM64 X1 Stage G
+      - name: Build dc95 ARM64 X1 Stage H
         shell: msys2 {0}
         working-directory: eden
         run: cmake --build build
@@ -240,7 +282,7 @@ jobs:
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: dc95cd09ee-x1-waker-stage-g
+          ARTIFACT_REF: dc95cd09ee-x1-waker-stage-h
           MSYS_TOOLCHAIN: CLANGARM64
         run: ./.ci/package/windows.sh
 
@@ -254,14 +296,15 @@ jobs:
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_f_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_g_attribution.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_guest_post_wait_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_frame_cadence.py extras/ -Force
-          "Stage G focused CPU-slice PC/LR attribution for only the Stage F dynamically armed producer pair; exact Eden dc95cd09eea9749250fe31a3072684d341d19417; Ubuntu static validation run 33242026006" | Set-Content -Encoding UTF8 extras/WAKER_STAGE_G.txt
+          "Stage H bounded loader module-range reporting plus offline Stage G PC/LR module+offset normalization; exact Eden dc95cd09eea9749250fe31a3072684d341d19417; Ubuntu static validation run 33246317401" | Set-Content -Encoding UTF8 extras/WAKER_STAGE_H.txt
 
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-dc95-X1-waker-stage-g
+          name: Eden-dc95-X1-waker-stage-h
           path: |
             eden/artifacts/*
             extras/*
