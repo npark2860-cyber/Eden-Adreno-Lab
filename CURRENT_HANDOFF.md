@@ -7,8 +7,8 @@ Updated: 2026-08-29 KST
 - repository: `npark2860-cyber/Eden-Adreno-Lab`
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
-- current source branch: `exp/x1-waker-stage-g-producer-cpu-attribution`
-- Stage G pre-implementation repository snapshot: `4281991be0790584247de71c071e04c4374a6d74`
+- current source branch: `exp/x1-waker-stage-h-module-callpath-mapping`
+- Stage H base repository HEAD: `59cbc61cafe8c1ae7360dc7e04e6f884c7a74512`
 
 Primary records:
 
@@ -24,11 +24,14 @@ Primary records:
 - Stage G implementation/static: `DEBUG_HISTORY_20260829_WAKER_STAGE_G_IMPLEMENTED.md`
 - Stage G ARM precheck failure: `DEBUG_HISTORY_20260829_WAKER_STAGE_G_ARM_PRECHECK_FAILURE.md`
 - Stage G build/runtime: `DEBUG_HISTORY_20260829_WAKER_STAGE_G_RUNTIME.md`
+- Stage H implementation/static: `DEBUG_HISTORY_20260829_WAKER_STAGE_H_IMPLEMENTED.md`
 - next action: `NEXT_ACTION_WAKER_STAGE_H.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
 **ARM64 rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
+
+Runtime-observed TIDs, guest addresses, PC and LR values are observations only and must not be hardcoded.
 
 ## Persistent ARM workflow
 
@@ -36,21 +39,25 @@ Path:
 
 `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
 
-Current workflow name:
+Current prepared workflow name:
 
-`Build dc95 X1 Waker Stage G`
+`Build dc95 X1 Waker Stage H`
 
 Trigger:
 
 `workflow_dispatch` only.
 
+Future artifact:
+
+`Eden-dc95-X1-waker-stage-h`
+
 Do not trigger it without a fresh explicit ARM64 authorization.
 
 ## Latest successful ARM64 build — Stage G SUCCESS
 
-A first Stage G ARM attempt failed in pre-configure verification because a Git-Bash `/tmp/...` snapshot path was not visible to native Windows Python. It did not reach MSYS2/configure/compile. That attempt is recorded separately and was not rerun.
+A first Stage G ARM attempt failed in pre-configure verification because a Git-Bash `/tmp/...` snapshot path was not visible to native Windows Python. It did not reach MSYS2/configure/compile and was not rerun.
 
-After the workflow precheck was fixed to a workspace-relative path, a fresh authorization was used for exactly one new attempt:
+After the workflow precheck was fixed, a fresh authorization was used for exactly one new attempt:
 
 - workflow: `Build dc95 X1 Waker Stage G`
 - run: `33244399213`
@@ -58,15 +65,10 @@ After the workflow precheck was fixed to a workspace-relative path, a fresh auth
 - attempt: `1`
 - event: `workflow_dispatch`
 - build HEAD: `573ba79f2a0a0ba534993d314e113d2f9fb7d1c5`
-- exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
 - exact dc95 verification: success
 - retained Stage A-F reconstruction: success
-- Stage G transplant: success
-- Stage G pre-configure verification: success
-- MSYS2 CLANGARM64 setup: success
-- configure: success
-- ARM64 compile: success
-- package/upload: success
+- Stage G transplant/pre-configure verification: success
+- MSYS2 / configure / ARM64 compile / package / upload: success
 - conclusion: success
 - retry/rerun: none
 
@@ -77,7 +79,7 @@ Artifact:
 - size: `31,416,415` bytes
 - SHA-256: `38ccf37cc28cb5123b5c4018117b4f53a651bc0e77488955dddaf9093c98a7a1`
 
-Current ARM64 authorization: **NONE**.
+No Stage H ARM64 attempt has occurred.
 
 ## Closed historical chain
 
@@ -85,130 +87,59 @@ Do not reopen without new evidence:
 
 - Draw reason-level barrier owner = `PostCopyBarrier`.
 - Draw outside-RP large texture parent = `FillImageViews`.
-- repeated alias copies are not trivial unchanged-state duplication; blind alias dedupe remains rejected.
+- repeated alias copies are not trivial unchanged-state duplication; blind alias dedupe rejected.
 - exact dc95 `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`.
 - dominant Uniform path is adaptive mapped fast stream/re-stream.
-- classic-cache fallback A/B did not break the gameplay ceiling.
-- raw QueueBuffer swap2 ~= nominal 30-FPS opportunity; swap3 ~= nominal 20-FPS opportunity; VI ~= 60 Hz.
+- classic-cache fallback did not break the gameplay ceiling.
+- QueueBuffer swap2 ~= nominal 30-FPS opportunity; swap3 ~= nominal 20-FPS opportunity; VI ~= 60 Hz.
 - raw3->effective2 clamp did not improve upstream frame generation.
-- DFPS is not the root.
+- DFPS is not root cause.
 - BufferQueue free-slot/backpressure is closed as primary owner.
 - GPU worker is predominantly waiting for command supply.
 - NVDRV handler / SubmitGPFIFO / locks / fence / syncpoint are not the missing interval owner.
-- dominant guest submitter in tested runs = observed `tid=0x53`.
-- NVDRV IPC dispatch is about `0.02-0.03 ms/request`.
-- host scheduler starvation is closed as the primary owner for both the Stage D dynamic-waker slowdown and the Stage F producer slowdown.
+- NVDRV IPC dispatch ~= `0.02-0.03 ms/request`.
+- host scheduler starvation is closed as primary owner for both Stage D dynamic-waker and Stage F producer slowdown.
 
-Runtime-observed TIDs, guest addresses, PC and LR values are observations only and must not be hardcoded.
+## Stage A / B — COMPLETE
 
-## Stage A — COMPLETE
+Stage A observed dominant submitter/victim `tid=0x53` and one stable per-process gameplay `WaitForAddress / WaitIfEqual / timeout=-1` key. Guest VA relocates between launches; dynamic latching is mandatory.
 
-Dominant submitter / victim observed as `tid=0x53`.
-
-One stable per-process gameplay AddressArbiter key was found with:
-
-- `WaitForAddress`
-- `WaitIfEqual`
-- timeout `-1`
-
-Direct wait duration reconciles with reason-level Arbitration.
-
-Guest VA relocates between launches; dynamic latching is mandatory.
-
-## Stage B — COMPLETE
-
-Measured edge:
-
-- victim observed `tid=0x53`
-- matching waker observed `tid=0x4f`
-- signal `SignalAndIncrementIfEqual`
-- value `1`
-- count `-1`
-- one matching signal per rendered frame
-
-Direct victim wait ~= wait-start -> signal (`w2s`).
-
-Signal -> victim return (`s2e`) is essentially zero.
-
-Therefore the long victim delay is before the waker signal.
+Stage B observed matching waker `tid=0x4f`, `SignalAndIncrementIfEqual`, value `1`, count `-1`, one matching signal per rendered frame. Victim wait ~= wait-start -> signal (`w2s`), while signal -> victim return (`s2e`) is essentially zero. The long delay is before the waker signal.
 
 ## Stage C — RUNTIME COMPLETE
 
 Runtime: `eden_log(20260828-173023).txt`
 
-Stable fast:
+- stable fast inter-signal `33.722 ms`, Waiting `27.708 ms`, residual `6.014 ms`
+- stable slow inter-signal `55.022 ms`, Waiting `34.183 ms`, residual `20.839 ms`
 
-- inter-signal `33.722 ms`
-- total Waiting `27.708 ms`
-- residual `6.014 ms`
-
-Stable slow:
-
-- inter-signal `55.022 ms`
-- total Waiting `34.183 ms`
-- residual `20.839 ms`
-
-Stage C total Waiting remains valid. Its old entry-only named wait-reason breakdown is invalid and discarded.
+Stage C total Waiting remains valid. Its old entry-only named reason breakdown is invalid and discarded.
 
 ## Stage D — RUNTIME COMPLETE
 
 Runtime: `eden_log(20260829-024002).txt`
 
-Aggregate stable split:
+Stable slow-fast:
 
-| metric | stable swap2 | stable swap3 | slow-fast |
-|---|---:|---:|---:|
-| inter-signal | 33.454 ms | 56.972 ms | +23.518 ms |
-| corrected Waiting | 25.706 ms | 34.897 ms | +9.190 ms |
-| residual | 7.748 ms | 22.075 ms | +14.327 ms |
-| estimated waker CPU | 7.526 ms | 21.802 ms | +14.276 ms |
-| runnable-unscheduled | 0.239 ms | 0.307 ms | +0.068 ms |
+- inter-signal `+23.518 ms`
+- corrected Waiting `+9.190 ms`
+- residual `+14.327 ms`
+- estimated dynamic-waker CPU `+14.276 ms`
+- runnable-unscheduled only `+0.068 ms`
 
-Corrected slow Waiting is overwhelmingly Arbitration:
-
-- ConditionVar `17.252 -> 0.469 ms`
-- Arbitration `7.440 -> 32.339 ms`
-- Sleep `0.996 -> 1.358 ms`
-- Synchronization `0.019 -> 0.687 ms`
-- IPC `0.023 -> 0.038 ms`
-- true None `0`
-
-Host scheduler starvation is closed for the dynamic-waker slowdown.
-
-The separate dynamic-waker CPU growth branch remains open.
+Corrected slow Waiting is overwhelmingly Arbitration (`7.440 -> 32.339 ms`). Host scheduler starvation is closed for the waker. The separate dynamic-waker CPU growth branch remains open.
 
 ## Stage E — RUNTIME COMPLETE
 
 Runtime: `eden_log(20260829-063358).txt`
 
-Stage E direct `WaitForAddress` time reconciles with Stage D corrected Arbitration.
+Direct `WaitForAddress` timing reconciles with Stage D corrected Arbitration. The promoted key is repeated short synchronization, roughly 8-10 waits/frame: fast about `0.5-0.6 ms` each, slow about `2.7-3.2 ms` each.
 
-Observed dominant promoted key in that run:
-
-`0x210b05b39c`
-
-Observed secondary key:
-
-`0x2181c09eb4`
-
-The dominant key is repeated short synchronization, not one single ~32 ms wait per rendered frame:
-
-- roughly 8-10 waits/frame
-- fast per-wait about `0.5-0.6 ms`
-- slow per-wait about `2.7-3.2 ms`
-
-Observed dominant signalers in that run:
-
-- `tid=0x80`
-- `tid=0x81`
-
-Signal -> dynamic-waker return remains essentially immediate, so the recursive delay is before the producer signal.
+Observed dominant signalers were `0x80 / 0x81`. Signal -> dynamic-waker return remains ~immediate, so the recursive delay is before producer signal.
 
 ## Stage F — RUNTIME COMPLETE
 
 Runtime: `eden_log(20260829-073615).txt`
-
-Stage F previously established the producer-side mixed branch:
 
 Producer 0 stable slow-fast:
 
@@ -219,7 +150,7 @@ Producer 0 stable slow-fast:
 - runnable-unscheduled `+0.373 ms`
 - Arbitration `+2.381 ms`
 
-Producer 1 stable slow-fast:
+Producer 1:
 
 - inter-signal `+7.100 ms`
 - corrected Waiting `+3.047 ms`
@@ -228,81 +159,26 @@ Producer 1 stable slow-fast:
 - runnable-unscheduled `+0.354 ms`
 - Arbitration `+2.881 ms`
 
-Waiting is about 96% Arbitration for both producers in both regimes.
-
-Do not collapse the CPU and Arbitration branches.
+Waiting is about 96% Arbitration. Keep CPU and Arbitration branches separate.
 
 ## Stage G — RUNTIME COMPLETE
 
-Runtime:
+Runtime: `eden_log(20260829-093642).txt`
 
-`eden_log(20260829-093642).txt`
+Clean comparison windows:
 
-Stage G goal:
+- pure swap2: frames `480, 600, 720, 840`
+- frame `960` transition excluded
+- pure swap3: frames `1080, 1200, 1320`
 
-> attribute only the Stage F producer CPU branch to saved guest PC/LR contexts at scheduler switch-out.
-
-### Stable runtime windows
-
-Raw QueueBuffer cadence:
-
-- frame 120: 109 swap2 / 11 swap3 — startup mixed
-- frame 240: 120 swap2 — pure, but Stage F/G not armed yet
-- frame 360: 94 swap2 / 26 swap3 — mixed/load transition
-- frames `480, 600, 720, 840`: pure swap2
-- frame `960`: 44 swap2 / 76 swap3 — transition/hitch, excluded
-- frames `1080, 1200, 1320`: pure swap3
-
-Stage F dynamically settled in this run on observed:
-
-- promoted key `0x210b65b39c`
-- producer 0 `tid=0x80`
-- producer 1 `tid=0x81`
-- cores `1 / 2`
-- priority `44 / 44`
-- candidate overflow `0`
-- tracking switch `0`
-
-These are observations only.
-
-### Stage F trend reproduced in the Stage G run
-
-Producer 0 interval-weighted stable comparison:
-
-| metric | pure swap2 | pure swap3 | slow-fast |
-|---|---:|---:|---:|
-| inter-signal | 6.001 ms | 11.525 ms | +5.524 ms |
-| corrected Waiting | 5.017 ms | 7.171 ms | +2.153 ms |
-| residual | 0.984 ms | 4.354 ms | +3.369 ms |
-| Stage F CPU | 0.922 ms | 4.096 ms | +3.173 ms |
-| runnable-unscheduled | 0.257 ms | 0.628 ms | +0.371 ms |
-| Arbitration | 4.833 ms | 6.864 ms | +2.031 ms |
-
-Producer 1:
-
-| metric | pure swap2 | pure swap3 | slow-fast |
-|---|---:|---:|---:|
-| inter-signal | 7.402 ms | 13.833 ms | +6.431 ms |
-| corrected Waiting | 6.185 ms | 8.912 ms | +2.727 ms |
-| residual | 1.216 ms | 4.921 ms | +3.705 ms |
-| Stage F CPU | 1.089 ms | 4.679 ms | +3.589 ms |
-| runnable-unscheduled | 0.357 ms | 0.678 ms | +0.321 ms |
-| Arbitration | 5.981 ms | 8.572 ms | +2.592 ms |
-
-The mixed CPU + Arbitration conclusion reproduces cleanly.
-
-### Stage G CPU reconciliation
-
-Stage G scheduler `cpuTicks` per producer interval vs Stage F CPU:
+Stage G scheduler `cpuTicks` per producer interval reconcile almost exactly with Stage F CPU:
 
 | producer | Stage G swap2 | Stage F swap2 | Stage G swap3 | Stage F swap3 |
 |---|---:|---:|---:|---:|
 | 0 | 0.92233 ms | 0.92206 ms | 4.09551 ms | 4.09553 ms |
 | 1 | 1.08955 ms | 1.08929 ms | 4.67808 ms | 4.67864 ms |
 
-This reconciliation is effectively exact at the aggregate level.
-
-Stage G sanity in armed stable windows:
+Stable sanity counters are clean:
 
 - `unknownN=0`
 - `identitySwitch=0`
@@ -310,118 +186,122 @@ Stage G sanity in armed stable windows:
 - `malStart=0`
 - `malTicks=0`
 - `clockMismatch=0`
-- priority/core metadata stable
 
-Instrumentation-mismatch decision-map case C is closed.
+Therefore instrumentation mismatch is closed.
 
-### Recurring saved guest contexts
+Stage G assigns each completed scheduler slice's exact `tick_diff` to the saved guest PC/LR at switch-out. This is a **slice-end execution context**, not literal time spent executing that one instruction.
 
-Interpretation guard:
-
-Stage G assigns a completed scheduler slice's exact `tick_diff` to the saved guest `PC/LR` at switch-out. It measures a slice-end execution context, not literal time spent executing the instruction at that PC.
-
-The dominant reported exact context family uses only two observed saved PCs:
+Recurring observed saved PCs:
 
 - `0x85f12528`
 - `0x85f12420`
 
-Dominant observed LR values include:
+Dominant observed LR family includes:
 
 - `0x85edea8c`
 - `0x85edeb40`
 - `0x85eeb78c`
 - `0x85ee1058`
 
-Producer 0 slow-fast CPU growth attribution:
+Four reported exact PC/LR contexts explain about `61% / 54%` of producer 0 / 1 CPU growth. Fixed 64-context overflow explains another material `36% / 44%` of slow-fast growth. Do not claim one PC/LR pair owns the whole branch.
 
-- `0x85f12420 / 0x85eeb78c`: `+0.755 ms/interval` ~= 23.8%
-- `0x85f12528 / 0x85edea8c`: `+0.686 ms/interval` ~= 21.6%
-- `0x85f12528 / 0x85edeb40`: `+0.446 ms/interval` ~= 14.1%
-- `0x85f12528 / 0x85ee1058`: `+0.055 ms/interval` ~= 1.7%
-- fixed-table overflow: `+1.154 ms/interval` ~= 36.4%
+The same saved-PC family also appears in the separate Stage D dynamic-waker reports, suggesting a shared runtime/synchronization endpoint is possible. Do not merge branches without module/caller evidence.
 
-Producer 1:
+## Stage H — IMPLEMENTED / UBUNTU STATIC COMPLETE
 
-- `0x85f12528 / 0x85edea8c`: `+0.836 ms/interval` ~= 23.3%
-- `0x85f12420 / 0x85eeb78c`: `+0.809 ms/interval` ~= 22.5%
-- `0x85f12528 / 0x85edeb40`: `+0.219 ms/interval` ~= 6.1%
-- `0x85f12528 / 0x85ee1058`: `+0.067 ms/interval` ~= 1.9%
-- fixed-table overflow: `+1.575 ms/interval` ~= 43.9%
+Implementation record:
 
-The four reported exact contexts explain about `61% / 54%` of producer 0 / producer 1 CPU growth. The fixed 64-context overflow is material in slow mode and must remain an explicit caveat.
+`DEBUG_HISTORY_20260829_WAKER_STAGE_H_IMPLEMENTED.md`
 
-Do not claim one exact PC/LR pair owns the entire producer CPU branch.
+Branch:
 
-### Cross-branch observation
+`exp/x1-waker-stage-h-module-callpath-mapping`
 
-The same observed saved-PC family also appears in the separate Stage D dynamic-waker reports. Stage D repeatedly reports waker saved `pc=0x85f12528` with dominant observed LRs `0x85edeb40` and `0x85edea8c`; one slow window reports `pc=0x85f12420`.
+Goal:
 
-Therefore the Stage G dominant saved endpoints may be a shared guest runtime/synchronization path rather than producer-specific game work.
+> normalize only the already-selected Stage G saved PC/LR contexts to ASLR-safe guest `module+offset` identities.
 
-Do not merge the producer CPU and Stage D waker CPU branches without module/call-path evidence.
+### Implementation shape
 
-### Stage E timing in the same run
+Stage H reuses exact dc95's existing static NSO load truth in `AppLoader_DeconstructedRomDirectory::Load()`.
 
-Promoted-key wait-start -> producer signal across stable windows:
+After each existing successful module load and `modules.insert_or_assign(load_addr, module)`, the transplant emits one bounded loader line under the existing address-arbiter diagnostic setting:
 
-- observed producer 0: about `0.477 -> 3.124 ms`
-- observed producer 1: about `0.522 -> 2.952 ms`
-- signal -> waker return remains about `0.01 ms`
+`[X1-WAKERH] module=<name> base=<guest VA> end=<guest VA> size=<bytes>`
 
-The delay remains before producer signal.
+No second module discovery system is created.
+
+Offline analyzer:
+
+`tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py`
+
+It joins Stage H ranges to Stage G top contexts and emits canonical identities such as `main+0x...` / `sdk+0x...`, retaining raw PC/LR for audit.
+
+Stage H does **not**:
+
+- add a scheduler hook;
+- alter Stage G hot-path PC/LR sampling;
+- widen `ContextSlotCount=64`;
+- hardcode observed TIDs, promoted address, PC or LR;
+- add per-switch logging;
+- mutate priority/affinity/yield/reschedule/waits/signals/GPU/QueueBuffer/cadence.
+
+### Ubuntu static validation
+
+- workflow: `Validate dc95 X1 Waker Stage H`
+- run: `33246317401`
+- job: `99084287770`
+- attempt: `1`
+- validation HEAD: `d39bfa3a814467f3b009202d626d4ee872db73f5`
+- runner: `ubuntu-latest`
+- conclusion: `success`
+
+Passed:
+
+- exact dc95 HEAD preserved;
+- transplant applies cleanly;
+- `git diff --check`;
+- transplant/analyzer `py_compile`;
+- one bounded `[X1-WAKERH]` log site;
+- existing module-map insertion/debug behavior preserved;
+- scheduler byte-for-byte unchanged by Stage H;
+- no hardcoded runtime observations;
+- no behavior-mutation tokens;
+- synthetic module+offset analyzer join with raw-address audit preservation.
+
+Temporary Ubuntu workflow was deleted after success.
 
 ## Current causal frontier
 
 Measured chain:
 
 GPU command starvation
--> dominant guest submitter / victim
+-> dominant guest submitter/victim
 -> dynamic waker
 -> promoted AddressArbiter handshake
 -> two dynamically selected producer threads
 -> producer Arbitration growth + producer CPU growth
--> Stage G CPU growth resolves to a small recurring saved-PC family plus material long-tail overflow
--> the same main saved-PC family is also observed at the separate dynamic waker
-
-The next question is not yet optimization. It is:
-
-> what ASLR-safe guest module/caller path do these repeated saved PC/LR contexts represent?
+-> Stage G resolves CPU growth to a small recurring saved-PC family plus material overflow
+-> Stage H is ready to normalize that family to ASLR-safe module/caller identities
 
 Still open in parallel:
 
-1. producer-side Arbitration recursion remains open;
-2. Stage D dynamic-waker CPU growth remains separately open.
+1. producer-side Arbitration recursion;
+2. separate Stage D dynamic-waker CPU growth.
 
 No optimization is justified yet.
 
-## Exact dc95 source path for the next mapping step
-
-Exact dc95 already tracks loaded NSO module bases and names.
-
-`AppLoader_DeconstructedRomDirectory::Load()` stores the existing module map as `base -> module name` while loading `rtld`, `main`, `subsdk*`, `sdk`.
-
-`AppLoader_DeconstructedRomDirectory::ReadNSOModules()` exposes it.
-
-`AppLoader_NCA::ReadNSOModules()` forwards it.
-
-This existing loader map should be reused for ASLR-safe `module+offset` normalization. Do not build a second broad module discovery system.
-
 ## Immediate next action / authorization gate
-
-Next action document:
-
-`NEXT_ACTION_WAKER_STAGE_H.md`
-
-Stage H goal:
-
-> map only the already-selected Stage G saved PC/LR contexts to ASLR-safe guest `module+offset` call paths using the existing exact-dc95 NSO module map.
-
-Do not widen the Stage G 64-slot histogram yet. First map the repeated dominant family.
 
 Current ARM64 authorization: **NONE**.
 
-A fresh `ㄱㄱ` at this point authorizes **Stage H implementation + Ubuntu/static validation only**.
+Stage H implementation/static is complete. No Stage H ARM64 attempt has occurred.
 
-It does **not** authorize an ARM64 build.
+A fresh `ㄱㄱ` after this handoff authorizes exactly **one** Stage H ARM64 attempt using:
 
-After Stage H implementation/static validation is reported, a separate fresh `ㄱㄱ` is required for exactly one ARM64 attempt. Failure never authorizes retry/rerun.
+- branch `exp/x1-waker-stage-h-module-callpath-mapping`
+- workflow `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
+
+The workflow is `workflow_dispatch` only.
+
+No retry/rerun/second attempt is allowed without another fresh explicit authorization, even if the single attempt fails.
