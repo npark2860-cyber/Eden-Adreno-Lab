@@ -8,139 +8,48 @@ Updated: 2026-08-29 KST
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
 - current source branch: `exp/x1-waker-stage-e-recursive-arbiter`
-- Stage B runtime record: `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
-- Stage C runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_C_RUNTIME.md`
-- Stage D implementation/build record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
-- Stage D runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_RUNTIME.md`
-- Stage E implementation/static record: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_IMPLEMENTED.md`
-- Stage E ARM pre-configure attempts record: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_ARM_PRECHECK_FAILURE.md`
-- next action: `NEXT_ACTION_WAKER_STAGE_E.md`
+- Stage B runtime: `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
+- Stage C runtime: `DEBUG_HISTORY_20260829_WAKER_STAGE_C_RUNTIME.md`
+- Stage D implementation/build: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
+- Stage D runtime: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_RUNTIME.md`
+- Stage E implementation/static: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_IMPLEMENTED.md`
+- Stage E ARM precheck failures: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_ARM_PRECHECK_FAILURE.md`
+- Stage E build/runtime: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_RUNTIME.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
 **ARM64 rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
 
-## Latest ARM64 attempt — Stage E PRE-CONFIGURE FAILURE #2
+## Latest successful ARM64 build — Stage E SUCCESS
 
-A fresh approval was consumed by exactly one second Stage E workflow attempt:
+- workflow: `Build dc95 X1 Waker Stage E`
+- run: `33231201850`
+- job: `99044246393`
+- attempt: `1`
+- build HEAD: `b750792e460f416a15ed1702c13232c19b9f6b4b`
+- exact Eden source: `dc95cd09eea9749250fe31a3072684d341d19417`
+- conclusion: `success`
+- exact dc95 verification: success
+- hardened Stage E pre-configure verification: success
+- MSYS2 CLANGARM64 setup: success
+- configure: success
+- ARM64 compile: success
+- package/upload: success
+- rerun/retry: none
 
-- workflow `Build dc95 X1 Waker Stage E`
-- run `33230727557`
-- job `99042975831`
-- attempt `1`
-- branch `exp/x1-waker-stage-e-recursive-arbiter`
-- build HEAD `72ca7f189611e24acb74494b63bbdeeba0ee73f5`
-- exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
-- conclusion `failure`
+Artifact:
 
-Passed before failure:
+- `Eden-dc95-X1-waker-stage-e`
+- id `9708884305`
+- size `31,402,413` bytes
+- SHA-256 `a07b9d4d02a2617d710e32d3baae8a5b868e00f81b3b4df4e1390ed5f56dab60`
+- expires 2026-09-12
 
-- exact dc95 checkout / verification
-- retained chain reconstruction
-- Stage A through C reconstruction
-- Stage D application
-- Stage E application
+Persistent ARM workflow was restored to manual-only `workflow_dispatch` immediately after the approved run was created.
 
-Failure point:
+Earlier Stage E ARM attempts `33230457489` and `33230727557` both failed only in workflow pre-configure guards before MSYS2/configure/compile. Their guard issues were corrected and Ubuntu parity run `33230953769` passed before the successful ARM build. Do not rerun them.
 
-`Verify Stage E before configure`
-
-Exact cause was a second workflow-only guard typo:
-
-- incorrect guard: `ShouldTrackSignalAddress`
-- actual Stage E API: `ShouldTrackPromotedSignalAddress`
-
-Therefore MSYS2 setup / configure / ARM64 C++ compile / package / upload were all skipped. No Stage E artifact was produced.
-
-No retry/rerun occurred.
-
-## Stage E first ARM64 attempt — PRE-CONFIGURE FAILURE #1
-
-- run `33230457489`
-- job `99042246285`
-- attempt `1`
-- build HEAD `0bab539c886a0c7b18be7ebe41476e81b7127a75`
-- conclusion `failure`
-
-It also passed exact dc95 / retained reconstruction / Stage A-D / Stage E apply, then failed at `Verify Stage E before configure`.
-
-Cause:
-
-- incorrect guard: `TopSlotCount = 4`
-- actual Stage E constants: `TopWaitCount = 4` and `TopSignalCount = 4`
-
-MSYS2/configure/compile/package/upload were skipped and no artifact was produced.
-
-## Stage E ARM pre-configure guard — HARDENED / UBUNTU PARITY SUCCESS
-
-After the second ARM precheck failure, the guard was audited against the actual Stage E transplant.
-
-Additional latent mismatch found before any further ARM run:
-
-- transplant generates local-variable call `x1_stage_e_profiler.RecordSignal(...)`
-- old ARM guard expected nonexistent `X1WakerStageEProfiler::Get().RecordSignal(...)`
-
-The old guard also compared cumulative Stage A-D+E files directly with exact dc95 for behavior-token checks. That was broader than the intended Stage E delta and could false-positive on retained instrumentation.
-
-The persistent ARM workflow was hardened to use a **pre-Stage-E snapshot**:
-
-1. reconstruct through Stage D;
-2. snapshot `svc_address_arbiter.cpp` and `vk_rasterizer.cpp`;
-3. record pre-E WaitAddressArbiter / SignalAddressArbiter / validation-helper counts;
-4. apply Stage E;
-5. verify the actual Stage E marker/API/hook forms;
-6. compare call/helper counts against pre-E;
-7. run behavior-changing diff guards against pre-E only.
-
-Persistent workflow hardening commit:
-
-`34c5d3e563c77395ea8d0834e67b3b210fa8406f`
-
-Ubuntu-only ARM-guard parity validation:
-
-- initial parity run `33230840202`, job `99043279158` — failure before full hardening
-- hardened parity run **`33230953769`**, job **`99043581687`** — **success**
-
-The successful parity reproduced the current ARM pre-configure path through:
-
-- exact dc95 checkout
-- retained diagnostic chain
-- Stage A-D reconstruction
-- pre-Stage-E invariant snapshot
-- Stage E apply
-- exact dc95 HEAD preservation
-- `git diff --check`
-- Python compile checks
-- actual Stage E API/marker checks
-- exactly one Stage E BeginWait hook
-- exactly one Stage E EndWait hook
-- exactly one `x1_stage_e_profiler.RecordSignal` hook
-- WaitAddressArbiter / SignalAddressArbiter count preservation vs pre-E
-- arbitration/signal validation-helper count preservation vs pre-E
-- no Stage-E-added kernel wait/yield/reschedule/priority/core-mask behavior
-- no Stage-E-added QueueBuffer/swap/fence behavior
-
-The temporary parity workflow was deleted after success.
-
-Persistent Stage E ARM workflow remains **manual-only `workflow_dispatch`**.
-
-No third ARM64 run was created. Current ARM64 authorization is **NONE**.
-
-## Latest successful ARM64 build — Stage D SUCCESS
-
-- run `33217783844`
-- job `99005198468`
-- attempt `1`
-- branch `exp/x1-waker-stage-d-cpu-scheduler`
-- build HEAD `faf518e70811ba9f0c1a754c14d5da8584753904`
-- exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
-- conclusion `success`
-- artifact `Eden-dc95-X1-waker-stage-d`
-- artifact id `9704658049`
-- size `31,387,303` bytes
-- SHA-256 `cd7e8e2f218a522ad9a90e8ccff8170461be1d40732c15bcf24bd0ebc1cef7b5`
-
-## Closed causal chain retained
+## Closed historical chain
 
 Do not reopen without new evidence:
 
@@ -148,28 +57,27 @@ Do not reopen without new evidence:
 - Draw outside-RP large texture parent = `FillImageViews`.
 - repeated alias copies are not trivial unchanged-state duplication; blind alias dedupe remains rejected.
 - exact dc95 `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`.
-- dominant Uniform path is mapped adaptive fast stream; heavy payload repeat does not make blind lifetime reuse safe.
+- dominant Uniform path is mapped adaptive fast stream; payload repeat does not make blind lifetime reuse safe.
 - classic-cache fallback did not break the gameplay ceiling.
 - raw QueueBuffer swap2 ~= nominal 30-FPS opportunity; swap3 ~= nominal 20-FPS opportunity; VI ~= 60 Hz.
-- swap3->effective2 clamp and DFPS did not raise upstream production rate.
+- raw3->effective2 clamp and DFPS did not raise upstream frame generation.
 - BufferQueue free-slot/backpressure is closed as primary owner.
 - GPU worker is mostly starved for command supply; active GPU-command work is not the missing interval.
 - long inter-submit gap exists before NVDRV handler entry; handler/SubmitGPFIFO/locks/fence/syncpoint are tiny.
 - dominant guest submitter in tested runs = `tid=0x53`, CPU share about 1-2%.
 - NVDRV IPC dispatch is about 0.02-0.03 ms/request; host service scheduling is not the missing owner.
 
-## Address Arbiter Stage A — COMPLETE
+## Stage A — COMPLETE
 
 Dominant submitter waits on one stable per-process gameplay AddressArbiter key:
 
 - victim / submitter: `tid=0x53` in tested runs
 - operation: `WaitIfEqual`
 - timeout: `-1`
-- direct `WaitForAddress` duration reconciles with reason-level `Arbitration`.
+- direct `WaitForAddress` duration reconciles with reason-level Arbitration.
+- guest VA relocates between launches, so target address is dynamically latched.
 
-Absolute guest VA relocates across launches, so the profiler dynamically latches the current run's target address.
-
-## Address Arbiter Stage B — COMPLETE
+## Stage B — COMPLETE
 
 Measured edge:
 
@@ -178,19 +86,15 @@ Measured edge:
 - signal `SignalAndIncrementIfEqual`
 - value `1`
 - count `-1`
-- normal gameplay one matching signal per rendered frame
-- `direct WaitForAddress ~= wait-start -> matching-signal (w2s)`
+- one matching signal per rendered frame
+- direct wait ~= wait-start -> signal (`w2s`)
 - signal -> victim return (`s2e`) essentially zero
 
 Therefore the long victim wait occurs before the waker signals.
 
 ## Stage C — RUNTIME COMPLETE
 
-Runtime:
-
-`eden_log(20260828-173023).txt`
-
-Stage C established the dynamic waker signal-to-signal total split only.
+Runtime: `eden_log(20260828-173023).txt`
 
 Stable fast:
 
@@ -204,33 +108,22 @@ Stable slow:
 - total Waiting `34.183 ms`
 - residual `20.839 ms`
 
-Its old named wait-reason breakdown is invalid because exact dc95 often assigns the debug wait reason after `BeginWait`.
+Stage C total Waiting remains valid. Its old entry-only named wait-reason breakdown is invalid because exact dc95 commonly assigns the debug reason after `BeginWait`.
 
 ## Stage D — RUNTIME COMPLETE
 
-Runtime:
-
-`eden_log(20260829-024002).txt`
+Runtime: `eden_log(20260829-024002).txt`
 
 Measured identity:
 
-- exact dc95
-- dynamic victim address `0x210b1bc120`
-- victim `tid=0x53`
+- dynamic victim `tid=0x53`
 - dynamic waker `tid=0x4f`
 - waker switches `0`
-- matching signal guest PC `0x85a03528`
+- matching signal guest PC stable within the run
 - waker priority `44`
-- latest active/current core `0/0`
 - malformed CPU/wait/interval `0`
 
-Stable block selection:
-
-- pure swap2: frames `480, 600, 720, 840, 960, 1080, 1320, 1440`
-- pure swap3: frames `1800, 1920, 2040, 2160, 2280`
-- transition frame 1680 excluded
-
-### Stage D aggregate split
+Aggregate stable split:
 
 | metric | stable swap2 | stable swap3 | slow-fast |
 |---|---:|---:|---:|
@@ -240,17 +133,9 @@ Stable block selection:
 | estimated waker CPU | 7.526 ms | 21.802 ms | +14.276 ms |
 | runnable-unscheduled | 0.239 ms | 0.307 ms | +0.068 ms |
 
-**Runnable/scheduler starvation is closed for this slowdown.**
+**Runnable/scheduler starvation is closed for the dynamic-waker slowdown.**
 
-Slowdown is mixed:
-
-- about +14.28 ms additional dynamic-waker CPU execution;
-- about +9.19 ms additional Waiting;
-- negligible runnable-unscheduled growth.
-
-### Corrected wait-reason mode shift
-
-Average corrected reason time per signal:
+Corrected wait-reason shift:
 
 | reason | stable swap2 | stable swap3 | slow-fast |
 |---|---:|---:|---:|
@@ -261,112 +146,128 @@ Average corrected reason time per signal:
 | IPC | 0.023 ms | 0.038 ms | +0.015 ms |
 | true None | 0.000 ms | 0.000 ms | 0.000 ms |
 
-Stable slow corrected Waiting is ~92.7% Arbitration.
+Slow corrected Waiting is overwhelmingly Arbitration. True None is zero in the tested run.
 
-True None branch is closed: unknown / SetActivity pinned / SetCoreMask pinned / process user-exception are all zero.
+Keep the separate dynamic-waker CPU growth branch open; Stage E/F must not silently merge it into the recursive wait dependency.
 
-Signal PC remains stable at `0x85a03528`; same two LR contexts remain. The second LR `0x859cfa8c` becomes more common in slow mode, but CPU-LR correlation is not yet causal proof.
+## Stage E — RUNTIME COMPLETE
 
-## Stage E — IMPLEMENTED / STATIC VALIDATED
+Runtime: `eden_log(20260829-063358).txt`
 
-Current branch:
+Environment:
 
-`exp/x1-waker-stage-e-recursive-arbiter`
+- Eden `HEAD-dc95cd09ee`
+- Windows 11 25H2 build 26220.9223
+- Adreno X1-85
+- driver 512.863.0
+- Vulkan 1.3.295
+- TOTK 1.2.1
+- Address Arbiter attribution ON
+- behavior-changing A/Bs OFF, including swap3->2 clamp
 
-New files:
+### Stage E direct-wait reconciliation
 
-- `src/core/x1_waker_stage_e_profiler.h`
-- `tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py`
-- `tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py`
+Stage E direct `WaitForAddress` time closely reconciles with Stage D corrected Arbitration in both fast and slow gameplay. Therefore the Stage D Arbitration bucket is confirmed as real AddressArbiter time and the Stage E hooks cover essentially all of it.
 
-New report:
+Representative fast frame 960:
 
-`[X1-WAKERE]`
+- Stage D inter `33.750 ms`
+- Stage D CPU `6.166 ms/signal`
+- Stage D Arbitration `655.440 ms / 120f`
+- Stage E direct wait `665.202 ms / 120f`
+- top0 `0x210b05b39c`: `624.914 ms / 120f`, `0.514 ms` average
+- top1 `0x2181c09eb4`: `30.968 ms / 120f`
 
-Stage E is observation-only and does not hardcode `tid=0x4f` or any process-specific absolute guest wait address.
+Representative fast frame 1080:
 
-### A. Dynamic-waker WaitForAddress aggregation
+- Stage D inter `35.559 ms`
+- Stage D CPU `9.047 ms/signal`
+- Stage D Arbitration `719.537 ms / 120f`
+- Stage E direct wait `735.168 ms / 120f`
+- top0 `0x210b05b39c`: `678.477 ms / 120f`, `0.591 ms` average
+- top1 `0x2181c09eb4`: `29.993 ms / 120f`
 
-At each `WaitForAddress` call, Stage E reuses Stage D's dynamically latched waker identity and observes only that thread.
+Stable slow windows rise to roughly:
 
-Fixed 16-slot aggregate fields:
+- Stage D Arbitration ~= `31 ms/frame`
+- Stage E direct wait ~= `31 ms/frame`
 
-- address
-- arbitration type
-- reference value / timeout and variation counts
-- call / completed count
-- total / average / max direct wait duration
-- success / timeout / other result
+### Dominant recursive key
 
-No per-event log flood.
+Dominant slow key:
 
-### B. One-key recursive promotion
+`0x210b05b39c`
 
-Every 120 rendered frames Stage E ranks the dynamic waker's direct `WaitForAddress` keys by total duration.
+It owns roughly `26 ms/frame` of the ~31 ms/frame slow Arbitration. Secondary key `0x2181c09eb4` contributes roughly another `4-5 ms/frame`.
 
-Only the top key is promoted for recursive matching `SignalToAddress` owner attribution in the following report window.
+Structural result:
 
-This creates an intentional one-window discovery lag. First report selects the key; later stable reports carry its signal-owner timing.
+- this is not one ~32 ms wait per frame;
+- the waker repeatedly waits on the same key roughly 8-10 times per frame;
+- fast per-wait latency is around `0.5-0.6 ms`;
+- slow per-wait latency rises to roughly `2.7-3.2 ms`;
+- wait count does not explode; each synchronization handshake becomes much slower.
 
-Promotion may switch dynamically if a different key becomes dominant. Stage E never tracks arbitrary wait addresses recursively in parallel.
+### Recursive signal owners
 
-### C. Recursive signal-owner attribution
+For promoted key `0x210b05b39c`, Stage E finds two dominant signalers in the measured run:
 
-For only the promoted key Stage E aggregates:
+- `tid=0x80`
+- `tid=0x81`
 
-- signaler guest TID
-- signal type
-- value / count + variation counts
-- signal calls and calls during the active promoted wait
-- wait-start -> signal (`w2s`) avg/max
-- signal -> waker wait return (`s2e`) avg/max
-- no-active / no-signal-return / overflow sanity
+They split promoted-key signals approximately evenly in slow gameplay.
 
-This moves the Stage B causal method exactly one AddressArbiter edge upstream.
+Representative slow frame 1440:
 
-### D. CPU branch remains separate
+- `tid=0x80`: 527 signals, `w2s ~= 2.371 ms`, `s2e ~= 0.011 ms`
+- `tid=0x81`: 518 signals, `w2s ~= 3.037 ms`, `s2e ~= 0.011 ms`
 
-Stage E intentionally does not add CPU-by-LR interval partitioning. The Stage D +14.28 ms CPU branch is already independently quantified and remains open.
+Representative fast frame 960:
 
-Do not merge the recursive wait producer with the CPU branch unless runtime evidence proves they are the same path.
+- `tid=0x80`: `w2s ~= 0.518 ms`
+- `tid=0x81`: `w2s ~= 0.497 ms`
+- signal -> waker return remains only about `0.005-0.007 ms`
 
-## Stage E source/static validation
+Therefore the slow recursive delay occurs before the two producer signals. Once either producer signals the promoted key, `tid=0x4f` returns essentially immediately.
 
-Original Ubuntu-only one-shot:
+Absolute producer TIDs and promoted guest address are runtime observations only. Stage F must dynamically identify them and must not hardcode `0x80`, `0x81`, or `0x210b05b39c`.
 
-- run `33230000239`
-- job `99041006308`
-- attempt `1`
-- conclusion `success`
+## Current causal frontier — Stage F
 
-Passed exact dc95 reconstruction, Stage A-D, Stage E apply, call-count/helper preservation, observation-only guards and analyzer smoke test.
+Closed dependency so far:
 
-The later hardened ARM pre-configure parity is also successful as recorded above.
+`producer A/B -> promoted AddressArbiter signal -> tid=0x4f -> tid=0x53 -> GPU submit`
 
-## Current causal frontier — Stage E build retry, then runtime
+The next question is:
 
-Stage E source/static validation and the hardened ARM pre-configure parity are complete, but no Stage E ARM64 binary exists yet because both separately authorized ARM attempts failed on workflow-only pre-configure guard mistakes before setup/configure/compile.
+> Why do the two dominant promoted-key producer threads take much longer to reach their signals in slow mode?
 
-A **fresh explicit one-attempt ARM64 authorization** is required before trying again.
+Stage F scope:
 
-After a successful Stage E build, the runtime question is:
+1. dynamically select the top two signaler TIDs for the current Stage E promoted key;
+2. use one-window discovery/arming if necessary; no hardcoded observed TIDs;
+3. for each selected producer, split signal-to-signal time into:
+   - interval
+   - corrected total Waiting
+   - residual
+   - actual guest CPU time using scheduler CPU ticks / CoreTiming clock ticks as in Stage D
+   - runnable-unscheduled = max(residual - CPU, 0)
+   - corrected wait-reason totals;
+4. report only every 120 rendered frames; no per-event flood;
+5. keep the Stage D waker CPU branch independent;
+6. do not add PC/LR callsite sampling yet unless Stage F proves CPU growth dominates;
+7. do not add broad all-thread scheduler tracing.
 
-> Which direct AddressArbiter wait made by the dynamically identified waker owns the ~32 ms slow Arbitration bucket, and which guest thread releases that promoted key?
+Decision map:
 
-Runtime decision:
-
-1. if one `top0` direct wait reconciles with slow Stage D Arbitration, follow only that key;
-2. if its `w2s` is essentially the direct wait and `s2e` tiny, move the frontier to its signaler TID before signal;
-3. if dominant wait key changes between swap2 and swap3, treat the key switch as the regime change;
-4. if several keys share time, retain only enough top contributors to explain most slow Arbitration;
-5. if direct waits do not reconcile with corrected Arbitration, audit instrumentation before optimization;
-6. regardless of result, keep the separate +14.28 ms CPU branch open until explicitly attributed.
-
-See `NEXT_ACTION_WAKER_STAGE_E.md`.
+- producer CPU dominates slow-fast growth -> next step is focused producer CPU callsite attribution;
+- producer Waiting dominates -> follow only the dominant corrected wait primitive/release owner;
+- runnable-unscheduled dominates -> reopen producer scheduling/core competition only for those dynamically selected producer threads;
+- mixed -> keep branches quantified, no premature collapse.
 
 ## Actions state / ARM64 authorization
 
-Persistent Stage E ARM workflow is manual-only `workflow_dispatch` and contains the hardened, Ubuntu-parity-validated pre-Stage-E snapshot guard.
+Persistent ARM workflow is manual-only `workflow_dispatch`.
 
 Current ARM64 build authorization: **NONE**.
 
