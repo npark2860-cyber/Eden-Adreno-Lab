@@ -134,7 +134,8 @@ jobs:
             lab/tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py \
             lab/tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py
           grep -q '\[X1-WAKERE\]' eden/src/core/x1_waker_stage_e_profiler.h
-          grep -q 'TopSlotCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'TopWaitCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'TopSignalCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'ShouldTrackThread' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'ShouldTrackSignalAddress' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'X1WakerStageEProfiler::Get().BeginWait' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
