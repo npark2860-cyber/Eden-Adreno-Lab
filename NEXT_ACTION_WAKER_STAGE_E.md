@@ -62,116 +62,85 @@ New source:
 - `tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py`
 - `tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py`
 
-### Dynamic waker wait aggregation
+Stage E dynamically observes only the Stage-D-latched waker's `WaitForAddress` calls, ranks them in a fixed 16-slot table, promotes one top-duration key per 120-frame block, and recursively attributes only that promoted key's matching `SignalToAddress` owner and `w2s/s2e` timing.
 
-No `tid=0x4f` hardcode.
+No observed TID or process-specific guest address is hardcoded. CPU-by-LR partition remains intentionally separate.
 
-Stage E reuses the Stage D dynamically latched waker identity and aggregates only that thread's `WaitForAddress` calls in a fixed 16-slot table by:
-
-- address
-- arbitration type
-- value / timeout + variation counts
-- call/completed count
-- total / avg / max direct wait duration
-- success / timeout / other result
-
-### One-key recursive promotion
-
-Every 120 rendered frames Stage E selects the waker wait key with the largest direct wait duration.
-
-Only that top key is promoted for matching `SignalToAddress` owner attribution in the following report window.
-
-This creates an intentional one-window discovery lag. Do not interpret the first `[X1-WAKERE]` block as having complete recursive signal-owner data.
-
-### Recursive signal-owner fields
-
-For only the promoted key Stage E reports:
-
-- signaler guest TID
-- signal type
-- value/count + variation counts
-- signal calls
-- signals occurring during the active promoted wait
-- wait-start -> signal (`w2s`) avg/max
-- signal -> waker-return (`s2e`) avg/max
-- no-active / no-signal-return / overflow sanity
-
-### CPU branch
-
-CPU-by-LR interval partitioning was intentionally deferred to keep Stage E causally narrow. Existing Stage D CPU and signal-LR observations remain the separate CPU branch.
-
-## Static validation
-
-Ubuntu-only run:
+Original Stage E Ubuntu static:
 
 - run `33230000239`
 - job `99041006308`
-- attempt `1`
 - conclusion `success`
 
-Passed:
+## Stage E ARM64 attempts — BOTH CONSUMED BEFORE COMPILE
 
-- exact dc95
-- retained chain
-- Stage A-D reconstruction
-- Stage E application
-- `git diff --check`
-- Python compile + analyzer smoke test
-- no hardcoded `0x4f`
-- no hardcoded process-specific `0x210...` wait address
-- original `WaitAddressArbiter` call count preserved
-- original `SignalAddressArbiter` call count preserved
-- validation helpers preserved
-- exactly one Stage E BeginWait / EndWait / RecordSignal hook
-- no kernel wait insertion
-- no scheduler priority/affinity mutation
-- no GPU/swap/cadence behavior mutation
-
-Temporary Ubuntu workflow was removed after success.
-
-## First Stage E ARM64 attempt — CONSUMED / PRE-CONFIGURE FAILURE
-
-Authorized run:
+### Attempt 1
 
 - run `33230457489`
 - job `99042246285`
-- attempt `1`
 - build HEAD `0bab539c886a0c7b18be7ebe41476e81b7127a75`
 - conclusion `failure`
 
-Passed:
+Failure point: `Verify Stage E before configure`.
 
-- exact dc95 checkout and verification
-- retained chain reconstruction
-- Stage A-D reconstruction
-- Stage E application
+Cause: workflow checked nonexistent `TopSlotCount = 4` instead of the real `TopWaitCount = 4` / `TopSignalCount = 4`.
 
-Failure:
+### Attempt 2
 
-`Verify Stage E before configure`
+- run `33230727557`
+- job `99042975831`
+- build HEAD `72ca7f189611e24acb74494b63bbdeeba0ee73f5`
+- conclusion `failure`
 
-Cause:
+Failure point: again `Verify Stage E before configure`.
 
-The workflow checked for nonexistent `TopSlotCount = 4`. Actual validated Stage E source defines:
+Cause: workflow checked nonexistent `ShouldTrackSignalAddress`; actual Stage E API is `ShouldTrackPromotedSignalAddress`.
 
-- `TopWaitCount = 4`
-- `TopSignalCount = 4`
+Both attempts successfully reached and applied Stage E. In both attempts:
 
-The workflow guard has been corrected in commit:
+- MSYS2 setup was skipped
+- CMake configure was skipped
+- ARM64 C++ compile was skipped
+- package/upload was skipped
+- artifact count was zero
+- no rerun/retry occurred
 
-`ece657ebcfb19f8e15ce1a73874f9ab980b0919f`
+Therefore neither failure is evidence of a Stage E C++ build failure.
 
-The workflow remains manual-only `workflow_dispatch`.
+## Hardened ARM guard — UBUNTU PARITY PASSED
 
-MSYS2 setup, configure, ARM64 compile, package and upload never ran. No Stage E artifact exists yet.
+After attempt 2, the ARM pre-configure validation was audited against the actual Stage E transplant.
 
-The consumed approval is not reusable. A second ARM64 attempt requires fresh explicit authorization.
+A third latent mismatch was removed: Stage E generates `x1_stage_e_profiler.RecordSignal(...)`, not `X1WakerStageEProfiler::Get().RecordSignal(...)`.
+
+The validation was also changed to the safer pre-Stage-E snapshot model:
+
+- reconstruct through Stage D
+- snapshot `svc_address_arbiter.cpp` and `vk_rasterizer.cpp`
+- record wait/signal/helper counts
+- apply Stage E
+- validate only Stage E delta against that snapshot
+
+Persistent workflow hardening commit:
+
+`34c5d3e563c77395ea8d0834e67b3b210fa8406f`
+
+Ubuntu parity attempts:
+
+- run `33230840202`, job `99043279158` — failed before full guard hardening
+- run **`33230953769`**, job **`99043581687`** — **success**
+
+The successful parity reproduced the current ARM pre-configure guard and passed exact dc95 reconstruction, Stage A-D, pre-E snapshot, Stage E apply, hook counts, call/helper preservation and behavior-diff guards.
+
+Temporary parity workflow was removed after success.
+
+Persistent ARM workflow remains **manual-only `workflow_dispatch`**.
 
 ## Exact next action
 
-Only after fresh explicit authorization for exactly one ARM64 attempt:
+Only after a fresh explicit authorization for exactly one ARM64 attempt:
 
-1. run the corrected manual-only Stage E ARM workflow exactly once;
+1. run the hardened manual-only Stage E ARM workflow exactly once;
 2. no automatic retry/rerun;
 3. if build succeeds, package artifact `Eden-dc95-X1-waker-stage-e`;
 4. run the same TOTK 1.2.1 field scenario long enough to contain stable swap2 and stable swap3 windows;
