@@ -1,11 +1,7 @@
 name: Build dc95 X1 Waker Stage G
 
 on:
-  push:
-    branches:
-      - exp/x1-waker-stage-g-producer-cpu-attribution
-    paths:
-      - .github/workflows/build-dc95-x1-address-arbiter-attribution.yml
+  workflow_dispatch:
 
 concurrency:
   group: dc95-x1-waker-stage-g-${{ github.ref }}
