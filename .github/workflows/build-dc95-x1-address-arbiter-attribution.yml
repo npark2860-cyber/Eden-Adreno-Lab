@@ -2,6 +2,11 @@ name: Build dc95 X1 Waker Stage E
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/x1-waker-stage-e-recursive-arbiter
+    paths:
+      - .github/workflows/build-dc95-x1-address-arbiter-attribution.yml
 
 concurrency:
   group: dc95-x1-waker-stage-e-${{ github.ref }}
