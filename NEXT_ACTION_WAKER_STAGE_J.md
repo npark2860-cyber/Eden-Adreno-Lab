@@ -1,114 +1,64 @@
-# NEXT ACTION — Waker Stage J Selected-Producer Caller Depth
+# NEXT ACTION — Waker Stage J Selected-Producer Caller Depth — COMPLETE
 
 Updated: 2026-08-29 KST
 
-## Source of truth
-
-Read first:
-
-- `CURRENT_HANDOFF.md`
-- `DEBUG_HISTORY_20260829_WAKER_STAGE_H_RUNTIME.md`
-- `DEBUG_HISTORY_20260829_WAKER_STAGE_I_SDK_DISASSEMBLY.md`
-- `DEBUG_HISTORY_20260829_WAKER_STAGE_J_IMPLEMENTED.md`
+Stage J implementation, Ubuntu/static validation, one explicitly authorized ARM64 build, runtime capture, parent-LR analysis, and offline parent-site reverse mapping are complete.
 
 Fixed Eden baseline:
 
 `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 
-Current source branch:
+Stage J branch:
 
 `exp/x1-waker-stage-j-caller-depth`
 
 Current ARM64 authorization: **NONE**.
 
-## Stage I result — COMPLETE
+## Completed records
 
-Exact dumped Nintendo SDK analysis resolved the recurring Stage G endpoints to:
+Read:
 
-- `nn::os::WaitLightEvent -> WaitForAddress(WaitIfEqual, value=1, timeout=-1)`
-- `nn::os::ReceiveLightMessageQueue -> WaitForAddress(WaitIfEqual, value=1, timeout=-1)`
-- `nn::os::detail::InternalCriticalSectionImplByHorizon::Enter -> ArbitrateLock`
+- `DEBUG_HISTORY_20260829_WAKER_STAGE_J_IMPLEMENTED.md`
+- `DEBUG_HISTORY_20260829_WAKER_STAGE_J_BUILD.md`
+- `DEBUG_HISTORY_20260829_WAKER_STAGE_J_RUNTIME.md`
 
-Stage G saved PC is the `ret` immediately after the blocking SVC wrapper. Its CPU ticks are the complete active guest slice leading to that blocker, not instruction-residency time at the `ret`.
+Stage J ARM build:
 
-Static reverse-call analysis found 73 direct `main` call sites to `WaitLightEvent` and 4 to `ReceiveLightMessageQueue`, so offline first-level caller analysis is not unique enough.
+- workflow `Build dc95 X1 Waker Stage J`
+- run `33249991294`
+- job `99093918714`
+- attempt 1
+- build HEAD `516162fd94ee751b7ac54ff68986f867329dcca7`
+- success
+- retry/rerun/additional ARM attempt: none
 
-## Stage J implementation/static — COMPLETE
+Artifact:
 
-Stage J adds exactly one extra caller level to the Stage F dynamically selected producer pair only.
+- `Eden-dc95-X1-waker-stage-j`
+- ID `9714363715`
+- size `31,423,548` bytes
+- SHA-256 `27b250b40b879eeeea0a33e8ded66d3e0e229aef22d67f4027715bedf240f7b8`
 
-At the existing Stage G selected-producer switch-out block it:
+Runtime:
 
-1. reuses the saved `Svc::ThreadContext`;
-2. reads saved `fp` (`x29`);
-3. validates the standard AArch64 frame-record parent-LR slot `[fp+8, fp+16)`;
-4. performs exactly one `ApplicationMemory().Read64()` when valid;
-5. records `(pc, lr, parent_lr)` with the same scheduler `tick_diff`;
-6. reports a fixed 64-slot/top-4 table every 120 frames.
+`eden_log(20260829-115839).txt`
 
-No new scheduler hook, thread discovery, broad sampling, per-switch logging, behavior mutation, or Stage G slot widening is added.
+Stage J established highly valid one-level parent-LR attribution and produced a mixed A/B result:
 
-Ubuntu validation:
-
-- attempt 1: run `33249591877`, job `99092859932` — failed only because the transplant self-check scanned its own forbidden-literal list;
-- self-check corrected;
-- attempt 2: run `33249656888`, job `99093038064` — **SUCCESS** on full exact-dc95 A-H reconstruction;
-- temporary validator deleted after success.
-
-## Persistent Stage J ARM workflow — PREPARED, NOT RUN
-
-Path:
-
-`.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
-
-Name:
-
-`Build dc95 X1 Waker Stage J`
-
-Trigger:
-
-`workflow_dispatch` only.
-
-Expected artifact:
-
-`Eden-dc95-X1-waker-stage-j`
-
-Current Stage J branch Actions history contains only the two Ubuntu `push` validation runs above. Stage J `workflow_dispatch` / Windows ARM64 run count is **0**.
-
-## Immediate next action — ARM gate
-
-A fresh explicit user authorization is required before exactly one Stage J Windows ARM64 attempt.
-
-A fresh `ㄱㄱ` received after this ready state means:
-
-> dispatch exactly one `Build dc95 X1 Waker Stage J` ARM64 attempt on `exp/x1-waker-stage-j-caller-depth`.
-
-One authorization = exactly one attempt. Failure does not authorize retry/rerun.
-
-Before dispatch, re-verify:
-
-- current branch HEAD;
-- persistent workflow remains `workflow_dispatch` only;
-- Stage J `workflow_dispatch` run count is still 0.
-
-After a successful build, runtime capture should use the same TOTK 1.2.1 conditions and collect enough clean swap2 and swap3 120-frame windows. Analyze `[X1-WAKERJ]` together with Stage H module ranges and Stage F/G cadence.
-
-## Runtime decision after Stage J
-
-A. Parent LR collapses dominant CPU-growth contexts to a small `main/subsdk0` family:
-
-> resolve those parent offsets offline before any optimization.
-
-B. Parent LR remains inside a generic SDK wrapper but forms a small stable family:
-
-> resolve that wrapper offline before adding further depth.
-
-C. Parent LR is invalid/unavailable for a material fraction:
-
-> inspect frame-record assumptions for those contexts before considering any broader stack method.
-
-D. Parent LR remains diffuse and overflow blocks a dominant family:
-
-> only then reconsider histogram representation/slot budget.
+- WaitLightEvent / ReceiveLightMessageQueue visible parents reach concrete `main` code;
+- the critical-section parent resolves to generic `nn::os::LockMutex`;
+- producer CPU growth + producer Arbitration growth both reproduce;
+- dynamic-waker CPU/Arbitration remains a separate branch;
+- host scheduler starvation remains rejected.
 
 No optimization is justified yet.
+
+## Superseding next action
+
+The active next-action document is now:
+
+`NEXT_ACTION_WAKER_STAGE_K.md`
+
+It first records the offline reverse-call exhaustion and defines the smallest possible one-more-frame caller-depth evidence if the investigation continues.
+
+No Stage K ARM64 attempt is authorized.
