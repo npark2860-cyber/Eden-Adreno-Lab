@@ -74,14 +74,17 @@ Exactly one fresh authorization was used for exactly one Stage H ARM64 attempt:
 - retry/rerun: none
 - additional ARM64 attempt: none
 
-Artifact:
+Canonical artifact metadata, confirmed by two consecutive direct GitHub artifact API queries after job completion:
 
 - name: `Eden-dc95-X1-waker-stage-h`
-- artifact ID: `9797889460`
-- size: `31,414,690` bytes
-- SHA-256: `d41d53def266705924a928716909532475f73e29a94c25ec513730aca4493d92`
-- created: `2026-08-29T10:24:02Z`
-- expires: `2026-11-27T10:23:59Z`
+- artifact ID: `9713380302`
+- size: `31,419,464` bytes
+- SHA-256: `ff166f3f39c695c1e8e879a7ecbfeca2916028f3318802123bed584775fe4d90`
+- created: `2026-08-29T10:24:24Z`
+- expires: `2026-09-12T10:24:22Z`
+- expired: `false`
+
+An earlier transient artifact metadata reading returned different values. It was discarded after the repeated direct artifact API queries above agreed exactly; the values in this handoff are canonical.
 
 A follow-up `ㄱㄱ` arrived while this same run was still active. It was used only to resolve the already-running attempt and was **not** consumed as authorization for a second ARM64 run. Current ARM64 authorization remains `NONE`.
 
