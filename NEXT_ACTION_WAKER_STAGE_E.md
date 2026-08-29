@@ -1,4 +1,4 @@
-# NEXT ACTION — Waker Stage E ARM64 Runtime
+# NEXT ACTION — Waker Stage E ARM64 Build Retry / Runtime
 
 Updated: 2026-08-29 KST
 
@@ -9,6 +9,7 @@ Read first:
 - `CURRENT_HANDOFF.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_D_RUNTIME.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_E_IMPLEMENTED.md`
+- `DEBUG_HISTORY_20260829_WAKER_STAGE_E_ARM_PRECHECK_FAILURE.md`
 
 Fixed Eden baseline:
 
@@ -128,20 +129,59 @@ Passed:
 
 Temporary Ubuntu workflow was removed after success.
 
+## First Stage E ARM64 attempt — CONSUMED / PRE-CONFIGURE FAILURE
+
+Authorized run:
+
+- run `33230457489`
+- job `99042246285`
+- attempt `1`
+- build HEAD `0bab539c886a0c7b18be7ebe41476e81b7127a75`
+- conclusion `failure`
+
+Passed:
+
+- exact dc95 checkout and verification
+- retained chain reconstruction
+- Stage A-D reconstruction
+- Stage E application
+
+Failure:
+
+`Verify Stage E before configure`
+
+Cause:
+
+The workflow checked for nonexistent `TopSlotCount = 4`. Actual validated Stage E source defines:
+
+- `TopWaitCount = 4`
+- `TopSignalCount = 4`
+
+The workflow guard has been corrected in commit:
+
+`ece657ebcfb19f8e15ce1a73874f9ab980b0919f`
+
+The workflow remains manual-only `workflow_dispatch`.
+
+MSYS2 setup, configure, ARM64 compile, package and upload never ran. No Stage E artifact exists yet.
+
+The consumed approval is not reusable. A second ARM64 attempt requires fresh explicit authorization.
+
 ## Exact next action
 
 Only after fresh explicit authorization for exactly one ARM64 attempt:
 
-1. build current Stage E branch against exact dc95;
+1. run the corrected manual-only Stage E ARM workflow exactly once;
 2. no automatic retry/rerun;
-3. run the same TOTK 1.2.1 field scenario long enough to contain stable swap2 and stable swap3 windows;
-4. collect at minimum:
+3. if build succeeds, package artifact `Eden-dc95-X1-waker-stage-e`;
+4. run the same TOTK 1.2.1 field scenario long enough to contain stable swap2 and stable swap3 windows;
+5. collect at minimum:
    - `[X1-WAKERE]`
    - `[X1-WAKERD]`
    - `[X1-ADDRSIG]`
    - `[X1-ADDRARB]`
    - raw QueueBuffer cadence;
-5. compare pure swap2 and pure swap3 120-frame blocks.
+6. compare pure swap2 and pure swap3 120-frame blocks.
 
 ## Runtime decision tree
 
