@@ -137,7 +137,7 @@ jobs:
           grep -q 'TopWaitCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'TopSignalCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'ShouldTrackThread' eden/src/core/x1_waker_stage_e_profiler.h
-          grep -q 'ShouldTrackSignalAddress' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'ShouldTrackPromotedSignalAddress' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'X1WakerStageEProfiler::Get().BeginWait' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
           grep -q 'X1WakerStageEProfiler::Get().RecordSignal' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
           grep -q 'X1WakerStageEProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
