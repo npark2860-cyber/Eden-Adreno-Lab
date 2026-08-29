@@ -1,0 +1,166 @@
+name: One-shot X1 Waker Stage F Static
+
+on:
+  push:
+    branches:
+      - exp/x1-waker-stage-f-producer-attribution
+    paths:
+      - .github/workflows/one-shot-x1-waker-stage-f-static.yml
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v4
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout exact known-good Eden source
+        uses: actions/checkout@v4
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify exact dc95 checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+
+      - name: Apply retained non-scheduler patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          for f in src/video_core/renderer_vulkan/vk_buffer_cache.cpp src/video_core/renderer_vulkan/vk_compute_pipeline.cpp src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
+            test -s "$out"
+            git -C eden apply --ignore-whitespace "../$out"
+          done
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
+      - name: Recreate retained X1 diagnostic chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+          python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+          python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+          python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_other_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_texture_fill_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_copy_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_payload_fingerprint.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_cache_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py eden
+          python lab/tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_diagnostic_harness.py eden
+
+      - name: Recreate focused attribution layers through Stage C
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h eden/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_frame_build_attribution.py eden
+          cp lab/src/video_core/x1_gpu_command_profiler.h eden/src/video_core/x1_gpu_command_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_gpu_command_attribution.py eden
+          cp lab/src/video_core/x1_gpu_submit_profiler.h eden/src/video_core/x1_gpu_submit_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_gpu_submit_gap_attribution.py eden
+          cp lab/src/video_core/x1_guest_submit_profiler.h eden/src/video_core/x1_guest_submit_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py eden
+          cp lab/src/core/x1_nvdrv_ipc_dispatch_profiler.h eden/src/core/x1_nvdrv_ipc_dispatch_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_nvdrv_ipc_dispatch_gap.py eden
+          cp lab/src/core/x1_guest_post_wait_profiler.h eden/src/core/x1_guest_post_wait_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_guest_post_wait_attribution.py eden
+          cp lab/src/core/x1_address_arbiter_profiler.h eden/src/core/x1_address_arbiter_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py eden
+          cp lab/src/core/x1_waker_pre_signal_profiler.h eden/src/core/x1_waker_pre_signal_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py eden
+
+      - name: Apply Stage D and Stage E
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/core/x1_waker_stage_d_profiler.h eden/src/core/x1_waker_stage_d_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py eden
+          cp lab/src/core/x1_waker_stage_e_profiler.h eden/src/core/x1_waker_stage_e_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py eden
+
+      - name: Snapshot pre-Stage-F invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp /tmp/svc-pre-f.cpp
+          cp eden/src/core/hle/kernel/k_thread.cpp /tmp/kthread-pre-f.cpp
+          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp /tmp/rasterizer-pre-f.cpp
+          grep -c 'WaitAddressArbiter(address' /tmp/svc-pre-f.cpp > /tmp/wait-count
+          grep -c 'SignalAddressArbiter(address' /tmp/svc-pre-f.cpp > /tmp/signal-count
+          grep -c 'IsValidArbitrationType' /tmp/svc-pre-f.cpp > /tmp/arb-valid-count
+          grep -c 'IsValidSignalType' /tmp/svc-pre-f.cpp > /tmp/sig-valid-count
+
+      - name: Apply Stage F producer attribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/core/x1_waker_stage_f_profiler.h eden/src/core/x1_waker_stage_f_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_f_attribution.py eden
+
+      - name: Verify Stage F static invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_f_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_f_attribution.py
+
+          grep -q '\[X1-WAKERF\]' eden/src/core/x1_waker_stage_f_profiler.h
+          grep -q 'ProducerCount = 2' eden/src/core/x1_waker_stage_f_profiler.h
+          grep -q 'CandidateSlotCount = 16' eden/src/core/x1_waker_stage_f_profiler.h
+          grep -q 'SelectNextTracking' eden/src/core/x1_waker_stage_f_profiler.h
+          grep -q 'RecordPromotedSignal' eden/src/core/x1_waker_stage_f_profiler.h
+          grep -q 'RecordThreadStateTransition' eden/src/core/x1_waker_stage_f_profiler.h
+          grep -q 'runUnschedAvg' eden/src/core/x1_waker_stage_f_profiler.h
+          ! grep -qi '0x80' eden/src/core/x1_waker_stage_f_profiler.h
+          ! grep -qi '0x81' eden/src/core/x1_waker_stage_f_profiler.h
+          ! grep -Eqi '0x210[a-f0-9]+' eden/src/core/x1_waker_stage_f_profiler.h
+          ! grep -q 'RecordLr' eden/src/core/x1_waker_stage_f_profiler.h
+          ! grep -q 'guest_lr' eden/src/core/x1_waker_stage_f_profiler.h
+
+          test "$(grep -c 'X1WakerStageFProfiler::Get().RecordPromotedSignal' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)" = 1
+          test "$(grep -c 'X1WakerStageFProfiler::Get().RecordThreadStateTransition' eden/src/core/hle/kernel/k_thread.cpp)" = 1
+          test "$(grep -c 'X1WakerStageFProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
+          test "$(grep -c 'X1WakerStageFProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
+
+          test "$(cat /tmp/wait-count)" = "$(grep -c 'WaitAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          test "$(cat /tmp/signal-count)" = "$(grep -c 'SignalAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          test "$(cat /tmp/arb-valid-count)" = "$(grep -c 'IsValidArbitrationType' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          test "$(cat /tmp/sig-valid-count)" = "$(grep -c 'IsValidSignalType' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+
+          ! diff -u /tmp/svc-pre-f.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp | \
+            grep -E '^\+.*(WaitAddressArbiter\(|SignalAddressArbiter\(|sleep_for|sleep_until|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield)'
+          ! diff -u /tmp/kthread-pre-f.cpp eden/src/core/hle/kernel/k_thread.cpp | \
+            grep -E '^\+.*(BeginWait\(|EndWait\(|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield)'
+          ! diff -u /tmp/rasterizer-pre-f.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
+            grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
+
+          cat > /tmp/stage-f.log <<'EOF'
+          [X1-WAKERF] frame=240 frames=120 trackedAddr=0x1234 nextAddr=0x1234 next0=0x80/500x next1=0x81/480x p0Tid=0x80 p0signals=500 p0intervals=499 p0interAvg=6.000ms p0interMax=10.000ms p0waitAvg=4.000ms p0residualAvg=2.000ms p0cpuAvg=1.900ms p0cpuMax=4.000ms p0runUnschedAvg=0.100ms p0runUnschedMax=0.500ms p0noneN=0 p0none=0.000ms p0sleepN=1 p0sleep=1.000ms p0ipcN=2 p0ipc=2.000ms p0syncN=3 p0sync=3.000ms p0condN=4 p0cond=4.000ms p0arbN=5 p0arb=5.000ms p0suspN=0 p0susp=0.000ms p0prio=44 p0activeCore=0 p0currentCore=0 p0cpuOver=0 p0malCpu=0 p0malWait=0 p0malInt=0 p1Tid=0x81 p1signals=480 p1intervals=479 p1interAvg=6.200ms p1interMax=11.000ms p1waitAvg=4.100ms p1residualAvg=2.100ms p1cpuAvg=2.000ms p1cpuMax=4.200ms p1runUnschedAvg=0.100ms p1runUnschedMax=0.500ms p1noneN=0 p1none=0.000ms p1sleepN=1 p1sleep=1.000ms p1ipcN=2 p1ipc=2.000ms p1syncN=3 p1sync=3.000ms p1condN=4 p1cond=4.000ms p1arbN=5 p1arb=5.000ms p1suspN=0 p1susp=0.000ms p1prio=44 p1activeCore=1 p1currentCore=1 p1cpuOver=0 p1malCpu=0 p1malWait=0 p1malInt=0 candidateOverflow=0 trackingSwitch=0
+          EOF
+          python lab/tools/adreno_lab/analyze_x1_waker_stage_f_attribution.py /tmp/stage-f.log | grep -q '0x80'
+          python lab/tools/adreno_lab/analyze_x1_waker_stage_f_attribution.py /tmp/stage-f.log | grep -q '0x81'
