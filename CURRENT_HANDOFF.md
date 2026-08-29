@@ -10,28 +10,33 @@ Updated: 2026-08-29 KST
 - current source branch: `exp/x1-waker-stage-d-cpu-scheduler`
 - Stage B runtime record: `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
 - Stage C runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_C_RUNTIME.md`
-- Stage D implementation/static record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
+- Stage D implementation/build record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
 - next action: `NEXT_ACTION_WAKER_STAGE_D.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
 **ARM64 rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
 
-## Latest ARM64 build — Stage C SUCCESS
+## Latest ARM64 build — Stage D SUCCESS
 
-- run `33190793610`
-- job `98915420071`
+- run `33217783844`
+- job `99005198468`
 - attempt `1`
-- build branch `exp/x1-waker-pre-signal-attribution`
-- build HEAD `7fdb505cda0af8559e5cea600721dc2cb17ac38b`
+- branch `exp/x1-waker-stage-d-cpu-scheduler`
+- build HEAD `faf518e70811ba9f0c1a754c14d5da8584753904`
+- exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
 - conclusion `success`
-- exact dc95 verify / Stage C apply / configure / ARM64 compile / package / upload: all `success`
-- artifact `Eden-dc95-X1-waker-stage-c`
-- artifact id `9694545153`
-- size `31,377,910` bytes
-- SHA-256 `c47e008a951ce3a974a9694d2b7ee8b06c4fd4379b387ad687a6e7b5f35e91b0`
+- exact dc95 verify / retained chain / Stage A-C / Stage D apply+verify / MSYS2 / configure / ARM64 compile / package / upload: all `success`
+- artifact `Eden-dc95-X1-waker-stage-d`
+- artifact id `9704658049`
+- size `31,387,303` bytes
+- SHA-256 `cd7e8e2f218a522ad9a90e8ccff8170461be1d40732c15bcf24bd0ebc1cef7b5`
+- created `2026-08-28T23:12:10Z`
+- expires `2026-09-11T23:12:08Z`
 
-No rerun occurred. Persistent ARM workflow was restored to manual-only `workflow_dispatch` after the approved run.
+No rerun occurred and no second ARM64 attempt was created.
+
+The temporary workflow-file-only push trigger used for this approved attempt was removed in cleanup commit `3452648ff9ebf0eec752a7dce964f28d6e14cd1d`. The persistent Stage D workflow is manual-only `workflow_dispatch` again.
 
 ## Closed causal chain retained
 
@@ -68,7 +73,7 @@ Absolute guest VA is not process-invariant. Observed:
 - `0x210b5bc120`
 - `0x210b1bc120`
 
-Profiler now dynamically latches the current run's first post-warmup target-thread `WaitIfEqual(timeout=-1)` address.
+Profiler dynamically latches the current run's first post-warmup target-thread `WaitIfEqual(timeout=-1)` address.
 
 ## Address Arbiter Stage B — COMPLETE
 
@@ -145,7 +150,7 @@ Accordingly, the earlier conclusion that Stage C disproved another named Arbitra
 
 Matching SignalToAddress PC was overwhelmingly `0x85f16528`; LR varied materially. This motivated a top-LR histogram rather than treating the common PC as a final caller identity.
 
-## Stage D — IMPLEMENTED / STATIC VALIDATED
+## Stage D — IMPLEMENTED / STATIC VALIDATED / ARM64 READY
 
 Current branch:
 
@@ -219,30 +224,24 @@ Successful Ubuntu-only run:
 - job `99000993229`
 - conclusion `success`
 
-Passed:
-
-- exact dc95 checkout
-- retained diagnostic reconstruction
-- focused Stage A through C reconstruction
-- Stage D application
-- exact dc95 HEAD preservation
-- `git diff --check`
-- Python compile / analyzer smoke test
-- no hardcoded `0x4f`
-- CPU/clock/core metadata hooks present
-- only the three focused reason-less wait sites instrumented
-- original `SignalAddressArbiter` call count preserved
-- original `KThread::BeginWait` count preserved
-- original `KProcess::BeginWait` count preserved
-- no sleep/wait insertion
-- no priority/core-affinity mutation
-- no GPU/swap/cadence behavior mutation
+Passed exact dc95 preservation, Stage A-C reconstruction, Stage D apply, diff/Python/analyzer guards, original SignalAddressArbiter/BeginWait call counts, and all no-behavior-change checks.
 
 Temporary Stage D Ubuntu workflow was deleted after success.
 
 ## Current causal frontier — Stage D runtime
 
-A future Stage D runtime must compare stable raw swap2 and stable raw swap3 windows and decide which branch owns the ~21 ms slow-regime signal-period increase:
+The Stage D ARM64 artifact is ready. Run it in the same TOTK field scenario long enough to capture both stable raw swap2 and stable raw swap3 windows if possible, then upload the Eden log.
+
+Collect/retain at minimum:
+
+- `[X1-WAKERD]`
+- `[X1-WAKER]`
+- `[X1-ADDRSIG]`
+- `[X1-ADDRARB]`
+- `[X1-GUESTWAIT]`
+- raw cadence / QueueBuffer swap interval lines
+
+Runtime must decide which branch owns the ~21 ms slow-regime signal-period increase:
 
 1. actual dynamic-waker CPU execution;
 2. runnable-but-unscheduled delay;
@@ -254,7 +253,11 @@ Top LR distribution should then identify which higher-level signal caller is ass
 
 Do not optimize or alter priority/core behavior before this split is measured.
 
-## ARM64 status
+## Actions state / ARM64 authorization
+
+Persistent Stage D ARM workflow is manual-only `workflow_dispatch`.
+
+After cleanup the Stage D branch has exactly three Actions runs: two Ubuntu static validations and one successful approved ARM64 build. No duplicate ARM64 run exists.
 
 Current ARM64 build authorization: **NONE**.
 
