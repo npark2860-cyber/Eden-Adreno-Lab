@@ -36,7 +36,8 @@ No broad/all-thread profiling. No behavior-changing priority/affinity/yield/resc
 - Stage J ARM build: `DEBUG_HISTORY_20260829_WAKER_STAGE_J_BUILD.md`
 - Stage J runtime: `DEBUG_HISTORY_20260829_WAKER_STAGE_J_RUNTIME.md`
 - Stage K implementation/static: `DEBUG_HISTORY_20260829_WAKER_STAGE_K_IMPLEMENTED.md`
-- `NEXT_ACTION_WAKER_STAGE_K.md` predates the failed Stage K ARM attempt; use the immediate-next-action section in this handoff until that file is separately updated.
+- Stage K failed build / scope fix / strengthened static gate: `DEBUG_HISTORY_20260830_WAKER_STAGE_K_SCOPE_FIX.md`
+- current next action: `NEXT_ACTION_WAKER_STAGE_K.md`
 
 ## Persistent ARM workflow
 
@@ -115,18 +116,33 @@ One-shot dispatcher lifecycle:
 
 The failed attempt does not authorize a retry. Current ARM64 authorization remains **NONE**.
 
-### Stage K compile-failure status
+### Stage K compile-failure root cause — FIXED, not ARM-retested
 
-The C++ compile failure is proven; its exact root cause is **not yet proven**.
-
-Do not record the earlier simple enum-name mismatch hypothesis as the cause. Read-only comparison against the exact build HEAD shows the expected nested names are internally consistent in the checked Stage J/K sources:
+The earlier simple enum-name mismatch hypothesis is rejected. Exact build-head Stage J/K sources use the expected nested names:
 
 - Stage J header/transplant: `ParentStatus`
 - Stage K header/transplant: `GrandparentStatus`
 
-The next diagnostic step is to recover the **first compiler error chronologically** from job `99105748612` and determine whether the later scheduler errors are primary or cascading from an earlier header/parser/include/generated-source failure.
+Read-only generated-source inspection identified a deterministic C++ lexical-scope defect in the Stage K transplant:
 
-No source patch, rebuild, retry, or rerun is authorized by this diagnosis step.
+- Stage J created `x1_stage_j_memory` inside a local `else` block;
+- Stage K was appended after that block;
+- Stage K attempted to initialize `x1_stage_k_memory` from the now-out-of-scope `x1_stage_j_memory`.
+
+The minimal source fix is:
+
+```diff
+- auto& x1_stage_k_memory = x1_stage_j_memory;
++ auto& x1_stage_k_memory = kernel.System().ApplicationMemory();
+```
+
+Fix commit:
+
+`29d4c8ef376448bd7c61d354eb125fc052ac5c0e`
+
+A local minimal Clang C++20 reproduction rejects the old lexical structure and accepts the corrected structure.
+
+The fix has passed strengthened Ubuntu/static validation but has **not** been tested by another Windows ARM64 build. No retry/rerun was performed.
 
 ## Closed historical chain
 
@@ -261,7 +277,7 @@ Visible top-four triples explain about P0 `61.3%` and P1 `54.2%` of CPU-growth d
 
 Stage J decision = mixed A/B. Parent validity is excellent; broad static reverse-call analysis is exhausted.
 
-## Stage K implementation / Ubuntu static validation — COMPLETE
+## Stage K implementation / static validation — COMPLETE WITH SCOPE-FIX REGRESSION GATE
 
 Branch:
 
@@ -294,7 +310,7 @@ Accounting remains bounded:
 
 No arbitrary stack walk, non-selected sampling, thread rediscovery, slot widening, per-switch logging or behavior mutation.
 
-Ubuntu validation:
+### Original Ubuntu validation
 
 - workflow: `Validate dc95 X1 Waker Stage K`
 - run: `33253036148`
@@ -304,13 +320,31 @@ Ubuntu validation:
 - validation HEAD: `53defe670df0665554626430aaf4660cd70aa7b4`
 - result: **SUCCESS**
 
-Validated exact dc95 -> A-J reconstruction, K transplant anchors, Python syntax, 2 K reads / 2 K range checks / 3 selected-block reads total, one saved-FP source, monotonic ancestry, unchanged F/G/J/H invariants, no runtime observation hardcodes, no behavior-changing tokens, and synthetic four-level module normalization.
+It validated structural/read/range/invariant checks but did not compile the generated C++ integration, so it missed the lexical-scope defect exposed by the first ARM build.
 
-Temporary validator deleted after success at commit:
+Temporary original validator deletion commit:
 
 `c08c9cf36203936e8d430532115ae08a5f59ebfc`
 
-Stage K Windows ARM64 run count: **1**, result: **FAILED during C++ build**. No artifact was produced and no retry/rerun occurred.
+### Scope-fix Ubuntu regression validation
+
+After the one-line scope fix, a second Ubuntu-only validator reconstructed exact dc95 A-J, applied Stage K, reran the original checks, verified the generated initializer, and added a C++20 syntax-only scope regression probe.
+
+- workflow: `Validate dc95 X1 Waker Stage K Scope Fix`
+- run: `33279373418`
+- job: `99171791300`
+- attempt: 1
+- event: `push`
+- validation HEAD: `3f0843208512d2878f8f02a8c7938216bf5ecf21`
+- result: **SUCCESS**
+
+Temporary validator cleanup commit:
+
+`404a14af5a607762bd121dd98190d63c5c4466c0`
+
+No ARM runner was used for the scope-fix validation.
+
+Stage K Windows ARM64 run count remains **1**, result **FAILED during the pre-fix C++ build**. No artifact was produced and no retry/rerun occurred.
 
 ## Resolution-scaling observation — UNVERIFIED
 
@@ -332,21 +366,27 @@ GPU starvation
 -> known Nintendo SDK synchronization primitives
 -> Stage J parent sites expose concrete main code / LockMutex
 -> static reverse-call frontier becomes indirect or extremely broad
--> Stage K dynamic-grandparent instrumentation is statically validated but its first ARM64 compile failed before a runnable artifact was produced
+-> Stage K dynamic-grandparent instrumentation is implemented, its identified compile blocker is fixed, and the strengthened Ubuntu/static gate passes
+-> no runnable Stage K ARM artifact exists yet
 -> slow cadence still has longer active CPU slices before blocker + longer kernel Arbitration.
 
 No optimization is justified yet.
 
-## Immediate next action — read-only Stage K compile diagnosis
+## Immediate next action — fresh explicit Stage K ARM64 authorization required
 
 Current ARM64 authorization: **NONE**.
 
-Do **not** dispatch, retry, or rerun ARM64.
+Do **not** dispatch, retry, or rerun ARM64 from a generic continuation command.
 
-Inspect job `99105748612` and identify the first compiler error chronologically. Determine whether it originates in a Stage J/K profiler header, an include/redefinition/parser issue, generated `k_scheduler.cpp`, or another earlier compile failure that causes later member/type errors to cascade.
+The next Windows ARM64 step is exactly one Stage K attempt only after the user explicitly authorizes **one ARM64 build attempt**.
 
-Compare the failing generated source against exact build/source HEAD:
+Before any authorized dispatch:
 
-`c64f01a03dba7606061ddb8e8aa9fecad91051ee`
+1. verify current branch HEAD;
+2. verify exact Eden baseline remains `dc95cd09eea9749250fe31a3072684d341d19417`;
+3. verify persistent workflow remains `Build dc95 X1 Waker Stage K` and `workflow_dispatch` only;
+4. verify scope-fix commit `29d4c8ef376448bd7c61d354eb125fc052ac5c0e` is present;
+5. dispatch exactly one attempt;
+6. if it fails, do not retry/rerun without another fresh explicit authorization.
 
-Only after the root cause is proven may a source-fix step be proposed. A source fix still requires explicit user authorization before editing, and any later ARM64 retry requires a separate fresh explicit ARM64 authorization.
+If the build succeeds, run Stage K under the same TOTK 1.2.1 conditions and compare clean swap2/swap3 120-frame windows. Interpret grandparent attribution according to `NEXT_ACTION_WAKER_STAGE_K.md`.
