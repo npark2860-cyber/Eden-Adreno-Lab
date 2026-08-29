@@ -23,6 +23,26 @@ Never change the baseline without explicit approval.
 
 ARM64 build authorization: **NONE**.
 
+## Stage D artifact — READY
+
+Approved ARM64 build:
+
+- run `33217783844`
+- job `99005198468`
+- build HEAD `faf518e70811ba9f0c1a754c14d5da8584753904`
+- conclusion `success`
+- no rerun
+
+Artifact:
+
+- name `Eden-dc95-X1-waker-stage-d`
+- id `9704658049`
+- size `31,387,303` bytes
+- SHA-256 `cd7e8e2f218a522ad9a90e8ccff8170461be1d40732c15bcf24bd0ebc1cef7b5`
+- expires `2026-09-11T23:12:08Z`
+
+Persistent ARM workflow is back to manual-only `workflow_dispatch`.
+
 ## Established before Stage D runtime
 
 Stage B remains closed:
@@ -53,7 +73,7 @@ Stage D corrects completed waits using:
 
 Therefore the prior claim that another named waker wait was disproved is withdrawn. Stage C proved total Waiting versus residual only.
 
-## Stage D implementation — READY / STATIC VALIDATED
+## Stage D instrumentation
 
 New report:
 
@@ -82,23 +102,20 @@ CPU caveat:
 
 `GetCpuTime()` is updated at context switches, so use 120-frame aggregate trends rather than individual signal intervals as exact CPU accounting.
 
-## Static validation
+## Runtime procedure — NEXT ACTION NOW
 
-Successful Ubuntu-only validation:
+Run `Eden-dc95-X1-waker-stage-d` locally in the same TOTK field scenario used for Stage C.
 
-- run `33216436564`
-- job `99000993229`
-- conclusion `success`
+Aim to capture both:
 
-No ARM64 run occurred.
+- stable raw swap2 / nominal ~30-FPS windows
+- stable raw swap3 / nominal ~20-FPS windows
 
-## Runtime procedure after fresh ARM64 authorization
+Do not change the test configuration or introduce new A/B controls during this capture.
 
-One authorization = one ARM64 attempt.
+Upload the resulting Eden log.
 
-Build the current Stage D source against exact dc95 and run the same TOTK field scenario long enough to obtain both stable raw swap2 and stable raw swap3 windows if possible.
-
-Collect at minimum:
+The log must retain at minimum:
 
 - `[X1-WAKERD]`
 - `[X1-WAKER]`
