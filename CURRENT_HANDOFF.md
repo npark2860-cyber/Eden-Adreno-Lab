@@ -11,7 +11,8 @@ Updated: 2026-08-29 KST
 - Stage B runtime record: `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
 - Stage C runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_C_RUNTIME.md`
 - Stage D implementation/build record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
-- next action: `NEXT_ACTION_WAKER_STAGE_D.md`
+- Stage D runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_RUNTIME.md`
+- next action: `NEXT_ACTION_WAKER_STAGE_E.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
@@ -26,7 +27,7 @@ Never change the exact Eden baseline without explicit baseline-change approval.
 - build HEAD `faf518e70811ba9f0c1a754c14d5da8584753904`
 - exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
 - conclusion `success`
-- exact dc95 verify / retained chain / Stage A-C / Stage D apply+verify / MSYS2 / configure / ARM64 compile / package / upload: all `success`
+- exact dc95 verify / retained chain / Stage A-C / Stage D apply+verify / configure / ARM64 compile / package / upload: all `success`
 - artifact `Eden-dc95-X1-waker-stage-d`
 - artifact id `9704658049`
 - size `31,387,303` bytes
@@ -34,9 +35,7 @@ Never change the exact Eden baseline without explicit baseline-change approval.
 - created `2026-08-28T23:12:10Z`
 - expires `2026-09-11T23:12:08Z`
 
-No rerun occurred and no second ARM64 attempt was created.
-
-The temporary workflow-file-only push trigger used for this approved attempt was removed in cleanup commit `3452648ff9ebf0eec752a7dce964f28d6e14cd1d`. The persistent Stage D workflow is manual-only `workflow_dispatch` again.
+No rerun occurred and no second ARM64 attempt was created. Persistent Stage D ARM workflow is manual-only `workflow_dispatch`.
 
 ## Closed causal chain retained
 
@@ -97,167 +96,152 @@ Runtime:
 
 `eden_log(20260828-173023).txt`
 
-Measured run:
+Stage C established only the total waker signal-to-signal Waiting versus residual split. Its old wait-reason breakdown is invalid because exact dc95 commonly assigns Arbitration / ConditionVar / Synchronization / Sleep after `BeginWait`.
 
-- dynamic wait address `0x210b5bc120`
-- victim `tid=0x53`
-- dynamic waker `tid=0x4f`
-- waker switches `0`
-- matching-signal sanity clean
+Correct completed-wait classification, implemented in Stage D:
 
-Stable-fast raw swap2 windows averaged approximately:
+> exit reason if non-None, otherwise entry reason fallback
+
+Stable-fast raw swap2 in Stage C was approximately:
 
 - inter-signal `33.722 ms`
-- waker KThread Waiting `27.708 ms`
-- Stage-C residual `6.014 ms`
+- total Waiting `27.708 ms`
+- residual `6.014 ms`
 
-Stable-slow raw swap3 windows averaged approximately:
+Stable-slow raw swap3 was approximately:
 
 - inter-signal `55.022 ms`
-- waker KThread Waiting `34.183 ms`
-- Stage-C residual `20.839 ms`
+- total Waiting `34.183 ms`
+- residual `20.839 ms`
 
 Slow-minus-fast:
 
 - inter-signal `+21.299 ms`
-- total Waiting `+6.474 ms`
-- Stage-C residual `+14.825 ms`
+- Waiting `+6.474 ms`
+- residual `+14.825 ms`
 
-This **total Waiting versus residual split remains valid**.
+These total values remain valid; the Stage C named-reason split does not.
 
-### Critical correction: Stage C wait-reason breakdown is NOT valid
+## Stage D — RUNTIME COMPLETE
 
-Do not use the old Stage C claim that named waker waits were absent.
+Runtime:
 
-Stage C stored the debug reason when the thread **entered** `ThreadState::Waiting`. Exact dc95 commonly performs:
+`eden_log(20260829-024002).txt`
 
-- `BeginWait(...); SetWaitReasonForDebugging(Arbitration);`
-- `BeginWait(...); SetWaitReasonForDebugging(ConditionVar);`
-- `BeginWait(...); SetWaitReasonForDebugging(Synchronization);`
-- `BeginWait(...); SetWaitReasonForDebugging(Sleep);`
+Measured identity:
 
-Thus named waits can have been counted as Stage-C `None`.
+- exact dc95
+- dynamic victim address `0x210b1bc120`
+- victim `tid=0x53`
+- dynamic waker `tid=0x4f`
+- waker switches `0`
+- signal `incEq`, value `1`, count `-1`
+- matching signal guest PC `0x85a03528`
+- waker priority `44`
+- latest active/current core `0/0`
+- malformed CPU/wait/interval `0`
 
-Some IPC paths assign the reason before BeginWait, so the entry value is useful only as fallback.
+Stable block selection:
 
-Correct Stage D rule:
+- pure swap2: frames `480, 600, 720, 840, 960, 1080, 1320, 1440`
+- pure swap3: frames `1800, 1920, 2040, 2160, 2280`
+- transition frame 1680 (`10 swap2 / 110 swap3`, `interAvg=84.143 ms`) excluded from stable averages
 
-> completed wait reason = exit reason if non-None, otherwise entry reason fallback
+### Stage D aggregate split
 
-Accordingly, the earlier conclusion that Stage C disproved another named Arbitration/Sync/ConditionVar/Sleep wait is withdrawn. Stage C only established the signal-to-signal total Waiting/residual split.
+| metric | stable swap2 | stable swap3 | slow-fast |
+|---|---:|---:|---:|
+| inter-signal | 33.454 ms | 56.972 ms | +23.518 ms |
+| corrected Waiting | 25.706 ms | 34.897 ms | +9.190 ms |
+| residual | 7.748 ms | 22.075 ms | +14.327 ms |
+| estimated waker CPU | 7.526 ms | 21.802 ms | +14.276 ms |
+| runnable-unscheduled | 0.239 ms | 0.307 ms | +0.068 ms |
 
-### Signal callsite retained
+Therefore the slow-regime +23.52 ms is mixed:
 
-Matching SignalToAddress PC was overwhelmingly `0x85f16528`; LR varied materially. This motivated a top-LR histogram rather than treating the common PC as a final caller identity.
+- about +14.28 ms (~60.7%) additional waker CPU execution;
+- about +9.19 ms (~39.1%) additional Waiting;
+- only +0.07 ms (~0.3%) runnable-unscheduled.
 
-## Stage D — IMPLEMENTED / STATIC VALIDATED / ARM64 READY
+**Runnable/scheduler starvation is closed for this slowdown.**
 
-Current branch:
+CPU accounting retains the known context-switch accumulation caveat, so use these multi-block aggregate trends rather than individual intervals.
 
-`exp/x1-waker-stage-d-cpu-scheduler`
+### Corrected wait reason — decisive mode shift
 
-New files:
+Average corrected reason time per signal:
 
-- `src/core/x1_waker_stage_d_profiler.h`
-- `tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py`
-- `tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py`
+| reason | stable swap2 | stable swap3 | slow-fast |
+|---|---:|---:|---:|
+| ConditionVar | 17.252 ms | 0.469 ms | -16.784 ms |
+| Arbitration | 7.440 ms | 32.339 ms | +24.900 ms |
+| Sleep | 0.996 ms | 1.358 ms | +0.362 ms |
+| Synchronization | 0.019 ms | 0.687 ms | +0.668 ms |
+| IPC | 0.023 ms | 0.038 ms | +0.015 ms |
+| true None | 0.000 ms | 0.000 ms | 0.000 ms |
 
-New report:
+Stable-fast corrected Waiting is primarily ConditionVar (~67.1%) with Arbitration secondary (~28.9%).
 
-`[X1-WAKERD]`
+Stable-slow corrected Waiting is overwhelmingly Arbitration (~92.7%) and ConditionVar nearly disappears (~1.3%).
 
-Stage D remains observation-only and does not hardcode `tid=0x4f`.
+The net Waiting increase is only +9.19 ms because `+24.90 ms` Arbitration expansion is offset by `-16.78 ms` ConditionVar contraction.
 
-### A. CPU versus runnable-unscheduled
+Exact dc95 `KAddressArbiter::WaitIfLessThan` and `WaitIfEqual` both assign `ThreadWaitReasonForDebugging::Arbitration` after `BeginWait`, so the Stage D corrected Arbitration bucket maps to an actual AddressArbiter wait path.
 
-At each matching dynamic-waker signal entry Stage D samples read-only:
+### True None branch — CLOSED
 
-- `KThread::GetCpuTime()`
-- `CoreTiming().GetClockTicks()`
-- priority
-- active core
-- current core
+All focused reason-less Stage D sites remain zero:
 
-Per matching-signal interval it reports:
+- unknown None `0`
+- SetActivity pinned `0`
+- SetCoreMask pinned `0`
+- process user-exception `0`
 
-- inter-signal wall elapsed
-- corrected KThread Waiting
-- residual = inter - Waiting
-- estimated CPU time
-- runnable-unscheduled estimate = max(residual - CPU, 0)
+### Signal LR context
 
-CPU conversion uses the same observed `GetClockTicks()` domain; no hardcoded CPU frequency is used.
+Signal PC stays `0x85a03528` in both regimes. Same LR set remains, so there is no wholesale callsite switch.
 
-Caveat: `GetCpuTime()` is updated on context switches, so the currently executing slice tail at a signal may be accounted on a later switch. Use 120-frame aggregate trends, not one interval, as primary evidence.
+Stable-fast, 960 signals:
 
-### B. Corrected wait reason / true None sites
+- `0x859cfb40`: 79.27%
+- `0x859cfa8c`: 17.81%
+- remaining contexts ~2.9%
 
-Completed waits use exit reason first and entry reason as fallback.
+Stable-slow, 600 signals:
 
-After exact dc95 BeginWait rescan, the focused direct reason-less sites instrumented are only:
+- `0x859cfb40`: 66.33%
+- `0x859cfa8c`: 30.67%
+- remaining contexts ~3.0%
 
-1. `KThread::SetActivity` pinned wait
-2. `KThread::SetCoreMask` pinned wait
-3. `KProcess::EnterUserException`
+The second LR becomes more common in slow mode. Preserve this correlation but do not treat it alone as root cause.
 
-If a completed wait still has corrected reason `None`, Stage D reports those three sites separately plus unknown.
+Victim-side `w2s` also remains consistent with the causal direction:
 
-No broad all-kernel BeginWait trace was added.
+- stable swap2 mean ~`1.381 ms`
+- stable swap3 mean ~`42.112 ms`
+- signal -> victim return remains near zero
 
-### C. Signal LR histogram
+## Current causal frontier — Stage E
 
-A fixed 16-slot aggregate LR table reports top four matching-signal LRs per 120-frame block plus overflow. No per-event log flood was added.
+Stage D is complete.
 
-## Stage D static validation
+The next question is:
 
-Initial Ubuntu-only run:
+> Which AddressArbiter wait performed by the dynamically identified waker owns the slow-regime Arbitration expansion, and which guest thread releases that wait?
 
-- run `33216227768`
-- job `99000324527`
-- failed only because the transplant incorrectly assumed the function name following the unique KProcess user-exception BeginWait.
+Stage E must remain narrow:
 
-Minimal anchor correction was applied; no semantic scope change.
+1. dynamically reuse the current-run matching-signal waker TID; do not hardcode `0x4f`;
+2. aggregate only that thread's `WaitForAddress` calls by address/type/value/timeout and duration;
+3. promote only the dominant current-run waker wait key into matching `SignalToAddress` owner attribution;
+4. keep the CPU branch separate; if cheap, correlate interval Waiting/Arbitration/CPU with the existing top signal LR contexts;
+5. do not broaden into all-thread scheduler or all-SVC tracing.
 
-Successful Ubuntu-only run:
-
-- run `33216436564`
-- job `99000993229`
-- conclusion `success`
-
-Passed exact dc95 preservation, Stage A-C reconstruction, Stage D apply, diff/Python/analyzer guards, original SignalAddressArbiter/BeginWait call counts, and all no-behavior-change checks.
-
-Temporary Stage D Ubuntu workflow was deleted after success.
-
-## Current causal frontier — Stage D runtime
-
-The Stage D ARM64 artifact is ready. Run it in the same TOTK field scenario long enough to capture both stable raw swap2 and stable raw swap3 windows if possible, then upload the Eden log.
-
-Collect/retain at minimum:
-
-- `[X1-WAKERD]`
-- `[X1-WAKER]`
-- `[X1-ADDRSIG]`
-- `[X1-ADDRARB]`
-- `[X1-GUESTWAIT]`
-- raw cadence / QueueBuffer swap interval lines
-
-Runtime must decide which branch owns the ~21 ms slow-regime signal-period increase:
-
-1. actual dynamic-waker CPU execution;
-2. runnable-but-unscheduled delay;
-3. corrected named KThread wait reason;
-4. one of the three true reason-less direct wait sites;
-5. a mixture of the above.
-
-Top LR distribution should then identify which higher-level signal caller is associated with the dominant branch.
-
-Do not optimize or alter priority/core behavior before this split is measured.
+See `NEXT_ACTION_WAKER_STAGE_E.md` for the exact Stage E plan and prohibitions.
 
 ## Actions state / ARM64 authorization
 
 Persistent Stage D ARM workflow is manual-only `workflow_dispatch`.
-
-After cleanup the Stage D branch has exactly three Actions runs: two Ubuntu static validations and one successful approved ARM64 build. No duplicate ARM64 run exists.
 
 Current ARM64 build authorization: **NONE**.
 
