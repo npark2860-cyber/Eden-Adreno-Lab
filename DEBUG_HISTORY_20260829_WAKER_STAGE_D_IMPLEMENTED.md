@@ -1,4 +1,4 @@
-# DEBUG HISTORY — Waker Stage D Implemented / Static Validated
+# DEBUG HISTORY — Waker Stage D Implemented / Static Validated / ARM64 Built
 
 Date: 2026-08-29 KST
 
@@ -10,7 +10,7 @@ Stage D branch:
 
 `exp/x1-waker-stage-d-cpu-scheduler`
 
-ARM64 authorization remained **NONE** throughout this work. No ARM64 build or rerun was triggered.
+Current ARM64 authorization: **NONE**.
 
 ## Stage C runtime input retained
 
@@ -162,9 +162,59 @@ Passed:
 
 The temporary Ubuntu workflow was deleted after success.
 
+## Approved Stage D ARM64 build — SUCCESS
+
+One fresh user authorization was consumed for exactly one ARM64 attempt.
+
+- run `33217783844`
+- job `99005198468`
+- attempt `1`
+- build HEAD `faf518e70811ba9f0c1a754c14d5da8584753904`
+- exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
+- conclusion `success`
+
+All substantive steps succeeded:
+
+- exact dc95 checkout/verify
+- retained diagnostic chain reconstruction
+- Stage A through C reconstruction
+- Stage D apply
+- Stage D pre-configure verification
+- MSYS2 CLANGARM64 setup
+- configure
+- ARM64 compile
+- package
+- analyzer/metadata copy
+- artifact upload
+
+No rerun occurred and no second ARM64 attempt was created.
+
+Artifact:
+
+- name `Eden-dc95-X1-waker-stage-d`
+- artifact id `9704658049`
+- size `31,387,303` bytes
+- SHA-256 `cd7e8e2f218a522ad9a90e8ccff8170461be1d40732c15bcf24bd0ebc1cef7b5`
+- created `2026-08-28T23:12:10Z`
+- expires `2026-09-11T23:12:08Z`
+
+The temporary workflow-file-only push trigger was removed in cleanup commit:
+
+`3452648ff9ebf0eec752a7dce964f28d6e14cd1d`
+
+The persistent Stage D ARM workflow is back to manual-only `workflow_dispatch`.
+
+Branch run count after cleanup is exactly three:
+
+1. Ubuntu Stage D static validation failure
+2. Ubuntu Stage D static validation success
+3. the single approved Stage D ARM64 success
+
 ## Runtime question now ready
 
-A Stage D ARM64 runtime, only after fresh explicit one-attempt authorization, should decide:
+Run the Stage D artifact in the same TOTK field scenario and collect enough gameplay to contain stable raw swap2 and stable raw swap3 windows if possible.
+
+The runtime should decide:
 
 1. whether the stable-slow residual increase is mostly actual waker CPU time;
 2. whether it is mostly runnable-but-unscheduled time;
