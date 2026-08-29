@@ -1,0 +1,133 @@
+name: One-shot X1 Waker Stage E ARM Guard Static
+
+on:
+  push:
+    branches:
+      - exp/x1-waker-stage-e-recursive-arbiter
+    paths:
+      - .github/workflows/one-shot-x1-waker-stage-e-arm-guard-static.yml
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v4
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout exact dc95 Eden
+        uses: actions/checkout@v4
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+
+      - name: Verify exact baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+
+      - name: Prepare retained non-scheduler source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p profiler-patches
+          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
+          for f in src/video_core/renderer_vulkan/vk_buffer_cache.cpp src/video_core/renderer_vulkan/vk_compute_pipeline.cpp src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
+            out="profiler-patches/$(basename "$f").patch"
+            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
+            test -s "$out"
+            git -C eden apply --ignore-whitespace "../$out"
+          done
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
+          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
+      - name: Recreate retained X1 diagnostic chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python lab/tools/adreno_lab/transplant_dc95_descriptor_ring_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_logging_checkboxes.py eden
+          python lab/tools/adreno_lab/transplant_dc95_full_flow_hooks.py eden
+          python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
+          python lab/tools/adreno_lab/finalize_dc95_full_flow_profiler.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_correlation.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_dispatch_ab_controls.py eden
+          python lab/tools/adreno_lab/transplant_dc95_draw_other_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_texture_fill_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_copy_reasons.py eden
+          python lab/tools/adreno_lab/transplant_dc95_alias_sync_redundancy.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_stream_reuse.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_payload_fingerprint.py eden
+          python lab/tools/adreno_lab/transplant_dc95_uniform_cache_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py eden
+          python lab/tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py eden
+          python lab/tools/adreno_lab/transplant_dc95_diagnostic_harness.py eden
+
+      - name: Recreate focused Stage A through D
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h eden/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_frame_build_attribution.py eden
+          cp lab/src/video_core/x1_gpu_command_profiler.h eden/src/video_core/x1_gpu_command_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_gpu_command_attribution.py eden
+          cp lab/src/video_core/x1_gpu_submit_profiler.h eden/src/video_core/x1_gpu_submit_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_gpu_submit_gap_attribution.py eden
+          cp lab/src/video_core/x1_guest_submit_profiler.h eden/src/video_core/x1_guest_submit_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py eden
+          cp lab/src/core/x1_nvdrv_ipc_dispatch_profiler.h eden/src/core/x1_nvdrv_ipc_dispatch_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_nvdrv_ipc_dispatch_gap.py eden
+          cp lab/src/core/x1_guest_post_wait_profiler.h eden/src/core/x1_guest_post_wait_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_guest_post_wait_attribution.py eden
+          cp lab/src/core/x1_address_arbiter_profiler.h eden/src/core/x1_address_arbiter_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py eden
+          cp lab/src/core/x1_waker_pre_signal_profiler.h eden/src/core/x1_waker_pre_signal_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py eden
+          cp lab/src/core/x1_waker_stage_d_profiler.h eden/src/core/x1_waker_stage_d_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py eden
+
+      - name: Apply Stage E
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/core/x1_waker_stage_e_profiler.h eden/src/core/x1_waker_stage_e_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py eden
+
+      - name: Reproduce ARM pre-configure guard exactly
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_address_arbiter_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_waker_pre_signal_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py
+          grep -q '\[X1-WAKERE\]' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'TopWaitCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'TopSignalCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'ShouldTrackThread' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'ShouldTrackPromotedSignalAddress' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'X1WakerStageEProfiler::Get().BeginWait' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          grep -q 'X1WakerStageEProfiler::Get().RecordSignal' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          grep -q 'X1WakerStageEProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+          ! grep -qi '0x4f' eden/src/core/x1_waker_stage_e_profiler.h
+          ! grep -Eqi '0x210[0-9a-f]+bc120' eden/src/core/x1_waker_stage_e_profiler.h
+          test "$(git -C eden show HEAD:src/core/hle/kernel/svc/svc_address_arbiter.cpp | grep -c 'WaitAddressArbiter(address')" = \
+               "$(grep -c 'WaitAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          test "$(git -C eden show HEAD:src/core/hle/kernel/svc/svc_address_arbiter.cpp | grep -c 'SignalAddressArbiter(address')" = \
+               "$(grep -c 'SignalAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          ! git -C eden diff -- src/core/x1_waker_stage_e_profiler.h src/core/hle/kernel/svc/svc_address_arbiter.cpp src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
+            grep -E '^\+.*(sleep_for|sleep_until|SetPriority\(|SetCoreMask\(|gpu_fence_behavior|swap_interval|QueueBuffer\()'
+          echo 'ARM pre-configure guard parity passed'
