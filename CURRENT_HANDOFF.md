@@ -13,23 +13,23 @@ Updated: 2026-08-29 KST
 - Stage D implementation/build record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
 - Stage D runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_RUNTIME.md`
 - Stage E implementation/static record: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_IMPLEMENTED.md`
-- Stage E first ARM attempt record: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_ARM_PRECHECK_FAILURE.md`
+- Stage E ARM pre-configure attempts record: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_ARM_PRECHECK_FAILURE.md`
 - next action: `NEXT_ACTION_WAKER_STAGE_E.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
 **ARM64 rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
 
-## Latest ARM64 attempt — Stage E PRE-CONFIGURE FAILURE
+## Latest ARM64 attempt — Stage E PRE-CONFIGURE FAILURE #2
 
-Fresh approval was consumed by exactly one Stage E workflow attempt:
+A fresh approval was consumed by exactly one second Stage E workflow attempt:
 
 - workflow `Build dc95 X1 Waker Stage E`
-- run `33230457489`
-- job `99042246285`
+- run `33230727557`
+- job `99042975831`
 - attempt `1`
 - branch `exp/x1-waker-stage-e-recursive-arbiter`
-- build HEAD `0bab539c886a0c7b18be7ebe41476e81b7127a75`
+- build HEAD `72ca7f189611e24acb74494b63bbdeeba0ee73f5`
 - exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
 - conclusion `failure`
 
@@ -45,18 +45,86 @@ Failure point:
 
 `Verify Stage E before configure`
 
-Exact cause was a workflow-only guard typo:
+Exact cause was a second workflow-only guard typo:
+
+- incorrect guard: `ShouldTrackSignalAddress`
+- actual Stage E API: `ShouldTrackPromotedSignalAddress`
+
+Therefore MSYS2 setup / configure / ARM64 C++ compile / package / upload were all skipped. No Stage E artifact was produced.
+
+No retry/rerun occurred.
+
+## Stage E first ARM64 attempt — PRE-CONFIGURE FAILURE #1
+
+- run `33230457489`
+- job `99042246285`
+- attempt `1`
+- build HEAD `0bab539c886a0c7b18be7ebe41476e81b7127a75`
+- conclusion `failure`
+
+It also passed exact dc95 / retained reconstruction / Stage A-D / Stage E apply, then failed at `Verify Stage E before configure`.
+
+Cause:
 
 - incorrect guard: `TopSlotCount = 4`
 - actual Stage E constants: `TopWaitCount = 4` and `TopSignalCount = 4`
 
-Therefore MSYS2 setup / configure / ARM64 C++ compile / package / upload were all skipped. No Stage E ARM64 artifact was produced.
+MSYS2/configure/compile/package/upload were skipped and no artifact was produced.
 
-The persistent workflow had already been restored to manual-only, and the guard was corrected in commit:
+## Stage E ARM pre-configure guard — HARDENED / UBUNTU PARITY SUCCESS
 
-`ece657ebcfb19f8e15ce1a73874f9ab980b0919f`
+After the second ARM precheck failure, the guard was audited against the actual Stage E transplant.
 
-No retry/rerun occurred and no second ARM64 run was created. A new Stage E ARM64 attempt requires fresh explicit authorization.
+Additional latent mismatch found before any further ARM run:
+
+- transplant generates local-variable call `x1_stage_e_profiler.RecordSignal(...)`
+- old ARM guard expected nonexistent `X1WakerStageEProfiler::Get().RecordSignal(...)`
+
+The old guard also compared cumulative Stage A-D+E files directly with exact dc95 for behavior-token checks. That was broader than the intended Stage E delta and could false-positive on retained instrumentation.
+
+The persistent ARM workflow was hardened to use a **pre-Stage-E snapshot**:
+
+1. reconstruct through Stage D;
+2. snapshot `svc_address_arbiter.cpp` and `vk_rasterizer.cpp`;
+3. record pre-E WaitAddressArbiter / SignalAddressArbiter / validation-helper counts;
+4. apply Stage E;
+5. verify the actual Stage E marker/API/hook forms;
+6. compare call/helper counts against pre-E;
+7. run behavior-changing diff guards against pre-E only.
+
+Persistent workflow hardening commit:
+
+`34c5d3e563c77395ea8d0834e67b3b210fa8406f`
+
+Ubuntu-only ARM-guard parity validation:
+
+- initial parity run `33230840202`, job `99043279158` — failure before full hardening
+- hardened parity run **`33230953769`**, job **`99043581687`** — **success**
+
+The successful parity reproduced the current ARM pre-configure path through:
+
+- exact dc95 checkout
+- retained diagnostic chain
+- Stage A-D reconstruction
+- pre-Stage-E invariant snapshot
+- Stage E apply
+- exact dc95 HEAD preservation
+- `git diff --check`
+- Python compile checks
+- actual Stage E API/marker checks
+- exactly one Stage E BeginWait hook
+- exactly one Stage E EndWait hook
+- exactly one `x1_stage_e_profiler.RecordSignal` hook
+- WaitAddressArbiter / SignalAddressArbiter count preservation vs pre-E
+- arbitration/signal validation-helper count preservation vs pre-E
+- no Stage-E-added kernel wait/yield/reschedule/priority/core-mask behavior
+- no Stage-E-added QueueBuffer/swap/fence behavior
+
+The temporary parity workflow was deleted after success.
+
+Persistent Stage E ARM workflow remains **manual-only `workflow_dispatch`**.
+
+No third ARM64 run was created. Current ARM64 authorization is **NONE**.
 
 ## Latest successful ARM64 build — Stage D SUCCESS
 
@@ -71,8 +139,6 @@ No retry/rerun occurred and no second ARM64 run was created. A new Stage E ARM64
 - artifact id `9704658049`
 - size `31,387,303` bytes
 - SHA-256 `cd7e8e2f218a522ad9a90e8ccff8170461be1d40732c15bcf24bd0ebc1cef7b5`
-
-Persistent ARM workflow is manual-only `workflow_dispatch`.
 
 ## Closed causal chain retained
 
@@ -264,45 +330,24 @@ Stage E intentionally does not add CPU-by-LR interval partitioning. The Stage D 
 
 Do not merge the recursive wait producer with the CPU branch unless runtime evidence proves they are the same path.
 
-## Stage E static validation
+## Stage E source/static validation
 
-Ubuntu-only one-shot:
+Original Ubuntu-only one-shot:
 
 - run `33230000239`
 - job `99041006308`
 - attempt `1`
 - conclusion `success`
 
-Passed:
+Passed exact dc95 reconstruction, Stage A-D, Stage E apply, call-count/helper preservation, observation-only guards and analyzer smoke test.
 
-- exact dc95 checkout
-- retained diagnostic chain reconstruction
-- Stage A through D reconstruction
-- Stage E application
-- exact HEAD preservation
-- `git diff --check`
-- Python compile + analyzer smoke test
-- no hardcoded observed waker TID
-- no hardcoded process-specific guest wait VA
-- original `WaitAddressArbiter` call count preserved
-- original `SignalAddressArbiter` call count preserved
-- validation helper occurrence counts preserved
-- exactly one Stage E BeginWait hook
-- exactly one Stage E EndWait hook
-- exactly one Stage E promoted-key RecordSignal hook
-- no kernel wait insertion
-- no priority/core-affinity/scheduler mutation
-- no GPU/swap/cadence behavior mutation
-
-Temporary Stage E Ubuntu workflow was deleted after success.
+The later hardened ARM pre-configure parity is also successful as recorded above.
 
 ## Current causal frontier — Stage E build retry, then runtime
 
-Stage E source/static validation remains complete, but no Stage E ARM64 binary exists yet because the first authorized ARM workflow attempt failed on the incorrect `TopSlotCount` guard before configure.
+Stage E source/static validation and the hardened ARM pre-configure parity are complete, but no Stage E ARM64 binary exists yet because both separately authorized ARM attempts failed on workflow-only pre-configure guard mistakes before setup/configure/compile.
 
-The workflow guard is now corrected and manual-only.
-
-A fresh explicit one-attempt ARM64 authorization is required before trying again.
+A **fresh explicit one-attempt ARM64 authorization** is required before trying again.
 
 After a successful Stage E build, the runtime question is:
 
@@ -321,7 +366,7 @@ See `NEXT_ACTION_WAKER_STAGE_E.md`.
 
 ## Actions state / ARM64 authorization
 
-Persistent Stage E ARM workflow is manual-only `workflow_dispatch` and contains the corrected `TopWaitCount` / `TopSignalCount` validation guards.
+Persistent Stage E ARM workflow is manual-only `workflow_dispatch` and contains the hardened, Ubuntu-parity-validated pre-Stage-E snapshot guard.
 
 Current ARM64 build authorization: **NONE**.
 
