@@ -1,15 +1,15 @@
-name: Build dc95 X1 Waker Stage F
+name: Build dc95 X1 Waker Stage G
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: dc95-x1-waker-stage-f-${{ github.ref }}
+  group: dc95-x1-waker-stage-g-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: dc95 ARM64 / X1 Waker Stage F
+    name: dc95 ARM64 / X1 Waker Stage G
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -26,12 +26,14 @@ jobs:
         with:
           path: lab
           fetch-depth: 0
+
       - name: Checkout Eden CI workflow used by dc95-era nightlies
         uses: actions/checkout@v7
         with:
           repository: Eden-CI/Workflow
           ref: afead830f3a444427f9fdfd841218f932465c03a
           path: ci
+
       - name: Checkout exact known-good Eden source
         uses: actions/checkout@v7
         with:
@@ -40,17 +42,20 @@ jobs:
           path: eden
           fetch-depth: 0
           submodules: recursive
+
       - name: Verify exact dc95 checkout
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+
       - name: Install dc95-era Eden CI scripts
         shell: bash
         run: |
           set -euo pipefail
           rm -rf eden/.ci
           cp -a ci/.ci eden/.ci
+
       - name: Prepare and apply retained non-scheduler patches
         shell: bash
         run: |
@@ -65,6 +70,7 @@ jobs:
           done
           cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp
           cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/vk_adreno_profiler.h
+
       - name: Recreate retained X1 diagnostic chain
         shell: bash
         run: |
@@ -86,6 +92,7 @@ jobs:
           python lab/tools/adreno_lab/transplant_dc95_frame_cadence_attribution.py eden
           python lab/tools/adreno_lab/transplant_dc95_swap_interval_3_to_2_ab.py eden
           python lab/tools/adreno_lab/transplant_dc95_diagnostic_harness.py eden
+
       - name: Recreate focused attribution layers through Stage C
         shell: bash
         run: |
@@ -106,36 +113,47 @@ jobs:
           python lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py eden
           cp lab/src/core/x1_waker_pre_signal_profiler.h eden/src/core/x1_waker_pre_signal_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py eden
+
       - name: Apply Stage D CPU/scheduler attribution
         shell: bash
         run: |
           set -euo pipefail
           cp lab/src/core/x1_waker_stage_d_profiler.h eden/src/core/x1_waker_stage_d_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py eden
+
       - name: Apply Stage E recursive arbiter attribution
         shell: bash
         run: |
           set -euo pipefail
           cp lab/src/core/x1_waker_stage_e_profiler.h eden/src/core/x1_waker_stage_e_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py eden
-      - name: Snapshot pre-Stage-F invariants
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp /tmp/svc-pre-f.cpp
-          cp eden/src/core/hle/kernel/k_thread.cpp /tmp/kthread-pre-f.cpp
-          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp /tmp/rasterizer-pre-f.cpp
-          grep -c 'WaitAddressArbiter(address' /tmp/svc-pre-f.cpp > /tmp/wait-count
-          grep -c 'SignalAddressArbiter(address' /tmp/svc-pre-f.cpp > /tmp/signal-count
-          grep -c 'IsValidArbitrationType' /tmp/svc-pre-f.cpp > /tmp/arb-valid-count
-          grep -c 'IsValidSignalType' /tmp/svc-pre-f.cpp > /tmp/sig-valid-count
+
       - name: Apply Stage F producer attribution
         shell: bash
         run: |
           set -euo pipefail
           cp lab/src/core/x1_waker_stage_f_profiler.h eden/src/core/x1_waker_stage_f_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_stage_f_attribution.py eden
-      - name: Verify Stage F before configure
+
+      - name: Snapshot pre-Stage-G invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp eden/src/core/x1_waker_stage_f_profiler.h /tmp/stage-f-pre-g.h
+          cp eden/src/core/hle/kernel/k_scheduler.cpp /tmp/kscheduler-pre-g.cpp
+          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp /tmp/rasterizer-pre-g.cpp
+          grep -c 'cur_thread->AddCpuTime(m_core_id, tick_diff)' /tmp/kscheduler-pre-g.cpp > /tmp/add-cpu-count
+          grep -c 'void KScheduler::SwitchThread' /tmp/kscheduler-pre-g.cpp > /tmp/switch-thread-count
+          grep -c 'SetCurrentThread(kernel, next_thread)' /tmp/kscheduler-pre-g.cpp > /tmp/set-current-count
+
+      - name: Apply Stage G focused producer CPU attribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp lab/src/core/x1_waker_stage_g_profiler.h eden/src/core/x1_waker_stage_g_profiler.h
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_g_attribution.py eden
+
+      - name: Verify Stage G before configure
         shell: bash
         run: |
           set -euo pipefail
@@ -147,37 +165,52 @@ jobs:
             lab/tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py \
             lab/tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py \
             lab/tools/adreno_lab/transplant_dc95_waker_stage_f_attribution.py \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_g_attribution.py \
             lab/tools/adreno_lab/analyze_x1_address_arbiter_attribution.py \
             lab/tools/adreno_lab/analyze_x1_waker_pre_signal_attribution.py \
             lab/tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py \
             lab/tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py \
-            lab/tools/adreno_lab/analyze_x1_waker_stage_f_attribution.py
-          grep -q '\[X1-WAKERF\]' eden/src/core/x1_waker_stage_f_profiler.h
-          grep -q 'ProducerCount = 2' eden/src/core/x1_waker_stage_f_profiler.h
-          grep -q 'CandidateSlotCount = 16' eden/src/core/x1_waker_stage_f_profiler.h
-          grep -q 'SelectNextTracking' eden/src/core/x1_waker_stage_f_profiler.h
-          grep -q 'RecordPromotedSignal' eden/src/core/x1_waker_stage_f_profiler.h
-          grep -q 'RecordThreadStateTransition' eden/src/core/x1_waker_stage_f_profiler.h
-          grep -q 'runUnschedAvg' eden/src/core/x1_waker_stage_f_profiler.h
-          ! grep -qi '0x80' eden/src/core/x1_waker_stage_f_profiler.h
-          ! grep -qi '0x81' eden/src/core/x1_waker_stage_f_profiler.h
-          ! grep -Eqi '0x210[a-f0-9]+' eden/src/core/x1_waker_stage_f_profiler.h
-          ! grep -q 'RecordLr' eden/src/core/x1_waker_stage_f_profiler.h
-          ! grep -q 'guest_lr' eden/src/core/x1_waker_stage_f_profiler.h
-          test "$(grep -c 'X1WakerStageFProfiler::Get().RecordPromotedSignal' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)" = 1
-          test "$(grep -c 'X1WakerStageFProfiler::Get().RecordThreadStateTransition' eden/src/core/hle/kernel/k_thread.cpp)" = 1
-          test "$(grep -c 'X1WakerStageFProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
-          test "$(grep -c 'X1WakerStageFProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
-          test "$(cat /tmp/wait-count)" = "$(grep -c 'WaitAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
-          test "$(cat /tmp/signal-count)" = "$(grep -c 'SignalAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
-          test "$(cat /tmp/arb-valid-count)" = "$(grep -c 'IsValidArbitrationType' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
-          test "$(cat /tmp/sig-valid-count)" = "$(grep -c 'IsValidSignalType' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
-          ! diff -u /tmp/svc-pre-f.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp | \
-            grep -E '^\+.*(WaitAddressArbiter\(|SignalAddressArbiter\(|sleep_for|sleep_until|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield)'
-          ! diff -u /tmp/kthread-pre-f.cpp eden/src/core/hle/kernel/k_thread.cpp | \
-            grep -E '^\+.*(BeginWait\(|EndWait\(|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield)'
-          ! diff -u /tmp/rasterizer-pre-f.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_f_attribution.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_g_attribution.py
+
+          grep -q '\[X1-WAKERG\]' eden/src/core/x1_waker_stage_g_profiler.h
+          grep -q 'ProducerCount = 2' eden/src/core/x1_waker_stage_g_profiler.h
+          grep -q 'ContextSlotCount = 64' eden/src/core/x1_waker_stage_g_profiler.h
+          grep -q 'ReportTopCount = 4' eden/src/core/x1_waker_stage_g_profiler.h
+          grep -q 'GetTrackedProducerIndex' eden/src/core/x1_waker_stage_f_profiler.h
+          ! grep -Eqi '0x80|0x81|0x210[a-f0-9]+' eden/src/core/x1_waker_stage_g_profiler.h
+          ! grep -Eqi '0x80|0x81|0x210[a-f0-9]+' lab/tools/adreno_lab/transplant_dc95_waker_stage_g_attribution.py
+
+          test "$(grep -c 'x1_stage_g_context = cur_thread->GetContext()' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
+          test "$(grep -c 'X1WakerStageGProfiler::Get().RecordCpuSlice' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
+          test "$(grep -c 'X1WakerStageGProfiler::Get().RecordScheduledIn' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
+          test "$(grep -c 'X1WakerStageGProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
+          test "$(grep -c 'X1WakerStageGProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
+          test "$(cat /tmp/add-cpu-count)" = "$(grep -c 'cur_thread->AddCpuTime(m_core_id, tick_diff)' eden/src/core/hle/kernel/k_scheduler.cpp)"
+          test "$(cat /tmp/switch-thread-count)" = "$(grep -c 'void KScheduler::SwitchThread' eden/src/core/hle/kernel/k_scheduler.cpp)"
+          test "$(cat /tmp/set-current-count)" = "$(grep -c 'SetCurrentThread(kernel, next_thread)' eden/src/core/hle/kernel/k_scheduler.cpp)"
+
+          ! diff -u /tmp/kscheduler-pre-g.cpp eden/src/core/hle/kernel/k_scheduler.cpp | \
+            grep -E '^\+.*(SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until)'
+          ! diff -u /tmp/rasterizer-pre-g.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
             grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
+          ! grep -E 'sleep_for|sleep_until|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield|QueueBuffer\(|swap_interval|gpu_fence_behavior' \
+            eden/src/core/x1_waker_stage_g_profiler.h
+
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('eden/src/core/hle/kernel/k_scheduler.cpp').read_text()
+          guarded = 'GetTrackedProducerIndex(cur_thread->GetThreadId());\n    if (x1_stage_g_out_index >= 0) {\n        const auto& x1_stage_g_context = cur_thread->GetContext();'
+          if guarded not in text:
+              raise SystemExit('Stage G guest PC/LR read is not guarded by Stage F producer selection')
+          before = Path('/tmp/stage-f-pre-g.h').read_text()
+          after = Path('eden/src/core/x1_waker_stage_f_profiler.h').read_text()
+          if before.count('[X1-WAKERF]') != after.count('[X1-WAKERF]'):
+              raise SystemExit('Stage F report behavior changed')
+          if after.count('GetTrackedProducerIndex') != 1:
+              raise SystemExit('Stage F dynamic producer accessor count mismatch')
+          PY
+
       - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly
         id: msys2
         uses: msys2/setup-msys2@v2
@@ -188,23 +221,27 @@ jobs:
             git make autoconf libtool automake-wrapper patch jq pactoys ninja
           pacboy: >-
             qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p libwebp:p libtiff:p brotli:p
+
       - name: Configure dc95 ARM64 standard build
         shell: msys2 {0}
         working-directory: eden
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: ./.ci/build/configure.sh -DCCACHE_PATH=sccache
-      - name: Build dc95 ARM64 X1 Stage F
+
+      - name: Build dc95 ARM64 X1 Stage G
         shell: msys2 {0}
         working-directory: eden
         run: cmake --build build
+
       - name: Package with Eden CI Windows packager
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: dc95cd09ee-x1-waker-stage-f
+          ARTIFACT_REF: dc95cd09ee-x1-waker-stage-g
           MSYS_TOOLCHAIN: CLANGARM64
         run: ./.ci/package/windows.sh
+
       - name: Add analyzers and metadata
         shell: pwsh
         run: |
@@ -214,13 +251,15 @@ jobs:
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_f_attribution.py extras/ -Force
+          Copy-Item lab/tools/adreno_lab/analyze_x1_waker_stage_g_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_guest_post_wait_attribution.py extras/ -Force
           Copy-Item lab/tools/adreno_lab/analyze_x1_frame_cadence.py extras/ -Force
-          "Stage F dynamic top-two promoted-key producer CPU/wait/scheduler attribution; exact Eden dc95cd09eea9749250fe31a3072684d341d19417; Stage F static validation run 33239570435" | Set-Content -Encoding UTF8 extras/WAKER_STAGE_F.txt
+          "Stage G focused CPU-slice PC/LR attribution for only the Stage F dynamically armed producer pair; exact Eden dc95cd09eea9749250fe31a3072684d341d19417; Ubuntu static validation run 33242026006" | Set-Content -Encoding UTF8 extras/WAKER_STAGE_G.txt
+
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-dc95-X1-waker-stage-f
+          name: Eden-dc95-X1-waker-stage-g
           path: |
             eden/artifacts/*
             extras/*
