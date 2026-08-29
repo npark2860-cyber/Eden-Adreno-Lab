@@ -1,4 +1,4 @@
-# NEXT ACTION — Waker Stage H ARM Build / Runtime
+# NEXT ACTION — Waker Stage H Runtime
 
 Updated: 2026-08-29 KST
 
@@ -9,6 +9,7 @@ Read first:
 - `CURRENT_HANDOFF.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_G_RUNTIME.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_H_IMPLEMENTED.md`
+- `DEBUG_HISTORY_20260829_WAKER_STAGE_H_BUILD.md`
 
 Fixed Eden baseline:
 
@@ -18,95 +19,60 @@ Current source branch:
 
 `exp/x1-waker-stage-h-module-callpath-mapping`
 
-Stage H base repository HEAD:
-
-`59cbc61cafe8c1ae7360dc7e04e6f884c7a74512`
-
 Never change the exact Eden baseline without explicit approval.
 
-## Stage H implementation state
+## Stage H build state — COMPLETE
 
-Implementation and Ubuntu/static validation are complete.
+The single authorized Stage H ARM64 attempt succeeded.
 
-Stage H shape:
-
-1. exact dc95 loader emits one bounded `[X1-WAKERH] module/base/end/size` line per loaded application NSO under the existing address-arbiter diagnostic setting;
-2. existing loader module-map insertion behavior is preserved;
-3. Stage G scheduler/hot path is unchanged;
-4. Stage G `ContextSlotCount=64` is unchanged;
-5. offline analyzer joins `[X1-WAKERH]` ranges to `[X1-WAKERG]` top raw PC/LR and emits canonical `module+offset` identities while retaining raw addresses.
-
-No runtime-observed TID, promoted address, PC or LR is hardcoded.
-
-Ubuntu validation:
-
-- workflow: `Validate dc95 X1 Waker Stage H`
-- run: `33246317401`
-- job: `99084287770`
+- workflow: `Build dc95 X1 Waker Stage H`
+- run: `33246620972`
+- job: `99085091095`
 - attempt: `1`
-- validation HEAD: `d39bfa3a814467f3b009202d626d4ee872db73f5`
-- conclusion: `success`
+- event: `workflow_dispatch`
+- build HEAD: `1c8b699ccc51ff7bca28fc57bf654c1e18fbd5f2`
+- exact dc95 verification: success
+- Stage A-G reconstruction / Stage H pre-configure verification: success
+- MSYS2 / configure / ARM64 compile / package / upload: success
+- conclusion: success
+- retry/rerun/additional ARM attempt: none
 
-Temporary Ubuntu workflow was deleted after success.
+Artifact:
 
-Persistent ARM workflow:
+- name: `Eden-dc95-X1-waker-stage-h`
+- artifact ID: `9797889460`
+- size: `31,414,690` bytes
+- SHA-256: `d41d53def266705924a928716909532475f73e29a94c25ec513730aca4493d92`
 
-`.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
+The one-shot dispatcher used to issue the approved dispatch was removed immediately afterward. Current branch HEAD after removal was `135d13a57d434e23d7f68928d0f335ed959d0892`; later documentation-only commits may move branch HEAD further. Persistent ARM workflow remains `workflow_dispatch` only.
 
-Current prepared workflow name:
-
-`Build dc95 X1 Waker Stage H`
-
-Trigger:
-
-`workflow_dispatch` only.
-
-Future artifact name:
-
-`Eden-dc95-X1-waker-stage-h`
-
-Stage H ARM64 attempts so far: `0`.
+A follow-up `ㄱㄱ` received while run `33246620972` was still active was **not** consumed as authorization for another ARM attempt.
 
 Current ARM64 authorization: **NONE**.
 
-## Immediate next action
+## Immediate next action — runtime only
 
-Do nothing until the user supplies a fresh explicit ARM64 authorization.
+Use artifact:
 
-A fresh `ㄱㄱ` after the Stage H implementation/static report means:
+`Eden-dc95-X1-waker-stage-h`
 
-> trigger exactly one Stage H ARM64 attempt using the persistent manual workflow on `exp/x1-waker-stage-h-module-callpath-mapping`.
+Run the same TOTK 1.2.1 gameplay capture used for Stage G.
 
-Rules:
+Keep behavior-changing A/B experiments OFF. Capture enough continuous gameplay to obtain multiple clean 120-frame windows in both:
 
-- one authorization = exactly one ARM64 attempt;
-- no retry;
-- no rerun;
-- no second attempt after failure without another fresh authorization;
-- do not reinterpret older approvals;
-- do not change the exact Eden baseline.
+- pure swap2;
+- pure swap3.
 
-## After a successful authorized ARM build
+Upload the resulting Eden log.
 
-Record:
+No ARM rebuild is needed for this action.
 
-- workflow run ID;
-- job ID;
-- attempt number;
-- build HEAD;
-- exact dc95 verification result;
-- Stage G reconstruction/precheck result;
-- Stage H pre-configure verification result;
-- conclusion;
-- artifact name / ID / size / SHA-256;
-- explicit retry/rerun state.
-
-Then run the same TOTK 1.2.1 gameplay capture with behavior-changing A/Bs OFF and enough 120-frame windows to separate pure swap2 and pure swap3.
+## Required runtime evidence
 
 Analyze together:
 
 - `[X1-WAKERH]` module ranges;
-- `[X1-WAKERG]` producer top PC/LR contexts;
+- `[X1-WAKERG]` selected-producer top saved PC/LR contexts;
 - `[X1-WAKERF]` producer CPU/Waiting trend;
 - raw QueueBuffer cadence.
 
@@ -115,6 +81,8 @@ Run:
 `tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py <eden_log>`
 
 Canonical cross-run identity is `module+offset`; raw absolute PC/LR remains audit evidence only.
+
+Stage G's saved PC is a scheduler slice-end execution context, not proof that all attributed CPU time was spent in that single instruction.
 
 ## Runtime decision map
 
@@ -134,6 +102,16 @@ D. The 64-slot overflow still prevents the dominant normalized family from being
 
 > only then redesign the fixed histogram representation/slot budget.
 
-Keep the producer CPU branch, producer Arbitration branch, and separate Stage D dynamic-waker CPU branch distinct until direct evidence joins them.
+Keep these branches distinct until direct evidence joins them:
+
+1. producer CPU growth;
+2. producer Arbitration recursion;
+3. separate Stage D dynamic-waker CPU growth.
 
 No optimization is justified yet.
+
+## ARM64 gate
+
+No build/rebuild/rerun is authorized now.
+
+Any future ARM64 attempt requires a new explicit user authorization after the runtime evidence is analyzed. One authorization still means exactly one attempt, with no automatic retry or rerun.
