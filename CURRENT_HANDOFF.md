@@ -13,13 +13,52 @@ Updated: 2026-08-29 KST
 - Stage D implementation/build record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
 - Stage D runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_RUNTIME.md`
 - Stage E implementation/static record: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_IMPLEMENTED.md`
+- Stage E first ARM attempt record: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_ARM_PRECHECK_FAILURE.md`
 - next action: `NEXT_ACTION_WAKER_STAGE_E.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
 **ARM64 rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Current authorization: NONE.**
 
-## Latest ARM64 build — Stage D SUCCESS
+## Latest ARM64 attempt — Stage E PRE-CONFIGURE FAILURE
+
+Fresh approval was consumed by exactly one Stage E workflow attempt:
+
+- workflow `Build dc95 X1 Waker Stage E`
+- run `33230457489`
+- job `99042246285`
+- attempt `1`
+- branch `exp/x1-waker-stage-e-recursive-arbiter`
+- build HEAD `0bab539c886a0c7b18be7ebe41476e81b7127a75`
+- exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
+- conclusion `failure`
+
+Passed before failure:
+
+- exact dc95 checkout / verification
+- retained chain reconstruction
+- Stage A through C reconstruction
+- Stage D application
+- Stage E application
+
+Failure point:
+
+`Verify Stage E before configure`
+
+Exact cause was a workflow-only guard typo:
+
+- incorrect guard: `TopSlotCount = 4`
+- actual Stage E constants: `TopWaitCount = 4` and `TopSignalCount = 4`
+
+Therefore MSYS2 setup / configure / ARM64 C++ compile / package / upload were all skipped. No Stage E ARM64 artifact was produced.
+
+The persistent workflow had already been restored to manual-only, and the guard was corrected in commit:
+
+`ece657ebcfb19f8e15ce1a73874f9ab980b0919f`
+
+No retry/rerun occurred and no second ARM64 run was created. A new Stage E ARM64 attempt requires fresh explicit authorization.
+
+## Latest successful ARM64 build — Stage D SUCCESS
 
 - run `33217783844`
 - job `99005198468`
@@ -33,7 +72,7 @@ Never change the exact Eden baseline without explicit baseline-change approval.
 - size `31,387,303` bytes
 - SHA-256 `cd7e8e2f218a522ad9a90e8ccff8170461be1d40732c15bcf24bd0ebc1cef7b5`
 
-No rerun occurred. Persistent ARM workflow remains manual-only `workflow_dispatch`.
+Persistent ARM workflow is manual-only `workflow_dispatch`.
 
 ## Closed causal chain retained
 
@@ -257,9 +296,15 @@ Passed:
 
 Temporary Stage E Ubuntu workflow was deleted after success.
 
-## Current causal frontier — Stage E runtime
+## Current causal frontier — Stage E build retry, then runtime
 
-The next runtime question is:
+Stage E source/static validation remains complete, but no Stage E ARM64 binary exists yet because the first authorized ARM workflow attempt failed on the incorrect `TopSlotCount` guard before configure.
+
+The workflow guard is now corrected and manual-only.
+
+A fresh explicit one-attempt ARM64 authorization is required before trying again.
+
+After a successful Stage E build, the runtime question is:
 
 > Which direct AddressArbiter wait made by the dynamically identified waker owns the ~32 ms slow Arbitration bucket, and which guest thread releases that promoted key?
 
@@ -276,7 +321,7 @@ See `NEXT_ACTION_WAKER_STAGE_E.md`.
 
 ## Actions state / ARM64 authorization
 
-Persistent ARM workflow is manual-only `workflow_dispatch`.
+Persistent Stage E ARM workflow is manual-only `workflow_dispatch` and contains the corrected `TopWaitCount` / `TopSignalCount` validation guards.
 
 Current ARM64 build authorization: **NONE**.
 
