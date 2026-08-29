@@ -8,21 +8,24 @@ Read first:
 
 - `CURRENT_HANDOFF.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_I_SDK_DISASSEMBLY.md`
-- `DEBUG_HISTORY_20260829_WAKER_STAGE_J_IMPLEMENTED.md`
-- `DEBUG_HISTORY_20260829_WAKER_STAGE_J_BUILD.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_J_RUNTIME.md`
+- `DEBUG_HISTORY_20260829_WAKER_STAGE_K_IMPLEMENTED.md`
 
 Fixed Eden baseline:
 
 `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 
+Current source branch:
+
+`exp/x1-waker-stage-k-grandparent-depth`
+
 Current ARM64 authorization: **NONE**.
 
 No ARM build/rebuild/rerun is authorized by this document.
 
-## Stage J result
+## Stage J result — COMPLETE
 
-Stage J parent-LR capture is valid for essentially all selected-producer CPU ticks and exactly reconciles with Stage G/F accounting.
+Stage J parent-LR capture is valid for essentially all selected-producer CPU ticks and reconciles with Stage G/F accounting.
 
 Dominant canonical triples:
 
@@ -31,90 +34,98 @@ Dominant canonical triples:
 - `sdk+0x158528 / sdk+0x124b40 / main+0x86be08`
 - `sdk+0x158528 / sdk+0x127058 / main+0x2a904cc`
 
-Exact semantics:
+Visible top-four triples explain about `61% / 54%` of producer 0 / producer 1 CPU-growth delta. Overflow remains material but does not prevent dominant-family identification.
 
-- WaitLightEvent -> WaitForAddress
-- ReceiveLightMessageQueue -> WaitForAddress
-- LockMutex -> InternalCriticalSectionImplByHorizon::Enter -> ArbitrateLock
+Offline reverse-call analysis is exhausted at this depth:
 
-Visible top-four triples explain about `61%` / `54%` of producer 0 / producer 1 CPU growth; overflow remains material but does not prevent dominant-family identification.
+- function containing `main+0x86a820`: 2 direct callers;
+- function containing `main+0x86be08`: 1 direct caller, then indirect/callback frontier;
+- function containing `main+0x2a904cc`: 0 direct BL callers;
+- `nn::os::LockMutex` main import: 6,201 direct BL call sites.
 
-The producer CPU-growth and producer Arbitration-growth branches both remain, and dynamic-waker CPU/Arbitration remains separate.
+## Stage K implementation/static — COMPLETE
 
-## Offline reverse-call exhaustion after Stage J
+Stage K adds exactly one more frame-record level for only the two Stage F dynamically selected producers.
 
-Exact dumped game/SDK images were inspected before proposing any new runtime instrumentation.
+Files:
 
-### WaitLightEvent parent A
+- `src/core/x1_waker_stage_k_profiler.h`
+- `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
+- `tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py`
 
-`main+0x86a820` lies in the stripped function beginning around `main+0x86a4ac`.
+At the existing selected-producer switch-out block:
 
-Direct callers of that function: only 2.
+1. reuse Stage J saved `fp` and parent status/LR;
+2. if Stage J parent is valid, range-validate `[fp, fp+8)`;
+3. read `parent_fp = [fp]` exactly once;
+4. require nonzero, aligned, monotonic `parent_fp > fp`, and no `+8` overflow;
+5. range-validate `[parent_fp+8, parent_fp+16)`;
+6. read `grandparent_lr = [parent_fp+8]` exactly once;
+7. attribute the same scheduler `tick_diff` to `(pc, lr, parent_lr, grandparent_lr)`;
+8. keep 2 producers / 64 fixed slots / top4 / 120-frame reporting.
 
-- one from a wrapper around `main+0x86a464`, which has no direct BL caller;
-- one from a function around `main+0x7edaf8`, which has 14 direct BL callers.
+This is one additional frame-record level, not arbitrary stack scanning.
 
-Static analysis cannot tell which dynamic path owns each selected-producer slice.
+Stage K adds exactly 2 read sites. Combined Stage J+K selected-producer block contains exactly 3 `Read64` sites total.
 
-### WaitLightEvent parent B
+## Ubuntu validation — SUCCESS
 
-`main+0x86be08` lies in the stripped function beginning around `main+0x86bd40`.
+Workflow:
 
-It has exactly one direct caller, `main+0x86bc98`, in a function beginning around `main+0x86bc04`.
+`Validate dc95 X1 Waker Stage K`
 
-No direct BL caller to `main+0x86bc04` was found, so the next owner is likely reached indirectly/callback-style; do not guess it.
+- run `33253036148`
+- job `99101891663`
+- attempt `1`
+- event `push`
+- validation HEAD `53defe670df0665554626430aaf4660cd70aa7b4`
+- result **SUCCESS**
 
-### ReceiveLightMessageQueue parent
+Validated exact dc95 -> A-J reconstruction, Stage K anchors, read/range counts, saved-FP reuse, monotonic ancestry check, unchanged F/G/J/H invariants, no hardcoded observations, no behavior mutation, and synthetic four-level module normalization.
 
-`main+0x2a904cc` lies in a stripped function beginning around `main+0x2a90478`.
+Temporary validator was deleted after success; deletion commit:
 
-Direct BL callers: 0.
+`c08c9cf36203936e8d430532115ae08a5f59ebfc`
 
-Static analysis cannot recover the dynamic callback owner.
+## Persistent ARM workflow state
 
-### Critical-section parent
+Path:
 
-`sdk+0x127e54` is `nn::os::LockMutex`.
+`.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
 
-The corresponding main import/PLT target has 6,201 direct BL call sites. Static reverse-call analysis is exhausted for this branch.
+It currently still names/builds Stage J and remains:
 
-## Smallest remaining evidence
+`workflow_dispatch` only.
 
-If the user chooses to continue, Stage K should add exactly one more frame-pointer caller level to the already-selected Stage F producer pair.
+This was intentionally left untouched because the current authorization covered Stage K implementation + Ubuntu/static validation only.
 
-At the same existing Stage G/J selected-producer switch-out point:
+Stage K Windows ARM64 run count: **0**.
 
-1. reuse the current saved `fp`;
-2. Stage J already obtains `parent_lr = [fp+8]`;
-3. validate and read `parent_fp = [fp]`;
-4. if `parent_fp` is nonzero/aligned, monotonic/sane, and `[parent_fp+8, parent_fp+16)` is a valid application virtual range, read exactly one `grandparent_lr = [parent_fp+8]`;
-5. attribute the same exact scheduler `tick_diff` to `(pc, lr, parent_lr, grandparent_lr)` in a bounded fixed table;
-6. report only every 120 frames.
+## Immediate next action — fresh ARM authorization required
 
-This is one additional frame-record level, not stack scanning.
+A fresh explicit user authorization is required before exactly one Stage K Windows ARM64 attempt.
 
-Before implementation, verify from the exact dumped binaries that the relevant Stage J parent functions preserve standard AArch64 frame records. The known SDK LockMutex and the visible main parent functions do so in the inspected paths, but the transplant/static validator must enforce the memory-read safety shape rather than assume runtime addresses.
+A fresh `ㄱㄱ` received after this ready state means:
 
-## Hard limits
+> retarget the persistent manual workflow from Stage J to Stage K without changing the exact dc95 baseline or manual-only trigger, verify the workflow and branch HEAD, then dispatch exactly one Windows ARM64 Stage K attempt.
 
-Stage K must not:
+One authorization = exactly one ARM attempt. Failure does not authorize retry/rerun.
 
-- hardcode Stage J observed PC/LR/parent addresses or producer TIDs;
-- filter by observed absolute addresses;
-- rediscover threads;
-- sample non-selected threads;
-- walk an arbitrary-length stack;
-- add per-switch logging;
-- widen Stage G/J 64-slot tables merely because overflow is nonzero;
-- alter priority, affinity, core placement, yield/reschedule, waits/signals, GPU work, QueueBuffer, frame cadence, or A/B behavior.
+Before dispatch verify:
 
-Any second frame-record read must be range-validated and observation-only.
+- current Stage K branch HEAD;
+- fixed Eden baseline remains exact dc95;
+- persistent workflow remains `workflow_dispatch` only after retargeting;
+- Stage K workflow includes K profiler copy/transplant/pre-configure checks/analyzer/artifact naming;
+- Stage K Windows ARM64 run count is still 0.
 
-## Decision after Stage K runtime
+## Runtime decision after a successful Stage K build
 
-A. Grandparent LR collapses the dominant families to a small stable `main/subsdk0` owner set:
+Use the same TOTK 1.2.1 conditions and enough clean swap2/swap3 120-frame windows.
 
-> map exact module offsets offline and determine whether the CPU-growth branch can finally be assigned to concrete game work.
+A. Grandparent LR collapses dominant families to a small stable `main/subsdk0` owner set:
+
+> map exact module offsets offline and determine whether the producer CPU-growth branch can finally be assigned to concrete game work.
 
 B. A major family still lands in generic SDK code:
 
@@ -122,18 +133,10 @@ B. A major family still lands in generic SDK code:
 
 C. Grandparent frame validity degrades materially for a specific family:
 
-> stop frame walking and inspect that family's exact frame/prologue/unwind semantics; do not introduce broad stack scanning.
+> stop frame walking and inspect exact frame/prologue/unwind semantics; do not introduce broad stack scanning.
 
-D. Grandparent is stable but overflow still contains most unexplained CPU growth:
+D. Grandparent is stable but bounded overflow still contains most unexplained CPU growth:
 
-> only then reconsider bounded histogram representation for the selected producers.
+> only then reconsider bounded histogram representation for selected producers.
 
 Do not optimize merely from synchronization function names.
-
-## ARM64 gate
-
-Current authorization: **NONE**.
-
-Stage K implementation and Ubuntu/static validation would not consume ARM64 authorization.
-
-A Windows ARM64 Stage K attempt would require a new explicit user authorization, one attempt only. Failure would not authorize retry/rerun.
