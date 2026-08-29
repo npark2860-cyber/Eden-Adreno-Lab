@@ -1,6 +1,6 @@
 # CURRENT HANDOFF — Eden Adreno X1 Waker Attribution
 
-Updated: 2026-08-29 KST
+Updated: 2026-08-30 KST
 
 ## Fixed baseline / rules
 
@@ -36,7 +36,7 @@ No broad/all-thread profiling. No behavior-changing priority/affinity/yield/resc
 - Stage J ARM build: `DEBUG_HISTORY_20260829_WAKER_STAGE_J_BUILD.md`
 - Stage J runtime: `DEBUG_HISTORY_20260829_WAKER_STAGE_J_RUNTIME.md`
 - Stage K implementation/static: `DEBUG_HISTORY_20260829_WAKER_STAGE_K_IMPLEMENTED.md`
-- active next action: `NEXT_ACTION_WAKER_STAGE_K.md`
+- `NEXT_ACTION_WAKER_STAGE_K.md` predates the failed Stage K ARM attempt; use the immediate-next-action section in this handoff until that file is separately updated.
 
 ## Persistent ARM workflow
 
@@ -46,15 +46,15 @@ Path:
 
 Current workflow name:
 
-`Build dc95 X1 Waker Stage J`
+`Build dc95 X1 Waker Stage K`
 
 Trigger remains exactly:
 
 `workflow_dispatch` only.
 
-It was intentionally not retargeted during Stage K implementation/static work because no ARM build was authorized. A future fresh Stage K ARM authorization may retarget this same persistent manual workflow to Stage K and dispatch exactly one attempt.
+The persistent workflow was retargeted to Stage K before the single authorized Stage K ARM attempt. It remains manual-only; no push-triggered ARM build is enabled.
 
-No ARM64 attempt is currently authorized.
+Current ARM64 authorization: **NONE**.
 
 ## Latest successful ARM64 build — Stage J SUCCESS
 
@@ -86,6 +86,47 @@ Canonical Stage J artifact:
 - SHA-256: `27b250b40b879eeeea0a33e8ded66d3e0e229aef22d67f4027715bedf240f7b8`
 - created: `2026-08-29T11:50:01Z`
 - expires: `2026-09-12T11:49:58Z`
+
+## Stage K Windows ARM64 attempt — FAILED
+
+Exactly one fresh user authorization was consumed for exactly one Stage K Windows ARM64 attempt.
+
+- workflow: `Build dc95 X1 Waker Stage K`
+- run: `33254495504`
+- job: `99105748612`
+- attempt: `1`
+- event: `workflow_dispatch`
+- build/source HEAD: `c64f01a03dba7606061ddb8e8aa9fecad91051ee`
+- exact dc95 checkout: success
+- retained chain reconstruction through Stage J: success
+- Stage K snapshot/application: success
+- Stage K verify before configure: success
+- MSYS2 CLANGARM64 setup: success
+- configure: success
+- `Build dc95 ARM64 X1 Stage K`: **FAILED**
+- package / analyzer metadata / upload: skipped after compile failure
+- artifact count: **0**
+- retry/rerun/additional ARM attempt: **none**
+
+One-shot dispatcher lifecycle:
+
+- creation/dispatch commit: `c64f01a03dba7606061ddb8e8aa9fecad91051ee`
+- deletion commit: `4193038f9901ecaa897b799cf037cadb99599d18`
+
+The failed attempt does not authorize a retry. Current ARM64 authorization remains **NONE**.
+
+### Stage K compile-failure status
+
+The C++ compile failure is proven; its exact root cause is **not yet proven**.
+
+Do not record the earlier simple enum-name mismatch hypothesis as the cause. Read-only comparison against the exact build HEAD shows the expected nested names are internally consistent in the checked Stage J/K sources:
+
+- Stage J header/transplant: `ParentStatus`
+- Stage K header/transplant: `GrandparentStatus`
+
+The next diagnostic step is to recover the **first compiler error chronologically** from job `99105748612` and determine whether the later scheduler errors are primary or cascading from an earlier header/parser/include/generated-source failure.
+
+No source patch, rebuild, retry, or rerun is authorized by this diagnosis step.
 
 ## Closed historical chain
 
@@ -269,7 +310,7 @@ Temporary validator deleted after success at commit:
 
 `c08c9cf36203936e8d430532115ae08a5f59ebfc`
 
-Stage K Windows ARM64 run count: **0**.
+Stage K Windows ARM64 run count: **1**, result: **FAILED during C++ build**. No artifact was produced and no retry/rerun occurred.
 
 ## Resolution-scaling observation — UNVERIFIED
 
@@ -291,23 +332,21 @@ GPU starvation
 -> known Nintendo SDK synchronization primitives
 -> Stage J parent sites expose concrete main code / LockMutex
 -> static reverse-call frontier becomes indirect or extremely broad
--> Stage K is now statically ready to identify exactly one dynamic grandparent caller level
+-> Stage K dynamic-grandparent instrumentation is statically validated but its first ARM64 compile failed before a runnable artifact was produced
 -> slow cadence still has longer active CPU slices before blocker + longer kernel Arbitration.
 
 No optimization is justified yet.
 
-## Immediate next action — ARM gate
-
-Read:
-
-`NEXT_ACTION_WAKER_STAGE_K.md`
+## Immediate next action — read-only Stage K compile diagnosis
 
 Current ARM64 authorization: **NONE**.
 
-A fresh explicit authorization is required before exactly one Stage K Windows ARM64 attempt.
+Do **not** dispatch, retry, or rerun ARM64.
 
-A fresh `ㄱㄱ` after this ready state means:
+Inspect job `99105748612` and identify the first compiler error chronologically. Determine whether it originates in a Stage J/K profiler header, an include/redefinition/parser issue, generated `k_scheduler.cpp`, or another earlier compile failure that causes later member/type errors to cascade.
 
-> retarget the existing persistent `workflow_dispatch`-only workflow from Stage J to Stage K, verify exact dc95 / branch HEAD / K safety checks / Stage K ARM run count 0, then dispatch exactly one ARM64 attempt.
+Compare the failing generated source against exact build/source HEAD:
 
-Failure does not authorize retry/rerun.
+`c64f01a03dba7606061ddb8e8aa9fecad91051ee`
+
+Only after the root cause is proven may a source-fix step be proposed. A source fix still requires explicit user authorization before editing, and any later ARM64 retry requires a separate fresh explicit ARM64 authorization.
