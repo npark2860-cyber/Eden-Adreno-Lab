@@ -8,7 +8,9 @@ Updated: 2026-08-29 KST
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
 - current source branch: `exp/x1-waker-stage-h-module-callpath-mapping`
-- Stage H base repository HEAD: `59cbc61cafe8c1ae7360dc7e04e6f884c7a74512`
+- Stage H implementation code base HEAD: `59cbc61cafe8c1ae7360dc7e04e6f884c7a74512`
+- successful Stage H ARM build HEAD: `1c8b699ccc51ff7bca28fc57bf654c1e18fbd5f2`
+- one-shot dispatcher cleanup commit: `135d13a57d434e23d7f68928d0f335ed959d0892`
 
 Primary records:
 
@@ -25,6 +27,7 @@ Primary records:
 - Stage G ARM precheck failure: `DEBUG_HISTORY_20260829_WAKER_STAGE_G_ARM_PRECHECK_FAILURE.md`
 - Stage G build/runtime: `DEBUG_HISTORY_20260829_WAKER_STAGE_G_RUNTIME.md`
 - Stage H implementation/static: `DEBUG_HISTORY_20260829_WAKER_STAGE_H_IMPLEMENTED.md`
+- Stage H successful ARM build: `DEBUG_HISTORY_20260829_WAKER_STAGE_H_BUILD.md`
 - next action: `NEXT_ACTION_WAKER_STAGE_H.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
@@ -39,7 +42,7 @@ Path:
 
 `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
 
-Current prepared workflow name:
+Current workflow name:
 
 `Build dc95 X1 Waker Stage H`
 
@@ -47,39 +50,40 @@ Trigger:
 
 `workflow_dispatch` only.
 
-Future artifact:
+Artifact name:
 
 `Eden-dc95-X1-waker-stage-h`
 
-Do not trigger it without a fresh explicit ARM64 authorization.
+The one-shot dispatcher used for the approved Stage H dispatch was removed immediately after the single run was created. The persistent workflow remains manual-only.
 
-## Latest successful ARM64 build — Stage G SUCCESS
+## Latest successful ARM64 build — Stage H SUCCESS
 
-A first Stage G ARM attempt failed in pre-configure verification because a Git-Bash `/tmp/...` snapshot path was not visible to native Windows Python. It did not reach MSYS2/configure/compile and was not rerun.
+Exactly one fresh authorization was used for exactly one Stage H ARM64 attempt:
 
-After the workflow precheck was fixed, a fresh authorization was used for exactly one new attempt:
-
-- workflow: `Build dc95 X1 Waker Stage G`
-- run: `33244399213`
-- job: `99079231424`
+- workflow: `Build dc95 X1 Waker Stage H`
+- run: `33246620972`
+- job: `99085091095`
 - attempt: `1`
 - event: `workflow_dispatch`
-- build HEAD: `573ba79f2a0a0ba534993d314e113d2f9fb7d1c5`
+- build HEAD: `1c8b699ccc51ff7bca28fc57bf654c1e18fbd5f2`
 - exact dc95 verification: success
-- retained Stage A-F reconstruction: success
-- Stage G transplant/pre-configure verification: success
-- MSYS2 / configure / ARM64 compile / package / upload: success
+- retained Stage A-G reconstruction: success
+- Stage H transplant/pre-configure verification: success
+- MSYS2 / configure / ARM64 compile / package / analyzer metadata / upload: success
 - conclusion: success
 - retry/rerun: none
+- additional ARM64 attempt: none
 
 Artifact:
 
-- name: `Eden-dc95-X1-waker-stage-g`
-- artifact id: `9712697731`
-- size: `31,416,415` bytes
-- SHA-256: `38ccf37cc28cb5123b5c4018117b4f53a651bc0e77488955dddaf9093c98a7a1`
+- name: `Eden-dc95-X1-waker-stage-h`
+- artifact ID: `9797889460`
+- size: `31,414,690` bytes
+- SHA-256: `d41d53def266705924a928716909532475f73e29a94c25ec513730aca4493d92`
+- created: `2026-08-29T10:24:02Z`
+- expires: `2026-11-27T10:23:59Z`
 
-No Stage H ARM64 attempt has occurred.
+A follow-up `ㄱㄱ` arrived while this same run was still active. It was used only to resolve the already-running attempt and was **not** consumed as authorization for a second ARM64 run. Current ARM64 authorization remains `NONE`.
 
 ## Closed historical chain
 
@@ -207,25 +211,23 @@ Four reported exact PC/LR contexts explain about `61% / 54%` of producer 0 / 1 C
 
 The same saved-PC family also appears in the separate Stage D dynamic-waker reports, suggesting a shared runtime/synchronization endpoint is possible. Do not merge branches without module/caller evidence.
 
-## Stage H — IMPLEMENTED / UBUNTU STATIC COMPLETE
+## Stage H — IMPLEMENTED / STATIC / ARM BUILD COMPLETE
 
 Implementation record:
 
 `DEBUG_HISTORY_20260829_WAKER_STAGE_H_IMPLEMENTED.md`
 
-Branch:
+Build record:
 
-`exp/x1-waker-stage-h-module-callpath-mapping`
+`DEBUG_HISTORY_20260829_WAKER_STAGE_H_BUILD.md`
 
 Goal:
 
 > normalize only the already-selected Stage G saved PC/LR contexts to ASLR-safe guest `module+offset` identities.
 
-### Implementation shape
-
 Stage H reuses exact dc95's existing static NSO load truth in `AppLoader_DeconstructedRomDirectory::Load()`.
 
-After each existing successful module load and `modules.insert_or_assign(load_addr, module)`, the transplant emits one bounded loader line under the existing address-arbiter diagnostic setting:
+After each existing successful module load and `modules.insert_or_assign(load_addr, module)`, Stage H emits one bounded loader line under the existing address-arbiter diagnostic setting:
 
 `[X1-WAKERH] module=<name> base=<guest VA> end=<guest VA> size=<bytes>`
 
@@ -235,7 +237,7 @@ Offline analyzer:
 
 `tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py`
 
-It joins Stage H ranges to Stage G top contexts and emits canonical identities such as `main+0x...` / `sdk+0x...`, retaining raw PC/LR for audit.
+It joins Stage H ranges to Stage G top contexts and emits canonical `module+offset` identities while retaining raw PC/LR for audit.
 
 Stage H does **not**:
 
@@ -246,30 +248,16 @@ Stage H does **not**:
 - add per-switch logging;
 - mutate priority/affinity/yield/reschedule/waits/signals/GPU/QueueBuffer/cadence.
 
-### Ubuntu static validation
+Ubuntu validation succeeded:
 
 - workflow: `Validate dc95 X1 Waker Stage H`
 - run: `33246317401`
 - job: `99084287770`
 - attempt: `1`
 - validation HEAD: `d39bfa3a814467f3b009202d626d4ee872db73f5`
-- runner: `ubuntu-latest`
 - conclusion: `success`
 
-Passed:
-
-- exact dc95 HEAD preserved;
-- transplant applies cleanly;
-- `git diff --check`;
-- transplant/analyzer `py_compile`;
-- one bounded `[X1-WAKERH]` log site;
-- existing module-map insertion/debug behavior preserved;
-- scheduler byte-for-byte unchanged by Stage H;
-- no hardcoded runtime observations;
-- no behavior-mutation tokens;
-- synthetic module+offset analyzer join with raw-address audit preservation.
-
-Temporary Ubuntu workflow was deleted after success.
+Windows ARM64 build also succeeded in one authorized attempt; artifact is ready for runtime capture.
 
 ## Current causal frontier
 
@@ -282,7 +270,7 @@ GPU command starvation
 -> two dynamically selected producer threads
 -> producer Arbitration growth + producer CPU growth
 -> Stage G resolves CPU growth to a small recurring saved-PC family plus material overflow
--> Stage H is ready to normalize that family to ASLR-safe module/caller identities
+-> Stage H binary is ready to normalize that family to ASLR-safe module/caller identities at runtime
 
 Still open in parallel:
 
@@ -291,17 +279,36 @@ Still open in parallel:
 
 No optimization is justified yet.
 
-## Immediate next action / authorization gate
+## Immediate next action — Stage H runtime capture
 
 Current ARM64 authorization: **NONE**.
 
-Stage H implementation/static is complete. No Stage H ARM64 attempt has occurred.
+Do **not** build/rebuild/rerun.
 
-A fresh `ㄱㄱ` after this handoff authorizes exactly **one** Stage H ARM64 attempt using:
+Use artifact:
 
-- branch `exp/x1-waker-stage-h-module-callpath-mapping`
-- workflow `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
+`Eden-dc95-X1-waker-stage-h`
 
-The workflow is `workflow_dispatch` only.
+Run the same TOTK 1.2.1 gameplay capture used for Stage G, with behavior-changing A/Bs OFF and enough continuous runtime for multiple clean 120-frame pure swap2 and pure swap3 windows.
 
-No retry/rerun/second attempt is allowed without another fresh explicit authorization, even if the single attempt fails.
+Upload the resulting Eden log.
+
+Then analyze together:
+
+- `[X1-WAKERH]` module ranges;
+- `[X1-WAKERG]` selected-producer top PC/LR contexts;
+- `[X1-WAKERF]` producer CPU/Waiting trend;
+- raw QueueBuffer cadence.
+
+Run:
+
+`tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py <eden_log>`
+
+Canonical identity is `module+offset`; raw absolute PC/LR remains audit evidence only.
+
+Decision order:
+
+1. map dominant normalized module/LR caller families to exact guest runtime/source semantics;
+2. only if LR remains insufficient, add the smallest selected-producer-only caller-depth evidence;
+3. only if 64-slot overflow prevents identifying the dominant normalized family, redesign histogram representation/slot budget;
+4. do not merge producer CPU, producer Arbitration, and Stage D dynamic-waker CPU branches without direct joining evidence.
