@@ -7,11 +7,12 @@ Updated: 2026-08-29 KST
 - repository: `npark2860-cyber/Eden-Adreno-Lab`
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
-- current source branch: `exp/x1-waker-stage-d-cpu-scheduler`
+- current source branch: `exp/x1-waker-stage-e-recursive-arbiter`
 - Stage B runtime record: `DEBUG_HISTORY_20260828_ADDRESS_ARBITER_SIGNAL_OWNER.md`
 - Stage C runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_C_RUNTIME.md`
 - Stage D implementation/build record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_IMPLEMENTED.md`
 - Stage D runtime record: `DEBUG_HISTORY_20260829_WAKER_STAGE_D_RUNTIME.md`
+- Stage E implementation/static record: `DEBUG_HISTORY_20260829_WAKER_STAGE_E_IMPLEMENTED.md`
 - next action: `NEXT_ACTION_WAKER_STAGE_E.md`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
@@ -27,15 +28,12 @@ Never change the exact Eden baseline without explicit baseline-change approval.
 - build HEAD `faf518e70811ba9f0c1a754c14d5da8584753904`
 - exact Eden source `dc95cd09eea9749250fe31a3072684d341d19417`
 - conclusion `success`
-- exact dc95 verify / retained chain / Stage A-C / Stage D apply+verify / configure / ARM64 compile / package / upload: all `success`
 - artifact `Eden-dc95-X1-waker-stage-d`
 - artifact id `9704658049`
 - size `31,387,303` bytes
 - SHA-256 `cd7e8e2f218a522ad9a90e8ccff8170461be1d40732c15bcf24bd0ebc1cef7b5`
-- created `2026-08-28T23:12:10Z`
-- expires `2026-09-11T23:12:08Z`
 
-No rerun occurred and no second ARM64 attempt was created. Persistent Stage D ARM workflow is manual-only `workflow_dispatch`.
+No rerun occurred. Persistent ARM workflow remains manual-only `workflow_dispatch`.
 
 ## Closed causal chain retained
 
@@ -48,35 +46,27 @@ Do not reopen without new evidence:
 - dominant Uniform path is mapped adaptive fast stream; heavy payload repeat does not make blind lifetime reuse safe.
 - classic-cache fallback did not break the gameplay ceiling.
 - raw QueueBuffer swap2 ~= nominal 30-FPS opportunity; swap3 ~= nominal 20-FPS opportunity; VI ~= 60 Hz.
-- swap3->effective2 clamp and DFPS experiments did not raise upstream production rate.
+- swap3->effective2 clamp and DFPS did not raise upstream production rate.
 - BufferQueue free-slot/backpressure is closed as primary owner.
-- slow Frame Build is roughly 48-55 ms/frame while measured Vulkan scopes explain only a minority.
-- GPU worker is mostly starved in queue wait; active GPU-command work is not the missing interval.
+- GPU worker is mostly starved for command supply; active GPU-command work is not the missing interval.
 - long inter-submit gap exists before NVDRV handler entry; handler/SubmitGPFIFO/locks/fence/syncpoint are tiny.
 - dominant guest submitter in tested runs = `tid=0x53`, CPU share about 1-2%.
 - NVDRV IPC dispatch is about 0.02-0.03 ms/request; host service scheduling is not the missing owner.
-- post-submit interval is generally mostly guest KThread `Waiting`.
 
 ## Address Arbiter Stage A — COMPLETE
 
-Within each process the dominant submitter waits on one stable gameplay key:
+Dominant submitter waits on one stable per-process gameplay AddressArbiter key:
 
 - victim / submitter: `tid=0x53` in tested runs
 - operation: `WaitIfEqual`
 - timeout: `-1`
-- direct `WaitForAddress` duration reconciles essentially one-for-one with reason-level `Arbitration`.
+- direct `WaitForAddress` duration reconciles with reason-level `Arbitration`.
 
-Absolute guest VA is not process-invariant. Observed:
-
-- `0x210adbc120`
-- `0x210b5bc120`
-- `0x210b1bc120`
-
-Profiler dynamically latches the current run's first post-warmup target-thread `WaitIfEqual(timeout=-1)` address.
+Absolute guest VA relocates across launches, so the profiler dynamically latches the current run's target address.
 
 ## Address Arbiter Stage B — COMPLETE
 
-Stage B proved the late-waker edge:
+Measured edge:
 
 - victim `tid=0x53`
 - sole matching waker `tid=0x4f` in measured runs
@@ -84,11 +74,10 @@ Stage B proved the late-waker edge:
 - value `1`
 - count `-1`
 - normal gameplay one matching signal per rendered frame
-- missing/no-active/overflow `0`
 - `direct WaitForAddress ~= wait-start -> matching-signal (w2s)`
-- signal -> wait-return (`s2e`) is essentially zero
+- signal -> victim return (`s2e`) essentially zero
 
-Therefore the long submitter AddressArbiter delay happens before the waker signals. Once the matching signal arrives, the victim returns essentially immediately.
+Therefore the long victim wait occurs before the waker signals.
 
 ## Stage C — RUNTIME COMPLETE
 
@@ -96,31 +85,21 @@ Runtime:
 
 `eden_log(20260828-173023).txt`
 
-Stage C established only the total waker signal-to-signal Waiting versus residual split. Its old wait-reason breakdown is invalid because exact dc95 commonly assigns Arbitration / ConditionVar / Synchronization / Sleep after `BeginWait`.
+Stage C established the dynamic waker signal-to-signal total split only.
 
-Correct completed-wait classification, implemented in Stage D:
-
-> exit reason if non-None, otherwise entry reason fallback
-
-Stable-fast raw swap2 in Stage C was approximately:
+Stable fast:
 
 - inter-signal `33.722 ms`
 - total Waiting `27.708 ms`
 - residual `6.014 ms`
 
-Stable-slow raw swap3 was approximately:
+Stable slow:
 
 - inter-signal `55.022 ms`
 - total Waiting `34.183 ms`
 - residual `20.839 ms`
 
-Slow-minus-fast:
-
-- inter-signal `+21.299 ms`
-- Waiting `+6.474 ms`
-- residual `+14.825 ms`
-
-These total values remain valid; the Stage C named-reason split does not.
+Its old named wait-reason breakdown is invalid because exact dc95 often assigns the debug wait reason after `BeginWait`.
 
 ## Stage D — RUNTIME COMPLETE
 
@@ -135,7 +114,6 @@ Measured identity:
 - victim `tid=0x53`
 - dynamic waker `tid=0x4f`
 - waker switches `0`
-- signal `incEq`, value `1`, count `-1`
 - matching signal guest PC `0x85a03528`
 - waker priority `44`
 - latest active/current core `0/0`
@@ -145,7 +123,7 @@ Stable block selection:
 
 - pure swap2: frames `480, 600, 720, 840, 960, 1080, 1320, 1440`
 - pure swap3: frames `1800, 1920, 2040, 2160, 2280`
-- transition frame 1680 (`10 swap2 / 110 swap3`, `interAvg=84.143 ms`) excluded from stable averages
+- transition frame 1680 excluded
 
 ### Stage D aggregate split
 
@@ -157,17 +135,15 @@ Stable block selection:
 | estimated waker CPU | 7.526 ms | 21.802 ms | +14.276 ms |
 | runnable-unscheduled | 0.239 ms | 0.307 ms | +0.068 ms |
 
-Therefore the slow-regime +23.52 ms is mixed:
-
-- about +14.28 ms (~60.7%) additional waker CPU execution;
-- about +9.19 ms (~39.1%) additional Waiting;
-- only +0.07 ms (~0.3%) runnable-unscheduled.
-
 **Runnable/scheduler starvation is closed for this slowdown.**
 
-CPU accounting retains the known context-switch accumulation caveat, so use these multi-block aggregate trends rather than individual intervals.
+Slowdown is mixed:
 
-### Corrected wait reason — decisive mode shift
+- about +14.28 ms additional dynamic-waker CPU execution;
+- about +9.19 ms additional Waiting;
+- negligible runnable-unscheduled growth.
+
+### Corrected wait-reason mode shift
 
 Average corrected reason time per signal:
 
@@ -180,68 +156,127 @@ Average corrected reason time per signal:
 | IPC | 0.023 ms | 0.038 ms | +0.015 ms |
 | true None | 0.000 ms | 0.000 ms | 0.000 ms |
 
-Stable-fast corrected Waiting is primarily ConditionVar (~67.1%) with Arbitration secondary (~28.9%).
+Stable slow corrected Waiting is ~92.7% Arbitration.
 
-Stable-slow corrected Waiting is overwhelmingly Arbitration (~92.7%) and ConditionVar nearly disappears (~1.3%).
+True None branch is closed: unknown / SetActivity pinned / SetCoreMask pinned / process user-exception are all zero.
 
-The net Waiting increase is only +9.19 ms because `+24.90 ms` Arbitration expansion is offset by `-16.78 ms` ConditionVar contraction.
+Signal PC remains stable at `0x85a03528`; same two LR contexts remain. The second LR `0x859cfa8c` becomes more common in slow mode, but CPU-LR correlation is not yet causal proof.
 
-Exact dc95 `KAddressArbiter::WaitIfLessThan` and `WaitIfEqual` both assign `ThreadWaitReasonForDebugging::Arbitration` after `BeginWait`, so the Stage D corrected Arbitration bucket maps to an actual AddressArbiter wait path.
+## Stage E — IMPLEMENTED / STATIC VALIDATED
 
-### True None branch — CLOSED
+Current branch:
 
-All focused reason-less Stage D sites remain zero:
+`exp/x1-waker-stage-e-recursive-arbiter`
 
-- unknown None `0`
-- SetActivity pinned `0`
-- SetCoreMask pinned `0`
-- process user-exception `0`
+New files:
 
-### Signal LR context
+- `src/core/x1_waker_stage_e_profiler.h`
+- `tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py`
+- `tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py`
 
-Signal PC stays `0x85a03528` in both regimes. Same LR set remains, so there is no wholesale callsite switch.
+New report:
 
-Stable-fast, 960 signals:
+`[X1-WAKERE]`
 
-- `0x859cfb40`: 79.27%
-- `0x859cfa8c`: 17.81%
-- remaining contexts ~2.9%
+Stage E is observation-only and does not hardcode `tid=0x4f` or any process-specific absolute guest wait address.
 
-Stable-slow, 600 signals:
+### A. Dynamic-waker WaitForAddress aggregation
 
-- `0x859cfb40`: 66.33%
-- `0x859cfa8c`: 30.67%
-- remaining contexts ~3.0%
+At each `WaitForAddress` call, Stage E reuses Stage D's dynamically latched waker identity and observes only that thread.
 
-The second LR becomes more common in slow mode. Preserve this correlation but do not treat it alone as root cause.
+Fixed 16-slot aggregate fields:
 
-Victim-side `w2s` also remains consistent with the causal direction:
+- address
+- arbitration type
+- reference value / timeout and variation counts
+- call / completed count
+- total / average / max direct wait duration
+- success / timeout / other result
 
-- stable swap2 mean ~`1.381 ms`
-- stable swap3 mean ~`42.112 ms`
-- signal -> victim return remains near zero
+No per-event log flood.
 
-## Current causal frontier — Stage E
+### B. One-key recursive promotion
 
-Stage D is complete.
+Every 120 rendered frames Stage E ranks the dynamic waker's direct `WaitForAddress` keys by total duration.
 
-The next question is:
+Only the top key is promoted for recursive matching `SignalToAddress` owner attribution in the following report window.
 
-> Which AddressArbiter wait performed by the dynamically identified waker owns the slow-regime Arbitration expansion, and which guest thread releases that wait?
+This creates an intentional one-window discovery lag. First report selects the key; later stable reports carry its signal-owner timing.
 
-Stage E must remain narrow:
+Promotion may switch dynamically if a different key becomes dominant. Stage E never tracks arbitrary wait addresses recursively in parallel.
 
-1. dynamically reuse the current-run matching-signal waker TID; do not hardcode `0x4f`;
-2. aggregate only that thread's `WaitForAddress` calls by address/type/value/timeout and duration;
-3. promote only the dominant current-run waker wait key into matching `SignalToAddress` owner attribution;
-4. keep the CPU branch separate; if cheap, correlate interval Waiting/Arbitration/CPU with the existing top signal LR contexts;
-5. do not broaden into all-thread scheduler or all-SVC tracing.
+### C. Recursive signal-owner attribution
 
-See `NEXT_ACTION_WAKER_STAGE_E.md` for the exact Stage E plan and prohibitions.
+For only the promoted key Stage E aggregates:
+
+- signaler guest TID
+- signal type
+- value / count + variation counts
+- signal calls and calls during the active promoted wait
+- wait-start -> signal (`w2s`) avg/max
+- signal -> waker wait return (`s2e`) avg/max
+- no-active / no-signal-return / overflow sanity
+
+This moves the Stage B causal method exactly one AddressArbiter edge upstream.
+
+### D. CPU branch remains separate
+
+Stage E intentionally does not add CPU-by-LR interval partitioning. The Stage D +14.28 ms CPU branch is already independently quantified and remains open.
+
+Do not merge the recursive wait producer with the CPU branch unless runtime evidence proves they are the same path.
+
+## Stage E static validation
+
+Ubuntu-only one-shot:
+
+- run `33230000239`
+- job `99041006308`
+- attempt `1`
+- conclusion `success`
+
+Passed:
+
+- exact dc95 checkout
+- retained diagnostic chain reconstruction
+- Stage A through D reconstruction
+- Stage E application
+- exact HEAD preservation
+- `git diff --check`
+- Python compile + analyzer smoke test
+- no hardcoded observed waker TID
+- no hardcoded process-specific guest wait VA
+- original `WaitAddressArbiter` call count preserved
+- original `SignalAddressArbiter` call count preserved
+- validation helper occurrence counts preserved
+- exactly one Stage E BeginWait hook
+- exactly one Stage E EndWait hook
+- exactly one Stage E promoted-key RecordSignal hook
+- no kernel wait insertion
+- no priority/core-affinity/scheduler mutation
+- no GPU/swap/cadence behavior mutation
+
+Temporary Stage E Ubuntu workflow was deleted after success.
+
+## Current causal frontier — Stage E runtime
+
+The next runtime question is:
+
+> Which direct AddressArbiter wait made by the dynamically identified waker owns the ~32 ms slow Arbitration bucket, and which guest thread releases that promoted key?
+
+Runtime decision:
+
+1. if one `top0` direct wait reconciles with slow Stage D Arbitration, follow only that key;
+2. if its `w2s` is essentially the direct wait and `s2e` tiny, move the frontier to its signaler TID before signal;
+3. if dominant wait key changes between swap2 and swap3, treat the key switch as the regime change;
+4. if several keys share time, retain only enough top contributors to explain most slow Arbitration;
+5. if direct waits do not reconcile with corrected Arbitration, audit instrumentation before optimization;
+6. regardless of result, keep the separate +14.28 ms CPU branch open until explicitly attributed.
+
+See `NEXT_ACTION_WAKER_STAGE_E.md`.
 
 ## Actions state / ARM64 authorization
 
-Persistent Stage D ARM workflow is manual-only `workflow_dispatch`.
+Persistent ARM workflow is manual-only `workflow_dispatch`.
 
 Current ARM64 build authorization: **NONE**.
 
