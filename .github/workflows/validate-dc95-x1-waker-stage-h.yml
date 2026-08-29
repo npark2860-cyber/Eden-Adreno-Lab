@@ -1,0 +1,106 @@
+name: Validate dc95 X1 Waker Stage H
+
+on:
+  push:
+    branches:
+      - exp/x1-waker-stage-h-module-callpath-mapping
+    paths:
+      - .github/workflows/validate-dc95-x1-waker-stage-h.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Adreno Lab
+        uses: actions/checkout@v4
+        with:
+          path: lab
+          fetch-depth: 0
+
+      - name: Checkout exact dc95 source
+        uses: actions/checkout@v4
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 0
+
+      - name: Verify exact baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+
+      - name: Snapshot pre-H invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp eden/src/core/loader/deconstructed_rom_directory.cpp /tmp/deconstructed-pre-h.cpp
+          cp eden/src/core/hle/kernel/k_scheduler.cpp /tmp/kscheduler-pre-h.cpp
+          grep -c 'modules.insert_or_assign(load_addr, module)' /tmp/deconstructed-pre-h.cpp > /tmp/module-insert-count
+          grep -c 'LOG_DEBUG(Loader, "loaded module {} @ {:#x}", module, load_addr)' /tmp/deconstructed-pre-h.cpp > /tmp/module-debug-count
+
+      - name: Apply Stage H module mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          python lab/tools/adreno_lab/transplant_dc95_waker_stage_h_module_mapping.py eden
+
+      - name: Verify Stage H invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_h_module_mapping.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py
+
+          test "$(grep -c '\[X1-WAKERH\]' eden/src/core/loader/deconstructed_rom_directory.cpp)" = 1
+          test "$(cat /tmp/module-insert-count)" = "$(grep -c 'modules.insert_or_assign(load_addr, module)' eden/src/core/loader/deconstructed_rom_directory.cpp)"
+          test "$(cat /tmp/module-debug-count)" = "$(grep -c 'LOG_DEBUG(Loader, "loaded module {} @ {:#x}", module, load_addr)' eden/src/core/loader/deconstructed_rom_directory.cpp)"
+          grep -q 'x1_address_arbiter_attribution_log.GetValue()' eden/src/core/loader/deconstructed_rom_directory.cpp
+          grep -q 'module={} base={:#x} end={:#x} size={:#x}' eden/src/core/loader/deconstructed_rom_directory.cpp
+
+          ! grep -Eqi '0x85f12528|0x85f12420|0x85edea8c|0x85edeb40|0x80|0x81' \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_h_module_mapping.py
+          ! grep -Eqi '0x85f12528|0x85f12420|0x85edea8c|0x85edeb40|0x80|0x81' \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py
+
+          diff -u /tmp/kscheduler-pre-h.cpp eden/src/core/hle/kernel/k_scheduler.cpp
+          ! git -C eden diff -- src/core/loader/deconstructed_rom_directory.cpp | \
+            grep -E '^\+.*(sleep_for|sleep_until|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield|QueueBuffer\(|swap_interval|gpu_fence_behavior|WaitForAddress\(|SignalToAddress\()'
+
+          python - <<'PY'
+          from pathlib import Path
+          diff = Path('/tmp/deconstructed-pre-h.cpp').read_text()
+          after = Path('eden/src/core/loader/deconstructed_rom_directory.cpp').read_text()
+          if after.count('[X1-WAKERH]') != 1:
+              raise SystemExit('Stage H log site count mismatch')
+          if diff.count('modules.insert_or_assign(load_addr, module)') != after.count('modules.insert_or_assign(load_addr, module)'):
+              raise SystemExit('existing module map behavior changed')
+          PY
+
+      - name: Analyzer synthetic smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/stage-h-synthetic.log <<'EOF'
+          [ 1.0] Loader <Info> x: [X1-WAKERH] module=main base=0x1000 end=0x2000 size=0x1000
+          [ 1.0] Loader <Info> x: [X1-WAKERH] module=sdk base=0x2000 end=0x3000 size=0x1000
+          [ 2.0] HW.GPU <Info> x: [X1-WAKERG] frame=120 frames=120 producer=0 tid=0x1 slices=2 cpuTicks=100 cpuWall=0.100ms unknownN=0 unknownTicks=0 unknownWall=0.000ms overflowN=0 overflowTicks=0 overflowWall=0.000ms identitySwitch=0 missingStart=0 malStart=0 malTicks=0 clockMismatch=0 prio=44 activeCore=1 currentCore=1 top0=0x1100/0x2200/80/0.080ms/1/80.00% top1=0x1200/0x2300/20/0.020ms/1/20.00% top2=0x0/0x0/0/0.000ms/0/0.00% top3=0x0/0x0/0/0.000ms/0/0.00%
+          EOF
+          python lab/tools/adreno_lab/analyze_x1_waker_stage_h_module_mapping.py /tmp/stage-h-synthetic.log | tee /tmp/stage-h-analysis.txt
+          grep -q 'pc=main+0x100' /tmp/stage-h-analysis.txt
+          grep -q 'lr=sdk+0x200' /tmp/stage-h-analysis.txt
+          grep -q 'rawPc=0x1100' /tmp/stage-h-analysis.txt
+
+      - name: Final exact baseline check
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
