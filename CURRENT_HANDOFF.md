@@ -271,6 +271,18 @@ Temporary validator deleted after success at commit:
 
 Stage K Windows ARM64 run count: **0**.
 
+## Resolution-scaling observation — UNVERIFIED
+
+- User runtime observation: changing render scale to `2×` / roughly `1440p` did not produce an obvious subjective slowdown in the current workload.
+- This is an observation only; no controlled frame-time or GPU-time capture has been performed yet.
+- It is consistent with the current hypothesis that the cadence ceiling is upstream of pure pixel/raster throughput — guest CPU / synchronization / submission cadence — but it does **not** prove that hypothesis.
+- Required validation before promotion to a finding:
+  1. confirm the actual render-target resolution increased;
+  2. compare controlled `1×` vs `2×` frame time / FPS;
+  3. compare GPU utilization / GPU time;
+  4. compare selected-producer CPU and Arbitration timing.
+- Do not use this observation alone to close GPU-side hypotheses or justify a behavior-changing optimization.
+
 ## Current causal frontier
 
 GPU starvation
