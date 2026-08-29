@@ -92,6 +92,17 @@ jobs:
           cp lab/src/core/x1_waker_stage_d_profiler.h eden/src/core/x1_waker_stage_d_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_stage_d_attribution.py eden
 
+      - name: Snapshot pre-Stage-E invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp /tmp/svc-pre-e.cpp
+          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp /tmp/rasterizer-pre-e.cpp
+          grep -c 'WaitAddressArbiter(address' /tmp/svc-pre-e.cpp > /tmp/wait-count
+          grep -c 'SignalAddressArbiter(address' /tmp/svc-pre-e.cpp > /tmp/signal-count
+          grep -c 'IsValidArbitrationType' /tmp/svc-pre-e.cpp > /tmp/arb-valid-count
+          grep -c 'IsValidSignalType' /tmp/svc-pre-e.cpp > /tmp/sig-valid-count
+
       - name: Apply Stage E
         shell: bash
         run: |
@@ -99,10 +110,10 @@ jobs:
           cp lab/src/core/x1_waker_stage_e_profiler.h eden/src/core/x1_waker_stage_e_profiler.h
           python lab/tools/adreno_lab/transplant_dc95_waker_stage_e_attribution.py eden
 
-      - name: Reproduce ARM pre-configure guard exactly
+      - name: Reproduce hardened ARM pre-configure guard exactly
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
           git -C eden diff --check
           python -m py_compile \
@@ -115,19 +126,25 @@ jobs:
             lab/tools/adreno_lab/analyze_x1_waker_stage_d_attribution.py \
             lab/tools/adreno_lab/analyze_x1_waker_stage_e_attribution.py
           grep -q '\[X1-WAKERE\]' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'X1WakerStageDProfiler::Get().ShouldTrackThread' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'WaitSlotCount = 16' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'TopWaitCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'TopSignalCount = 4' eden/src/core/x1_waker_stage_e_profiler.h
-          grep -q 'ShouldTrackThread' eden/src/core/x1_waker_stage_e_profiler.h
           grep -q 'ShouldTrackPromotedSignalAddress' eden/src/core/x1_waker_stage_e_profiler.h
-          grep -q 'X1WakerStageEProfiler::Get().BeginWait' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
-          grep -q 'X1WakerStageEProfiler::Get().RecordSignal' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          grep -q 'nextPromoted' eden/src/core/x1_waker_stage_e_profiler.h
+          grep -q 'x1_stage_e_token' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp
+          test "$(grep -c 'X1WakerStageEProfiler::Get().BeginWait' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)" = 1
+          test "$(grep -c 'X1WakerStageEProfiler::Get().EndWait' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)" = 1
+          test "$(grep -c 'x1_stage_e_profiler.RecordSignal' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)" = 1
           grep -q 'X1WakerStageEProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp
           ! grep -qi '0x4f' eden/src/core/x1_waker_stage_e_profiler.h
-          ! grep -Eqi '0x210[0-9a-f]+bc120' eden/src/core/x1_waker_stage_e_profiler.h
-          test "$(git -C eden show HEAD:src/core/hle/kernel/svc/svc_address_arbiter.cpp | grep -c 'WaitAddressArbiter(address')" = \
-               "$(grep -c 'WaitAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
-          test "$(git -C eden show HEAD:src/core/hle/kernel/svc/svc_address_arbiter.cpp | grep -c 'SignalAddressArbiter(address')" = \
-               "$(grep -c 'SignalAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
-          ! git -C eden diff -- src/core/x1_waker_stage_e_profiler.h src/core/hle/kernel/svc/svc_address_arbiter.cpp src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
-            grep -E '^\+.*(sleep_for|sleep_until|SetPriority\(|SetCoreMask\(|gpu_fence_behavior|swap_interval|QueueBuffer\()'
-          echo 'ARM pre-configure guard parity passed'
+          ! grep -Eqi '0x210[a-f0-9]+' eden/src/core/x1_waker_stage_e_profiler.h
+          test "$(cat /tmp/wait-count)" = "$(grep -c 'WaitAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          test "$(cat /tmp/signal-count)" = "$(grep -c 'SignalAddressArbiter(address' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          test "$(cat /tmp/arb-valid-count)" = "$(grep -c 'IsValidArbitrationType' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          test "$(cat /tmp/sig-valid-count)" = "$(grep -c 'IsValidSignalType' eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp)"
+          ! diff -u /tmp/svc-pre-e.cpp eden/src/core/hle/kernel/svc/svc_address_arbiter.cpp | \
+            grep -E '^\+.*(BeginWait\(kernel|EndWait\(kernel|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield)'
+          ! diff -u /tmp/rasterizer-pre-e.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
+            grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
+          echo 'Hardened ARM pre-configure guard parity passed'
