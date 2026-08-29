@@ -139,12 +139,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp eden/src/core/x1_waker_stage_f_profiler.h /tmp/stage-f-pre-g.h
-          cp eden/src/core/hle/kernel/k_scheduler.cpp /tmp/kscheduler-pre-g.cpp
-          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp /tmp/rasterizer-pre-g.cpp
-          grep -c 'cur_thread->AddCpuTime(m_core_id, tick_diff)' /tmp/kscheduler-pre-g.cpp > /tmp/add-cpu-count
-          grep -c 'void KScheduler::SwitchThread' /tmp/kscheduler-pre-g.cpp > /tmp/switch-thread-count
-          grep -c 'SetCurrentThread(kernel, next_thread)' /tmp/kscheduler-pre-g.cpp > /tmp/set-current-count
+          rm -rf .x1-stage-g-precheck
+          mkdir -p .x1-stage-g-precheck
+          cp eden/src/core/x1_waker_stage_f_profiler.h .x1-stage-g-precheck/stage-f-pre-g.h
+          cp eden/src/core/hle/kernel/k_scheduler.cpp .x1-stage-g-precheck/kscheduler-pre-g.cpp
+          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp .x1-stage-g-precheck/rasterizer-pre-g.cpp
+          grep -c 'cur_thread->AddCpuTime(m_core_id, tick_diff)' .x1-stage-g-precheck/kscheduler-pre-g.cpp > .x1-stage-g-precheck/add-cpu-count
+          grep -c 'void KScheduler::SwitchThread' .x1-stage-g-precheck/kscheduler-pre-g.cpp > .x1-stage-g-precheck/switch-thread-count
+          grep -c 'SetCurrentThread(kernel, next_thread)' .x1-stage-g-precheck/kscheduler-pre-g.cpp > .x1-stage-g-precheck/set-current-count
 
       - name: Apply Stage G focused producer CPU attribution
         shell: bash
@@ -186,13 +188,13 @@ jobs:
           test "$(grep -c 'X1WakerStageGProfiler::Get().RecordScheduledIn' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
           test "$(grep -c 'X1WakerStageGProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
           test "$(grep -c 'X1WakerStageGProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
-          test "$(cat /tmp/add-cpu-count)" = "$(grep -c 'cur_thread->AddCpuTime(m_core_id, tick_diff)' eden/src/core/hle/kernel/k_scheduler.cpp)"
-          test "$(cat /tmp/switch-thread-count)" = "$(grep -c 'void KScheduler::SwitchThread' eden/src/core/hle/kernel/k_scheduler.cpp)"
-          test "$(cat /tmp/set-current-count)" = "$(grep -c 'SetCurrentThread(kernel, next_thread)' eden/src/core/hle/kernel/k_scheduler.cpp)"
+          test "$(cat .x1-stage-g-precheck/add-cpu-count)" = "$(grep -c 'cur_thread->AddCpuTime(m_core_id, tick_diff)' eden/src/core/hle/kernel/k_scheduler.cpp)"
+          test "$(cat .x1-stage-g-precheck/switch-thread-count)" = "$(grep -c 'void KScheduler::SwitchThread' eden/src/core/hle/kernel/k_scheduler.cpp)"
+          test "$(cat .x1-stage-g-precheck/set-current-count)" = "$(grep -c 'SetCurrentThread(kernel, next_thread)' eden/src/core/hle/kernel/k_scheduler.cpp)"
 
-          ! diff -u /tmp/kscheduler-pre-g.cpp eden/src/core/hle/kernel/k_scheduler.cpp | \
+          ! diff -u .x1-stage-g-precheck/kscheduler-pre-g.cpp eden/src/core/hle/kernel/k_scheduler.cpp | \
             grep -E '^\+.*(SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until)'
-          ! diff -u /tmp/rasterizer-pre-g.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
+          ! diff -u .x1-stage-g-precheck/rasterizer-pre-g.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | \
             grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
           ! grep -E 'sleep_for|sleep_until|SetPriority\(|SetCoreMask\(|Reschedule\(|Yield|QueueBuffer\(|swap_interval|gpu_fence_behavior' \
             eden/src/core/x1_waker_stage_g_profiler.h
@@ -203,7 +205,7 @@ jobs:
           guarded = 'GetTrackedProducerIndex(cur_thread->GetThreadId());\n    if (x1_stage_g_out_index >= 0) {\n        const auto& x1_stage_g_context = cur_thread->GetContext();'
           if guarded not in text:
               raise SystemExit('Stage G guest PC/LR read is not guarded by Stage F producer selection')
-          before = Path('/tmp/stage-f-pre-g.h').read_text()
+          before = Path('.x1-stage-g-precheck/stage-f-pre-g.h').read_text()
           after = Path('eden/src/core/x1_waker_stage_f_profiler.h').read_text()
           if before.count('[X1-WAKERF]') != after.count('[X1-WAKERF]'):
               raise SystemExit('Stage F report behavior changed')
