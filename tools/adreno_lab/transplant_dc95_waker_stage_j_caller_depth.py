@@ -136,8 +136,7 @@ def main() -> int:
         raise RuntimeError("Stage J is not guarded by Stage F selected-producer identity")
 
     raw_profiler = profiler.read_text(encoding="utf-8")
-    raw_transplant = Path(__file__).read_text(encoding="utf-8")
-    lowered = (raw_profiler + raw_transplant).lower()
+    lowered = (raw_profiler + j_call).lower()
     for forbidden_value in (
         "0x80", "0x81", "0x210b", "0x2181", "0x158528", "0x158420",
         "0x124a8c", "0x124b40", "0x127058", "0x13178c", "0x13f364",
