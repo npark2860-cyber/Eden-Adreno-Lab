@@ -37,14 +37,16 @@ The single authorized Stage H ARM64 attempt succeeded.
 - conclusion: success
 - retry/rerun/additional ARM attempt: none
 
-Artifact:
+Canonical artifact metadata from two consecutive direct GitHub artifact API queries:
 
 - name: `Eden-dc95-X1-waker-stage-h`
-- artifact ID: `9797889460`
-- size: `31,414,690` bytes
-- SHA-256: `d41d53def266705924a928716909532475f73e29a94c25ec513730aca4493d92`
+- artifact ID: `9713380302`
+- size: `31,419,464` bytes
+- SHA-256: `ff166f3f39c695c1e8e879a7ecbfeca2916028f3318802123bed584775fe4d90`
+- created: `2026-08-29T10:24:24Z`
+- expires: `2026-09-12T10:24:22Z`
 
-The one-shot dispatcher used to issue the approved dispatch was removed immediately afterward. Current branch HEAD after removal was `135d13a57d434e23d7f68928d0f335ed959d0892`; later documentation-only commits may move branch HEAD further. Persistent ARM workflow remains `workflow_dispatch` only.
+The one-shot dispatcher used to issue the approved dispatch was removed immediately afterward. Dispatcher cleanup commit: `135d13a57d434e23d7f68928d0f335ed959d0892`. Later documentation-only commits move branch HEAD further. Persistent ARM workflow remains `workflow_dispatch` only.
 
 A follow-up `ㄱㄱ` received while run `33246620972` was still active was **not** consumed as authorization for another ARM attempt.
 
