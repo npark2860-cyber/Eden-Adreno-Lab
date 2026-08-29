@@ -42,7 +42,7 @@ def main() -> int:
             x1_stage_k_status =
                 Core::X1WakerStageKProfiler::GrandparentStatus::ParentUnavailable;
         } else {
-            auto& x1_stage_k_memory = x1_stage_j_memory;
+            auto& x1_stage_k_memory = kernel.System().ApplicationMemory();
             const Common::ProcessAddress x1_stage_k_parent_fp_slot{x1_stage_j_fp};
             if (!x1_stage_k_memory.IsValidVirtualAddressRange(x1_stage_k_parent_fp_slot,
                                                                sizeof(u64))) {
