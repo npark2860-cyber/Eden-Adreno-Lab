@@ -7,7 +7,8 @@ Updated: 2026-08-29 KST
 - repository: `npark2860-cyber/Eden-Adreno-Lab`
 - exact Eden source: `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 - immutable control: `lab/dc95-arm64-baseline`
-- current source branch: `exp/x1-waker-stage-j-caller-depth`
+- current source branch: `exp/x1-waker-stage-k-grandparent-depth`
+- Stage K branch base: `c16d4b77209d1f82738138af7657ad16429ce9e6`
 
 Never change the exact Eden baseline without explicit baseline-change approval.
 
@@ -34,6 +35,7 @@ No broad/all-thread profiling. No behavior-changing priority/affinity/yield/resc
 - Stage J implementation/static: `DEBUG_HISTORY_20260829_WAKER_STAGE_J_IMPLEMENTED.md`
 - Stage J ARM build: `DEBUG_HISTORY_20260829_WAKER_STAGE_J_BUILD.md`
 - Stage J runtime: `DEBUG_HISTORY_20260829_WAKER_STAGE_J_RUNTIME.md`
+- Stage K implementation/static: `DEBUG_HISTORY_20260829_WAKER_STAGE_K_IMPLEMENTED.md`
 - active next action: `NEXT_ACTION_WAKER_STAGE_K.md`
 
 ## Persistent ARM workflow
@@ -49,6 +51,8 @@ Current workflow name:
 Trigger remains exactly:
 
 `workflow_dispatch` only.
+
+It was intentionally not retargeted during Stage K implementation/static work because no ARM build was authorized. A future fresh Stage K ARM authorization may retarget this same persistent manual workflow to Stage K and dispatch exactly one attempt.
 
 No ARM64 attempt is currently authorized.
 
@@ -74,7 +78,7 @@ One-shot dispatcher lifecycle:
 - creation commit `516162fd94ee751b7ac54ff68986f867329dcca7`
 - deletion commit `0e0ebc6d68cee6261c31d2b9daaa3c351f26c4dd`
 
-Canonical Stage J artifact from the dedicated Actions artifact query:
+Canonical Stage J artifact:
 
 - name: `Eden-dc95-X1-waker-stage-j`
 - artifact ID: `9714363715`
@@ -82,7 +86,6 @@ Canonical Stage J artifact from the dedicated Actions artifact query:
 - SHA-256: `27b250b40b879eeeea0a33e8ded66d3e0e229aef22d67f4027715bedf240f7b8`
 - created: `2026-08-29T11:50:01Z`
 - expires: `2026-09-12T11:49:58Z`
-- expired: false
 
 ## Closed historical chain
 
@@ -136,7 +139,7 @@ Exact dumped SDK recovered:
 - `sdk+0x127058`: `nn::os::ReceiveLightMessageQueue -> WaitForAddress(WaitIfEqual,1,-1)`
 - `sdk+0x13178c`: `nn::os::detail::InternalCriticalSectionImplByHorizon::Enter -> ArbitrateLock`
 
-Stage I also showed slow-cadence CPU/slice grows strongly even when WaitLightEvent counts fall or remain similar. Therefore two parallel effects remain:
+Stage I showed slow-cadence CPU/slice grows strongly even when WaitLightEvent counts fall or remain similar. Therefore two parallel effects remain:
 
 1. longer kernel Arbitration waiting;
 2. longer active guest CPU slices before reaching the blocker.
@@ -161,50 +164,35 @@ Environment:
 - Vulkan driver 512.863.0
 - Vulkan 1.3.295
 
-Current module map:
-
-- rtld `0x80ede000-0x80ee2000`
-- main `0x80ee2000-0x8560d000`
-- subsdk0 `0x8560d000-0x85cb6000`
-- sdk `0x85cb6000-0x86a8f000`
-
 Strict primary windows:
 
 - fast: frames `720,840` — pure swap2
 - slow: frames `1200,1320,1440,1560` — pure swap3
-- excluded startup/first-armed/transition/identity-transition windows.
 
 ### Stage J validity / accounting
-
-Parent-LR frame-record reads are effectively complete:
 
 - P0 valid slice coverage fast `99.97%`, slow `99.98%`; valid tick coverage `99.95% / 99.92%`
 - P1 valid slice coverage fast `100%`, slow `99.93%`; valid tick coverage `100% / 99.88%`
 - `fpZero=0`, `parentZero=0`, `badStatus=0`
-
-Stage J `cpuTicks` equal Stage G `cpuTicks`; aggregate Stage J CPU again reconciles with Stage F to around 0.002 ms or better.
+- Stage J `cpuTicks` equal Stage G `cpuTicks`; aggregate Stage J CPU again reconciles with Stage F to around 0.002 ms or better.
 
 ### Producer slowdown reproduces
 
 P0 fast -> slow:
 
 - CPU `0.998 -> 3.603 ms`, `+2.606`
-- Waiting `5.398 -> 7.489`, `+2.091`
 - Arbitration `5.192 -> 7.187`, `+1.995`
 - runnable-unscheduled `0.306 -> 0.672`, only `+0.366`
 
 P1:
 
 - CPU `1.012 -> 3.922 ms`, `+2.910`
-- Waiting `5.728 -> 8.993`, `+3.264`
 - Arbitration `5.513 -> 8.672`, `+3.159`
 - runnable-unscheduled `0.370 -> 0.592`, only `+0.221`
 
 Mixed producer CPU + Arbitration branch is reproduced again.
 
 ### Dynamic waker remains separate
-
-Same strict windows:
 
 - CPU `5.908 -> 18.093 ms`
 - runnable-unscheduled `0.159 -> 0.212`
@@ -214,43 +202,74 @@ Host scheduler starvation remains rejected. Do not merge waker CPU/Arbitration a
 
 ### Canonical Stage J parent triples
 
-Stable visible family:
-
 1. `sdk+0x158528 / sdk+0x124a8c / main+0x86a820`
 2. `sdk+0x158420 / sdk+0x13178c / sdk+0x127e54`
 3. `sdk+0x158528 / sdk+0x124b40 / main+0x86be08`
 4. `sdk+0x158528 / sdk+0x127058 / main+0x2a904cc`
 
-The new SDK parent `sdk+0x127e54` resolves exactly to:
+`sdk+0x127e54` resolves exactly to `nn::os::LockMutex(nn::os::MutexType*)`.
 
-`nn::os::LockMutex(nn::os::MutexType*)`
-
-Thus critical chain is:
-
-`LockMutex -> InternalCriticalSectionImplByHorizon::Enter -> ArbitrateLock`.
-
-Visible top-four triples explain about:
-
-- P0: `61.3%` of CPU-growth delta
-- P1: `54.2%`
-
-Overflow is material but does not block dominant-family identification; do not widen histogram yet.
+Visible top-four triples explain about P0 `61.3%` and P1 `54.2%` of CPU-growth delta. Overflow is material but does not block dominant-family identification; do not widen histogram yet.
 
 ### Offline reverse mapping after Stage J
 
-Exact dumped main/sdk binaries were exhausted before requesting more instrumentation.
+- function containing `main+0x86a820`: 2 direct callers;
+- function containing `main+0x86be08`: exactly 1 direct caller, then an indirect/callback frontier;
+- function containing `main+0x2a904cc`: direct BL callers = 0;
+- `nn::os::LockMutex` main import/PLT fanout = **6,201** direct BL call sites.
 
-- `main+0x86a820` lies in function around `main+0x86a4ac`; only 2 direct callers.
-- `main+0x86be08` lies in function around `main+0x86bd40`; exactly 1 direct caller (`main+0x86bc98`), while the containing caller function around `main+0x86bc04` has no direct BL caller.
-- `main+0x2a904cc` lies in function around `main+0x2a90478`; direct BL callers = 0, indicating dynamic/indirect owner evidence is needed rather than a guessed static owner.
-- `sdk+0x127e54` = `nn::os::LockMutex`; its main import/PLT target has **6,201 direct BL callers**, so static reverse-call analysis cannot narrow this critical branch.
+Stage J decision = mixed A/B. Parent validity is excellent; broad static reverse-call analysis is exhausted.
 
-Stage J decision is therefore mixed A/B:
+## Stage K implementation / Ubuntu static validation — COMPLETE
 
-- A: visible WaitLightEvent / ReceiveLightMessageQueue parents reach concrete `main` code;
-- B: critical-section parent reaches stable generic `nn::os::LockMutex`.
-- C rejected: parent validity is excellent.
-- D not selected: overflow exists but the dominant family is visible.
+Branch:
+
+`exp/x1-waker-stage-k-grandparent-depth`
+
+Implementation files:
+
+- `src/core/x1_waker_stage_k_profiler.h`
+- `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
+- `tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py`
+
+Stage K adds one and only one additional frame-record level inside the same Stage F selected-producer guard.
+
+Memory-read shape:
+
+- Stage J existing `parent_lr = [fp+8]` remains unchanged;
+- Stage K range-validates `[fp, fp+8)` and reads `parent_fp = [fp]` once;
+- requires nonzero/aligned `parent_fp`, `parent_fp > fp`, and no `+8` overflow;
+- range-validates `[parent_fp+8, parent_fp+16)` and reads `grandparent_lr = [parent_fp+8]` once.
+
+Thus Stage K adds exactly 2 `Read64` sites; Stage J+K selected-producer block has exactly 3 total.
+
+Accounting remains bounded:
+
+- producer count 2
+- fixed slots 64
+- top4
+- 120-frame report
+- context `(pc, lr, parent_lr, grandparent_lr)`
+
+No arbitrary stack walk, non-selected sampling, thread rediscovery, slot widening, per-switch logging or behavior mutation.
+
+Ubuntu validation:
+
+- workflow: `Validate dc95 X1 Waker Stage K`
+- run: `33253036148`
+- job: `99101891663`
+- attempt: 1
+- event: `push`
+- validation HEAD: `53defe670df0665554626430aaf4660cd70aa7b4`
+- result: **SUCCESS**
+
+Validated exact dc95 -> A-J reconstruction, K transplant anchors, Python syntax, 2 K reads / 2 K range checks / 3 selected-block reads total, one saved-FP source, monotonic ancestry, unchanged F/G/J/H invariants, no runtime observation hardcodes, no behavior-changing tokens, and synthetic four-level module normalization.
+
+Temporary validator deleted after success at commit:
+
+`c08c9cf36203936e8d430532115ae08a5f59ebfc`
+
+Stage K Windows ARM64 run count: **0**.
 
 ## Current causal frontier
 
@@ -258,21 +277,25 @@ GPU starvation
 -> submitter/waker / promoted arbiter handshake
 -> two selected producer threads
 -> known Nintendo SDK synchronization primitives
--> Stage J identifies concrete main parent sites for WaitLightEvent/queue and LockMutex for critical section
+-> Stage J parent sites expose concrete main code / LockMutex
+-> static reverse-call frontier becomes indirect or extremely broad
+-> Stage K is now statically ready to identify exactly one dynamic grandparent caller level
 -> slow cadence still has longer active CPU slices before blocker + longer kernel Arbitration.
-
-The remaining question is the **dynamic caller-of-caller owner** for these selected-producer slices, especially indirect/callback entries and the extremely broad LockMutex fanout.
 
 No optimization is justified yet.
 
-## Immediate next action
+## Immediate next action — ARM gate
 
 Read:
 
 `NEXT_ACTION_WAKER_STAGE_K.md`
 
-The smallest remaining evidence, if the user chooses to continue, is one additional validated frame-record caller level for only the already-selected producer pair. It must not become broad stack scanning and must not hardcode observed addresses.
-
-Stage K is not yet authorized for ARM64.
-
 Current ARM64 authorization: **NONE**.
+
+A fresh explicit authorization is required before exactly one Stage K Windows ARM64 attempt.
+
+A fresh `ㄱㄱ` after this ready state means:
+
+> retarget the existing persistent `workflow_dispatch`-only workflow from Stage J to Stage K, verify exact dc95 / branch HEAD / K safety checks / Stage K ARM run count 0, then dispatch exactly one ARM64 attempt.
+
+Failure does not authorize retry/rerun.
