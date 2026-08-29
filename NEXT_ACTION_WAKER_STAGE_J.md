@@ -9,79 +9,106 @@ Read first:
 - `CURRENT_HANDOFF.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_H_RUNTIME.md`
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_I_SDK_DISASSEMBLY.md`
+- `DEBUG_HISTORY_20260829_WAKER_STAGE_J_IMPLEMENTED.md`
 
 Fixed Eden baseline:
 
 `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 
+Current source branch:
+
+`exp/x1-waker-stage-j-caller-depth`
+
 Current ARM64 authorization: **NONE**.
 
-No ARM build/rebuild/rerun is authorized by this document.
+## Stage I result — COMPLETE
 
-## Stage I result
-
-The exact dumped Nintendo SDK resolves the recurring Stage G endpoints to:
+Exact dumped Nintendo SDK analysis resolved the recurring Stage G endpoints to:
 
 - `nn::os::WaitLightEvent -> WaitForAddress(WaitIfEqual, value=1, timeout=-1)`
 - `nn::os::ReceiveLightMessageQueue -> WaitForAddress(WaitIfEqual, value=1, timeout=-1)`
 - `nn::os::detail::InternalCriticalSectionImplByHorizon::Enter -> ArbitrateLock`
 
-Stage G saved PC is the `ret` immediately following the blocking SVC wrapper. Stage G CPU is still the whole scheduler slice leading to that endpoint, not time spent at the `ret` instruction.
+Stage G saved PC is the `ret` immediately after the blocking SVC wrapper. Its CPU ticks are the complete active guest slice leading to that blocker, not instruction-residency time at the `ret`.
 
-Static reverse-call analysis of the uploaded game `main` finds 73 direct callers of `WaitLightEvent` and 4 direct callers of `ReceiveLightMessageQueue`, so first-level offline caller analysis is not unique enough to identify the selected producer owner.
+Static reverse-call analysis found 73 direct `main` call sites to `WaitLightEvent` and 4 to `ReceiveLightMessageQueue`, so offline first-level caller analysis is not unique enough.
 
-## Minimal Stage J evidence
+## Stage J implementation/static — COMPLETE
 
-Add exactly one extra caller level for the Stage F dynamically selected producer pair only.
+Stage J adds exactly one extra caller level to the Stage F dynamically selected producer pair only.
 
-At the existing Stage G selected-producer switch-out hook:
+At the existing Stage G selected-producer switch-out block it:
 
-1. reuse the already-read saved `Svc::ThreadContext`;
-2. read saved `fp` (`x29`);
-3. if `fp` is nonzero/aligned and `[fp+8, fp+16)` is a valid application virtual range, read one `u64` from `fp+8`;
-4. record `(pc, lr, parent_lr)` with the same scheduler `tick_diff` in a bounded Stage J table;
-5. report every 120 rendered frames.
+1. reuses the saved `Svc::ThreadContext`;
+2. reads saved `fp` (`x29`);
+3. validates the standard AArch64 frame-record parent-LR slot `[fp+8, fp+16)`;
+4. performs exactly one `ApplicationMemory().Read64()` when valid;
+5. records `(pc, lr, parent_lr)` with the same scheduler `tick_diff`;
+6. reports a fixed 64-slot/top-4 table every 120 frames.
 
-The Nintendo SDK functions identified in Stage I use standard AArch64 frame records, so `[x29+8]` is direct binary-supported caller LR evidence for these contexts.
+No new scheduler hook, thread discovery, broad sampling, per-switch logging, behavior mutation, or Stage G slot widening is added.
 
-## Hard limits
+Ubuntu validation:
 
-Stage J must not:
+- attempt 1: run `33249591877`, job `99092859932` — failed only because the transplant self-check scanned its own forbidden-literal list;
+- self-check corrected;
+- attempt 2: run `33249656888`, job `99093038064` — **SUCCESS** on full exact-dc95 A-H reconstruction;
+- temporary validator deleted after success.
 
-- rediscover producer TIDs;
-- sample non-selected threads;
-- hardcode observed TIDs, guest addresses, PC/LR, module bases, or promoted arbiter keys;
-- alter priority, affinity, core placement, yield/reschedule, waits/signals, GPU work, QueueBuffer, or cadence;
-- add per-switch logging;
-- widen Stage G `ContextSlotCount=64`;
-- infer that Stage D's independent `latest_pc` and LR histogram form correlated pairs.
+## Persistent Stage J ARM workflow — PREPARED, NOT RUN
 
-The parent-LR read is observation-only and only occurs after Stage F confirms the thread is one of the two dynamically selected producers.
+Path:
+
+`.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
+
+Name:
+
+`Build dc95 X1 Waker Stage J`
+
+Trigger:
+
+`workflow_dispatch` only.
+
+Expected artifact:
+
+`Eden-dc95-X1-waker-stage-j`
+
+Current Stage J branch Actions history contains only the two Ubuntu `push` validation runs above. Stage J `workflow_dispatch` / Windows ARM64 run count is **0**.
+
+## Immediate next action — ARM gate
+
+A fresh explicit user authorization is required before exactly one Stage J Windows ARM64 attempt.
+
+A fresh `ㄱㄱ` received after this ready state means:
+
+> dispatch exactly one `Build dc95 X1 Waker Stage J` ARM64 attempt on `exp/x1-waker-stage-j-caller-depth`.
+
+One authorization = exactly one attempt. Failure does not authorize retry/rerun.
+
+Before dispatch, re-verify:
+
+- current branch HEAD;
+- persistent workflow remains `workflow_dispatch` only;
+- Stage J `workflow_dispatch` run count is still 0.
+
+After a successful build, runtime capture should use the same TOTK 1.2.1 conditions and collect enough clean swap2 and swap3 120-frame windows. Analyze `[X1-WAKERJ]` together with Stage H module ranges and Stage F/G cadence.
 
 ## Runtime decision after Stage J
 
-A. Parent LR collapses the dominant CPU-growth contexts to a small game/module caller family:
+A. Parent LR collapses dominant CPU-growth contexts to a small `main/subsdk0` family:
 
-> map those parent offsets to exact `main/subsdk0` functions offline, then decide whether another depth is necessary.
+> resolve those parent offsets offline before any optimization.
 
-B. Parent LR remains inside another generic SDK wrapper but gives a small stable caller family:
+B. Parent LR remains inside a generic SDK wrapper but forms a small stable family:
 
-> resolve that wrapper offline before adding any further instrumentation.
+> resolve that wrapper offline before adding further depth.
 
-C. Parent LR is invalid/unavailable for a material fraction of the dominant contexts:
+C. Parent LR is invalid/unavailable for a material fraction:
 
-> inspect frame-record assumptions for those specific contexts before considering stack scanning or another mechanism.
+> inspect frame-record assumptions for those contexts before considering any broader stack method.
 
-D. Parent LR remains too diffuse while 64-slot overflow prevents a dominant family from emerging:
+D. Parent LR remains diffuse and overflow blocks a dominant family:
 
 > only then reconsider histogram representation/slot budget.
 
-Do not optimize from Stage I alone.
-
-## ARM64 gate
-
-Current authorization: **NONE**.
-
-Stage J implementation and Ubuntu/static validation do not consume ARM64 authorization.
-
-Any Windows ARM64 Stage J attempt requires a new explicit user authorization. One authorization remains exactly one attempt; failure does not authorize retry/rerun.
+No optimization is justified yet.
