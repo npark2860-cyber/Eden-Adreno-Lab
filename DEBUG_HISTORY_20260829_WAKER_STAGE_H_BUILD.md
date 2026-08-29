@@ -37,7 +37,7 @@ Exactly one Stage H ARM64 attempt was created from the fresh authorization.
 - rerun: none
 - additional ARM64 attempt: none
 
-The build HEAD contained the one-shot dispatcher commit used only to issue the approved manual workflow dispatch. That dispatcher was removed immediately afterward. Current branch HEAD after removal is `135d13a57d434e23d7f68928d0f335ed959d0892` (`Remove one-shot Stage H ARM64 dispatcher`). The persistent ARM workflow itself remains manual-only.
+The build HEAD contained the one-shot dispatcher commit used only to issue the approved manual workflow dispatch. That dispatcher was removed immediately afterward. The dispatcher-removal commit is `135d13a57d434e23d7f68928d0f335ed959d0892` (`Remove one-shot Stage H ARM64 dispatcher`). Later documentation-only commits may move branch HEAD further. The persistent ARM workflow itself remains manual-only.
 
 A later `ㄱㄱ` arrived while this same run was still active. It was used only to continue resolving the already-running attempt and was **not** consumed as authorization for a second ARM64 run. Current ARM64 authorization is therefore `NONE`.
 
@@ -73,18 +73,21 @@ Stage H pre-configure validation also retained the relevant safety invariants:
 
 ## Artifact
 
-Exactly one artifact was uploaded:
+A fresh GitHub artifact API re-fetch after job completion returned exactly one artifact for run `33246620972`. These values are the canonical artifact metadata:
 
 - name: `Eden-dc95-X1-waker-stage-h`
-- artifact ID: `9797889460`
-- size: `31,414,690` bytes
-- SHA-256: `d41d53def266705924a928716909532475f73e29a94c25ec513730aca4493d92`
-- created: `2026-08-29T10:24:02Z`
-- expires: `2026-11-27T10:23:59Z`
+- artifact ID: `9713380302`
+- size: `31,419,464` bytes
+- SHA-256: `ff166f3f39c695c1e8e879a7ecbfeca2916028f3318802123bed584775fe4d90`
+- created: `2026-08-29T10:24:24Z`
+- expires: `2026-09-12T10:24:22Z`
+- expired: `false`
 
 GitHub reported the digest directly as:
 
-`sha256:d41d53def266705924a928716909532475f73e29a94c25ec513730aca4493d92`
+`sha256:ff166f3f39c695c1e8e879a7ecbfeca2916028f3318802123bed584775fe4d90`
+
+An earlier transient metadata reading recorded a different ID/size/digest. That reading was discarded after two consecutive direct artifact API queries returned the canonical values above.
 
 ## Conclusion
 
