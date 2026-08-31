@@ -59,6 +59,7 @@ Do not implement a behavior-changing optimization before concrete runtime work-t
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IMPLEMENTED.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md`
+- `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_SHADOW_FIX.md`
 - `NEXT_ACTION_WAKER_STAGE_K.md`
 
 Use GitHub documents as source of truth. Do not reconstruct project state from chat guesses.
@@ -69,13 +70,24 @@ Branch:
 
 `exp/x1-waker-stage-k-grandparent-depth`
 
-HEAD immediately before the docs-only handoff updates:
+Source/workflow cleanup HEAD immediately before the final docs-only handoff updates:
 
-`b9252798651bbb64422d6893e7a04ebe1ad3b7d4`
+`75c9671aa0c5387e3a9b56fc18d4c216980bfdbe`
 
-That commit removed the temporary one-shot ARM dispatcher after it had already triggered the single authorized persistent workflow run.
+That commit removed the temporary Ubuntu Stage K shadow validator after its single successful validation run.
 
-The documentation updates following that HEAD are docs-only. Verify the actual branch HEAD at the start of the next tab before source work.
+Relevant state-changing source commit before that cleanup:
+
+`b22306fa55690e99aac94f521d302caa27893754`
+
+That commit contains only the minimal Stage K helper-parameter shadow repair.
+
+Docs-only commits after cleanup include:
+
+- `f437d5ff6856ed8c87087f2fca591de1e9cb4c7d` — shadow-fix validation record
+- `e3fd4a49cfb2548721260402688088028149e921` — advance next action to ARM authorization gate
+
+Verify the actual branch HEAD at the start of the next tab before source work.
 
 No source, workflow, or baseline change is authorized by this handoff itself.
 
@@ -273,27 +285,11 @@ Validator cleanup:
 
 `5cf098df6b413d1c3ab8b95385bc4845eb6e6d1c`
 
-Temporary dispatch-only workflow commit:
-
-`5fa3b5fb59c5935eb9d48c4d6ea8f0faa52373c7`
-
-One-shot dispatch run:
-
-- run: `33351943782`
-- job: `99366897776`
-- result: **SUCCESS**
-
-The one-shot dispatcher was then deleted at:
-
-`b9252798651bbb64422d6893e7a04ebe1ad3b7d4`
-
-## Latest authorized Windows ARM64 attempt — FAILED
+## First authorized x26 Windows ARM64 attempt — FAILED
 
 Canonical record:
 
 `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md`
-
-Exactly one fresh authorization was consumed for the following attempt:
 
 - persistent workflow run: `33351947642`
 - job: `99366911164`
@@ -304,56 +300,47 @@ Exactly one fresh authorization was consumed for the following attempt:
 - artifact: **none**
 - retry/rerun: **none**
 
-Successful steps before failure included:
+Actual C++ compilation failed in generated `src/core/hle/kernel/k_scheduler.cpp` under `-Werror,-Wshadow` because the compatibility helper parameter `x1_stage_k_node` shadowed an already-live outer local of the same name.
 
-- exact baseline checkout/verification;
-- transplant chain through Stage K;
-- Stage K targeted source verification;
-- MSYS2 CLANGARM64 setup;
-- ARM64 configure.
+No new runtime evidence exists from that attempt.
 
-Actual C++ compilation failed in generated:
+## Work-target shadow repair — COMPLETE
 
-`src/core/hle/kernel/k_scheduler.cpp`
+Canonical record:
 
-with two identical-category errors under:
+`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_SHADOW_FIX.md`
 
-`-Werror,-Wshadow`
+Repair commit:
 
-The generated producer blocks have an outer declaration:
+`b22306fa55690e99aac94f521d302caa27893754`
 
-```cpp
-const u64 x1_stage_k_node = x1_stage_g_context.r[26];
-```
+Minimal repair:
 
-followed by helper lambda insertion whose first parameter is also named:
+- rename helper parameter `x1_stage_k_node` -> `x1_stage_k_node_value`;
+- update only the three helper-body references to that parameter;
+- preserve outer saved-x26 logic and all resolver semantics/invariants.
 
-```cpp
-u64 x1_stage_k_node
-```
+No selected-producer scope, read count, context capture, histogram layout, baseline, persistent ARM workflow, or runtime behavior was changed.
 
-The helper parameter therefore shadows the outer local.
+### Ubuntu/static regression validation — SUCCESS
 
-Reported generated locations were approximately:
+- workflow: `Validate dc95 X1 Waker Stage K`
+- run: `33392096685`
+- job: `99487889955`
+- head SHA: `72e32bbbfd4454f2fdbd9465fb5bf1b0be5ba557`
+- attempt: `1`
+- runner: `ubuntu-latest`
+- result: **SUCCESS**
 
-- outer line `308`, helper parameter line `309`
-- outer line `559`, helper parameter line `560`
+The validation reconstructed exact dc95 through Stage K and explicitly confirmed the generated helper no longer uses the conflicting parameter spelling.
 
-Build stopped after the two compiler errors. Packaging, metadata, and artifact upload were skipped.
+Temporary validator cleanup:
 
-### Interpretation
+`75c9671aa0c5387e3a9b56fc18d4c216980bfdbe`
 
-This is a **generated-source lexical naming defect** in the compatibility wrapper.
+No persistent automatic Ubuntu validator remains.
 
-It is not runtime evidence against:
-
-- the x26 work-node model;
-- the work-object/vtable pointer chain;
-- the static 41-slot ModuleSystem mapping;
-- the EventModuleSubWorker attribution;
-- the normalized work-pair histogram design.
-
-No new runtime evidence exists because no runnable artifact was produced.
+This closes the deterministic shadow blocker only at the static/generated-source level. It is not Windows ARM64 compile/runtime proof.
 
 ## Current causal frontier
 
@@ -372,7 +359,8 @@ GPU command starvation
 -> **EventModuleSubWorker concrete branch + shared dependency-worker / ModuleSystem dispatcher branch**
 -> 41 statically-known ModuleSystem slots / 36 unique work targets
 -> x26 runtime work-target resolver implemented
--> **current blocker: helper-lambda `x1_stage_k_node` shadow compile error**
+-> helper `-Wshadow` source defect repaired and Ubuntu-static validated
+-> **current gate: fresh Windows ARM64 authorization**
 -> runtime work-target identity still unobserved.
 
 ## Immediate next action
@@ -381,26 +369,22 @@ Current ARM64 authorization:
 
 **NONE**
 
-The next tab should first perform only the minimal source repair in:
+The source repair and required non-ARM/static validation are complete.
 
-`tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
-
-Preferred repair:
-
-1. rename the helper lambda parameter `x1_stage_k_node` to a non-conflicting name such as `x1_stage_k_node_value`;
-2. update only references to that helper parameter inside the helper body;
-3. leave the outer saved-x26 declaration and resolver semantics unchanged;
-4. do not alter selected-producer scope, read count, context capture, histogram layout, baseline, or ARM workflow trigger.
-
-Then run a **non-ARM/static validation** that reconstructs the generated Stage K source and confirms the `-Wshadow` conflict is gone.
-
-After non-ARM validation succeeds, stop at the ARM authorization gate.
+Stop at the ARM authorization gate.
 
 Do not rerun run `33351947642` or job `99366911164` and do not dispatch a new Windows ARM64 attempt without fresh explicit user authorization.
 
 One future fresh authorization permits exactly one new ARM attempt. No automatic retry.
 
-If that future build succeeds and produces an artifact, the project reaches the **user-test gate**: user runs Res1X and supplies a new Stage K log containing the work-target pair fields.
+Before any future authorized attempt, verify:
+
+1. branch remains `exp/x1-waker-stage-k-grandparent-depth`;
+2. fixed baseline remains `dc95cd09eea9749250fe31a3072684d341d19417`;
+3. persistent workflow remains `Build dc95 X1 Waker Stage K` / `workflow_dispatch` only;
+4. build source contains repair commit `b22306fa55690e99aac94f521d302caa27893754` or its exact descendant repair.
+
+If a future build succeeds and produces an artifact, the project reaches the **user-test gate**: user runs Res1X and supplies a new Stage K log containing the work-target pair fields.
 
 Then analyze:
 
@@ -438,10 +422,9 @@ On a fresh tab:
 3. verify fixed baseline is still `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`;
 4. verify `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml` remains `Build dc95 X1 Waker Stage K` / `workflow_dispatch` only;
 5. verify ARM64 authorization is **NONE**;
-6. read `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md` and `NEXT_ACTION_WAKER_STAGE_K.md` before editing source;
+6. read `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_SHADOW_FIX.md` and `NEXT_ACTION_WAKER_STAGE_K.md` before any source/build action;
 7. treat five-grandparent semantic mapping, EventModuleSubWorker attribution, ModuleSystem 41-slot static mapping, and x26 work-target design as closed;
-8. first fix only the helper-parameter shadow defect;
-9. run non-ARM/static validation before considering another ARM attempt;
-10. without fresh ARM authorization, do not perform a Windows ARM build/rerun;
-11. do not create Stage L;
-12. do not implement a behavior-changing optimization before runtime work-target attribution.
+8. treat the helper shadow repair and Ubuntu-static validation as complete;
+9. without fresh ARM authorization, do not perform a Windows ARM build/rerun;
+10. do not create Stage L;
+11. do not implement a behavior-changing optimization before runtime work-target attribution.
