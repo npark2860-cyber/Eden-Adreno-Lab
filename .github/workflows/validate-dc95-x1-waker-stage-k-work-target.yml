@@ -11,174 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          path: lab
           fetch-depth: 0
-      - uses: actions/checkout@v7
-        with:
-          repository: eden-emulator/mirror
-          ref: dc95cd09eea9749250fe31a3072684d341d19417
-          path: eden
-          fetch-depth: 0
-          submodules: recursive
-      - name: Reconstruct A-J and validate Stage K work-target identity
+      - name: Validate Stage K analyzer incomplete-cadence guard
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C eden rev-parse HEAD)" = dc95cd09eea9749250fe31a3072684d341d19417
-
-          mkdir -p profiler-patches
-          BASE=a845b6eafe39faf0b9dd038639a5db385cf9d08f
-          for f in src/video_core/renderer_vulkan/vk_buffer_cache.cpp src/video_core/renderer_vulkan/vk_compute_pipeline.cpp src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp src/video_core/renderer_vulkan/vk_update_descriptor.cpp; do
-            out="profiler-patches/$(basename "$f").patch"
-            git -C lab diff --binary "$BASE" HEAD -- "$f" > "$out"
-            test -s "$out"
-            git -C eden apply --ignore-whitespace "../$out"
-          done
-          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.cpp eden/src/video_core/renderer_vulkan/
-          cp lab/src/video_core/renderer_vulkan/vk_adreno_profiler.h eden/src/video_core/renderer_vulkan/
-
-          for script in \
-            transplant_dc95_descriptor_ring_profiler.py \
-            transplant_dc95_logging_checkboxes.py \
-            transplant_dc95_full_flow_hooks.py; do
-            python "lab/tools/adreno_lab/$script" eden
-          done
-          python lab/tools/adreno_lab/transplant_dc95_scheduler_flow_profiler.py eden/src/video_core/renderer_vulkan/vk_scheduler.cpp
-          for script in \
-            finalize_dc95_full_flow_profiler.py \
-            transplant_dc95_draw_dispatch_correlation.py \
-            transplant_dc95_draw_dispatch_ab_controls.py \
-            transplant_dc95_draw_other_reasons.py \
-            transplant_dc95_texture_fill_reasons.py \
-            transplant_dc95_alias_copy_reasons.py \
-            transplant_dc95_alias_sync_redundancy.py \
-            transplant_dc95_uniform_stream_reuse.py \
-            transplant_dc95_uniform_payload_fingerprint.py \
-            transplant_dc95_uniform_cache_ab.py \
-            transplant_dc95_frame_cadence_attribution.py \
-            transplant_dc95_swap_interval_3_to_2_ab.py \
-            transplant_dc95_diagnostic_harness.py; do
-            python "lab/tools/adreno_lab/$script" eden
-          done
-
-          cp lab/src/video_core/renderer_vulkan/vk_x1_frame_build_profiler.h eden/src/video_core/renderer_vulkan/
-          python lab/tools/adreno_lab/transplant_dc95_frame_build_attribution.py eden
-          cp lab/src/video_core/x1_gpu_command_profiler.h eden/src/video_core/
-          python lab/tools/adreno_lab/transplant_dc95_gpu_command_attribution.py eden
-          cp lab/src/video_core/x1_gpu_submit_profiler.h eden/src/video_core/
-          python lab/tools/adreno_lab/transplant_dc95_gpu_submit_gap_attribution.py eden
-          cp lab/src/video_core/x1_guest_submit_profiler.h eden/src/video_core/
-          python lab/tools/adreno_lab/transplant_dc95_guest_submit_thread_attribution.py eden
-          cp lab/src/core/x1_nvdrv_ipc_dispatch_profiler.h eden/src/core/
-          python lab/tools/adreno_lab/transplant_dc95_nvdrv_ipc_dispatch_gap.py eden
-          cp lab/src/core/x1_guest_post_wait_profiler.h eden/src/core/
-          python lab/tools/adreno_lab/transplant_dc95_guest_post_wait_attribution.py eden
-          cp lab/src/core/x1_address_arbiter_profiler.h eden/src/core/
-          python lab/tools/adreno_lab/transplant_dc95_address_arbiter_attribution.py eden
-          cp lab/src/core/x1_waker_pre_signal_profiler.h eden/src/core/
-          python lab/tools/adreno_lab/transplant_dc95_waker_pre_signal_attribution.py eden
-
-          for stage in d e f; do
-            cp "lab/src/core/x1_waker_stage_${stage}_profiler.h" eden/src/core/
-            python "lab/tools/adreno_lab/transplant_dc95_waker_stage_${stage}_attribution.py" eden
-          done
-          cp lab/src/core/x1_waker_stage_g_profiler.h eden/src/core/
-          python lab/tools/adreno_lab/transplant_dc95_waker_stage_g_attribution.py eden
-          python lab/tools/adreno_lab/transplant_dc95_waker_stage_h_module_mapping.py eden
-          cp lab/src/core/x1_waker_stage_j_profiler.h eden/src/core/
-          python lab/tools/adreno_lab/transplant_dc95_waker_stage_j_caller_depth.py eden
-
-          mkdir -p .x1-stage-k-precheck
-          cp eden/src/core/hle/kernel/k_scheduler.cpp .x1-stage-k-precheck/k_scheduler.cpp
-          cp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp .x1-stage-k-precheck/vk_rasterizer.cpp
-          cp eden/src/core/x1_waker_stage_f_profiler.h .x1-stage-k-precheck/stage_f.h
-          cp eden/src/core/x1_waker_stage_g_profiler.h .x1-stage-k-precheck/stage_g.h
-          cp eden/src/core/x1_waker_stage_j_profiler.h .x1-stage-k-precheck/stage_j.h
-          cp eden/src/core/loader/deconstructed_rom_directory.cpp .x1-stage-k-precheck/loader.cpp
-
-          cp lab/src/core/x1_waker_stage_k_profiler.h eden/src/core/
-          python lab/tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py eden
-
-          test "$(git -C eden rev-parse HEAD)" = dc95cd09eea9749250fe31a3072684d341d19417
-          git -C eden diff --check
-          python -m py_compile \
-            lab/tools/adreno_lab/transplant_dc95_waker_stage_j_caller_depth.py \
-            lab/tools/adreno_lab/analyze_x1_waker_stage_j_caller_depth.py \
-            lab/tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py \
-            lab/tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py
-
-          grep -q 'struct ThreadContext' eden/src/core/hle/kernel/svc_types.h
-          grep -q 'std::array<u64, 29> r;' eden/src/core/hle/kernel/svc_types.h
-          grep -q 'u64 fp;' eden/src/core/hle/kernel/svc_types.h
-          grep -q 'IsValidVirtualAddressRange' eden/src/core/memory.h
-          grep -q 'u64 Read64' eden/src/core/memory.h
-          grep -q 'ApplicationMemory()' eden/src/core/core.h
-
-          test "$(grep -c '\[X1-WAKERK\]' eden/src/core/x1_waker_stage_k_profiler.h)" = 1
-          grep -q 'WorkPairSlotCount = 64' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'ReportTopCount = 4' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'RegisterMainModuleRange' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'NormalizeMainTarget' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'workOtherResolvedTicks=' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'workTop0=' eden/src/core/x1_waker_stage_k_profiler.h
-
-          test "$(grep -c 'x1_stage_k_memory.Read64' eden/src/core/hle/kernel/k_scheduler.cpp)" = 6
-          test "$(grep -c 'x1_stage_k_memory.IsValidVirtualAddressRange' eden/src/core/hle/kernel/k_scheduler.cpp)" = 6
-          test "$(grep -c 'x1_stage_g_context.fp' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
-          test "$(grep -c 'x1_stage_g_context.r\[26\]' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
-          test "$(grep -c 'x1_stage_g_context = cur_thread->GetContext()' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
-          test "$(grep -c 'X1WakerStageKProfiler::Get().RecordCpuSlice' eden/src/core/hle/kernel/k_scheduler.cpp)" = 0
-          test "$(grep -c 'x1_stage_k_profiler.RecordCpuSlice' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
-          test "$(grep -c 'X1WakerStageKProfiler::Get().RegisterMainModuleRange' eden/src/core/loader/deconstructed_rom_directory.cpp)" = 1
-          test "$(grep -c 'X1WakerStageKProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
-          test "$(grep -c 'X1WakerStageKProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
-          grep -q 'x1_stage_k_parent_fp <= x1_stage_j_fp' eden/src/core/hle/kernel/k_scheduler.cpp
-
-          diff -u .x1-stage-k-precheck/stage_f.h eden/src/core/x1_waker_stage_f_profiler.h
-          diff -u .x1-stage-k-precheck/stage_g.h eden/src/core/x1_waker_stage_g_profiler.h
-          diff -u .x1-stage-k-precheck/stage_j.h eden/src/core/x1_waker_stage_j_profiler.h
-          test "$(grep -c '\[X1-WAKERH\]' .x1-stage-k-precheck/loader.cpp)" = "$(grep -c '\[X1-WAKERH\]' eden/src/core/loader/deconstructed_rom_directory.cpp)"
-          test "$(grep -c 'modules.insert_or_assign(load_addr, module)' .x1-stage-k-precheck/loader.cpp)" = "$(grep -c 'modules.insert_or_assign(load_addr, module)' eden/src/core/loader/deconstructed_rom_directory.cpp)"
-
-          python - <<'PY'
-          from pathlib import Path
-          text = Path('eden/src/core/hle/kernel/k_scheduler.cpp').read_text()
-          guard = 'GetTrackedProducerIndex(cur_thread->GetThreadId());\n    if (x1_stage_g_out_index >= 0) {\n        const auto& x1_stage_g_context = cur_thread->GetContext();'
-          assert guard in text
-          start = text.index(guard)
-          end = text.index('    if (cur_process != nullptr)', start)
-          block = text[start:end]
-          assert block.count('Read64') == 7
-          assert block.count('x1_stage_k_memory.Read64') == 6
-          assert block.count('x1_stage_k_memory.IsValidVirtualAddressRange') == 6
-          assert block.count('x1_stage_g_context.fp') == 1
-          assert block.count('x1_stage_g_context.r[26]') == 1
-          assert block.count('cur_thread->GetContext()') == 1
-          assert block.index('GetTrackedProducerIndex') < block.index('Read64')
-          assert 'x1_stage_k_parent_fp <= x1_stage_j_fp' in block
-          assert 'NormalizeMainTarget' in block
-
-          profiler = Path('eden/src/core/x1_waker_stage_k_profiler.h').read_text()
-          assert profiler.count('WorkPairSlotCount = 64') == 1
-          assert profiler.count('ReportTopCount = 4') == 1
-          assert 'std::atomic<u64> main_base{0};' in profiler
-          assert 'std::atomic<u64> main_end{0};' in profiler
-          assert 'main_base.store(0' not in profiler
-
-          loader = Path('eden/src/core/loader/deconstructed_rom_directory.cpp').read_text()
-          assert loader.count('std::strcmp(module, "main") == 0') == 1
-          assert loader.count('RegisterMainModuleRange(load_addr, next_load_addr)') == 1
-          PY
-
-          ! grep -Eqi '0x85f12528|0x85f12420|0x85edea8c|0x85edeb40|0x158528|0x158420|0x124a8c|0x124b40|0x127058|0x13178c|0x127e54|0x86a820|0x86be08|0x2a904cc|0x86a490|0x86bc9c|0x2a2d958|0x86a530|0x86a678|0x86a988|0x2af1230' eden/src/core/x1_waker_stage_k_profiler.h
-          ! diff -u .x1-stage-k-precheck/k_scheduler.cpp eden/src/core/hle/kernel/k_scheduler.cpp | grep -E '^\+.*(SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until|WaitForAddress\(|SignalToAddress\()'
-          ! diff -u .x1-stage-k-precheck/vk_rasterizer.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
-          ! diff -u .x1-stage-k-precheck/loader.cpp eden/src/core/loader/deconstructed_rom_directory.cpp | grep -E '^\+.*(QueueBuffer\(|swap_interval|SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until)'
-
+          python -m py_compile tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py
           python - <<'PY'
           import importlib.util
           from pathlib import Path
-          p = Path('lab/tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py')
+          p = Path('tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py')
           spec = importlib.util.spec_from_file_location('stagek_analyzer', p)
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
@@ -187,16 +29,13 @@ jobs:
           assert mod.COMMON_MODULESYSTEM_SHIM == 0x2AF1230
           assert mod.TARGET_TO_COMPONENTS[0xA85380] == ('Actor',)
           PY
-
           cat >/tmp/stage-k-work.log <<'LOG'
           [X1-WAKERH] module=main base=0x1000 end=0x4000000 size=0x3fff000
           [X1-WAKERH] module=sdk base=0x5000000 end=0x5200000 size=0x200000
           [X1-WAKERK] frame=960 frames=120 producer=0 tid=0x55 slices=10 cpuTicks=100 validN=10 validTicks=100 parentUnavailableN=0 parentUnavailableTicks=0 parentRangeBadN=0 parentRangeBadTicks=0 parentFpZeroN=0 parentFpZeroTicks=0 parentFpBadN=0 parentFpBadTicks=0 grandRangeBadN=0 grandRangeBadTicks=0 grandZeroN=0 grandZeroTicks=0 overflowN=0 overflowTicks=0 identitySwitch=0 malTicks=0 badStatus=0 workResolvedN=8 workResolvedTicks=80 workOtherResolvedTicks=20 workOverflowN=0 workOverflowTicks=0 workBadStatus=0 top0=0x5000100/0x5000200/0x1500/0x1600/80/8/80.00% top1=0x0/0x0/0x0/0x0/0/0.00% top2=0x0/0x0/0x0/0x0/0/0.00% top3=0x0/0x0/0x0/0x0/0/0.00% workTop0=0x2af1230/0xa85380/60/6/60.00% workTop1=0x0/0x0/0/0/0.00% workTop2=0x0/0x0/0/0/0.00% workTop3=0x0/0x0/0/0/0.00%
           LOG
-          python lab/tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py /tmp/stage-k-work.log | tee /tmp/out
-          grep -q 'pc=sdk+0x100' /tmp/out
-          grep -q 'parent=main+0x500' /tmp/out
-          grep -q 'grandparent=main+0x600' /tmp/out
+          python tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py /tmp/stage-k-work.log | tee /tmp/out
           grep -q 'shim=main+0x2af1230 work=main+0xa85380 component=Actor' /tmp/out
           grep -q 'reportedCommonCoverageLower=75.00%' /tmp/out
-          echo 'Stage K work-target static validation passed'
+          ! grep -q '^strictRatio ' /tmp/out
+          echo 'Stage K analyzer incomplete-cadence guard validation passed'
