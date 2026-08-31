@@ -205,8 +205,12 @@ def print_strict_summary(windows: list[WorkWindow]) -> None:
                     f"visibleTop4AvgTicksLower={avg_ticks:.1f}"
                 )
 
-        fast = cadence_component_avg.get((producer, "fast/swap2"), {})
-        slow = cadence_component_avg.get((producer, "slow/swap3"), {})
+        fast_key = (producer, "fast/swap2")
+        slow_key = (producer, "slow/swap3")
+        if fast_key not in cadence_component_avg or slow_key not in cadence_component_avg:
+            continue
+        fast = cadence_component_avg[fast_key]
+        slow = cadence_component_avg[slow_key]
         for target in sorted(set(fast) | set(slow)):
             fast_ticks = fast.get(target, 0.0)
             slow_ticks = slow.get(target, 0.0)
@@ -226,7 +230,6 @@ def analyze(path: Path) -> int:
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     modules = parse_modules(lines)
     context_count = 0
-    work_count = 0
     work_windows: list[WorkWindow] = []
 
     for line in lines:
@@ -276,7 +279,6 @@ def analyze(path: Path) -> int:
                 f"component={component_identity(pair.shim_offset, pair.work_offset)} "
                 f"ticks={pair.ticks} slices={pair.slices} share={pair.share:.2f}%"
             )
-            work_count += 1
         work_windows.append(
             WorkWindow(
                 frame=frame,
