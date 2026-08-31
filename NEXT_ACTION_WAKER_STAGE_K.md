@@ -1,6 +1,6 @@
-# NEXT ACTION — Waker Stage K Offline Grandparent Mapping
+# NEXT ACTION — Waker Stage K Post-Mapping Narrow Attribution
 
-Updated: 2026-08-30 KST
+Updated: 2026-08-31 KST
 
 ## Source of truth
 
@@ -12,6 +12,7 @@ Read first:
 - `DEBUG_HISTORY_20260829_WAKER_STAGE_K_IMPLEMENTED.md`
 - `DEBUG_HISTORY_20260830_WAKER_STAGE_K_SCOPE_FIX.md`
 - `DEBUG_HISTORY_20260830_WAKER_STAGE_K_RUNTIME.md`
+- `DEBUG_HISTORY_20260831_WAKER_STAGE_K_OFFLINE_SEMANTIC_MAPPING.md`
 
 Fixed Eden baseline:
 
@@ -23,45 +24,25 @@ Current source branch:
 
 Current ARM64 authorization: **NONE**.
 
-No ARM build/rebuild/rerun is authorized or required for the immediate next action.
+No ARM build/rebuild/rerun is authorized. One authorization always means exactly one ARM attempt, with no implicit retry after failure.
 
-## Stage K Windows ARM64 state — SUCCESS
+## Stage K build/runtime state
 
-The post-fix Stage K build succeeded:
+Canonical successful Windows ARM64 Stage K build:
 
 - workflow: `Build dc95 X1 Waker Stage K`
 - run: `33287796384`
 - job: `99193953965`
 - attempt: `1`
 - build/source HEAD: `25701cc1305a85c47debbbf42af1e646c8822e5b`
-- compile/package/upload: **SUCCESS**
 - artifact: `Eden-dc95-X1-waker-stage-k`
 - artifact ID: `9725325607`
 - SHA-256: `7483a09b7550f7a00cbe214e63b57ba43e6de8b0855299c731ea73412cdff926`
 - retry/rerun: none
 
-The one-shot dispatcher was removed at commit:
-
-`112541623742853bdb1c6114959f5bb5317cde89`
-
 Persistent ARM workflow remains `workflow_dispatch` only.
 
-## Runtime capture selection
-
-### Res2X capture — visual/scaling-invalid for performance inference
-
-`eden_log(20260830-025816).txt`
-
-- `Renderer.resolution_setup: Res2X`
-- user observed upper-left-quarter-only image
-- full-log `BlitScaleHelper` unsupported depth-scaling errors: **19,776**
-  - D32_FLOAT: 12,091
-  - D16_UNORM: 7,685
-- Stage K profiler itself continued to report valid records
-
-Do not use the earlier subjective “2x feels the same speed” observation as GPU-vs-CPU evidence. The scaling path was not proven healthy.
-
-### Res1X capture — primary Stage K runtime source
+Primary runtime source remains:
 
 `eden_log(20260830-122027).txt`
 
@@ -69,83 +50,97 @@ SHA-256:
 
 `3b1ae0252918010736b842767b39c3cdd090215918a624e618b42a3fd57522cb`
 
-- `Renderer.resolution_setup: Res1X`
-- `BlitScaleHelper` unsupported-scaling errors: **0**
-- Stage K late-window `grandRangeBadN=0`, `grandZeroN=0`, `badStatus=0`
-- tiny sporadic `parentUnavailable` only
-- no material frame-walk validity collapse
+Use only pure cadence windows for strict comparison:
 
-The chat does not contain an explicit textual statement that the Res1X visual output returned to normal, so do not invent that observation.
+- fast / swap2: frames `960`, `1080`
+- slow / swap3: frames `1320`, `1440`, `1560`, `1680`
 
-## Strict cadence windows
+Do not use mixed frames `840` or `1200` as primary evidence.
 
-Use only pure QueueBuffer cadence windows:
+The Res2X capture remains invalid for resolution-sensitivity inference because it showed abnormal quarter-screen rendering and 19,776 unsupported depth-scaling errors.
 
-- fast / swap2: `960`, `1080`
-- slow / swap3: `1320`, `1440`, `1560`, `1680`
+## Offline grandparent mapping — CLOSED
 
-Do not use mixed windows `840` or `1200` as primary evidence.
+Exact dumped TOTK 1.2.1 main NSO:
 
-## Stage K canonical normalized quadruples
+`main-9B4E43650501A4D4489B4BBFDB740F26AF3CF85.nso`
 
-Final Res1X module bases normalize the recurring principal families to:
+All addresses below are ASLR-normalized `module+offset`.
 
-1. `sdk+0x158528 / sdk+0x124a8c / main+0x86a820 / main+0x86a490`
-2. `sdk+0x158528 / sdk+0x124b40 / main+0x86be08 / main+0x86bc9c`
-3. `sdk+0x158528 / sdk+0x127058 / main+0x2a904cc / main+0x2a2d958`
-4. `sdk+0x158420 / sdk+0x13178c / sdk+0x127e54 / main+0x86a530`
+| Stage K grandparent | Exact mapping | Durable classification |
+|---|---|---|
+| `main+0x86a490` | `main+0x86a48c: BL main+0x86a4ac` | shared dependency-worker callback into dispatcher |
+| `main+0x86bc9c` | `main+0x86bc98: BL main+0x86bd40` | **EventModuleSubWorker** coordination/execution path |
+| `main+0x2a2d958` | `main+0x2a2d954: BLR x8` | generic indirect thread/message-dispatch frontier |
+| `main+0x86a530` | `main+0x86a52c: BL main+0x2b17270` | shared dispatcher LockMutex site A |
+| `main+0x86a678` | `main+0x86a674: BL main+0x2b17270` | shared dispatcher LockMutex site B |
 
-The LockMutex family also shows recurring `main+0x86a678`; keep it separate until exact static mapping.
+`main+0x86a490`, `main+0x86a530`, and `main+0x86a678` converge on the same shared dependency-worker scheduler/dispatcher rather than three independent game owners.
 
-Known semantic chain through Stage J:
+The shared concrete worker implementation is reused by:
 
-- `sdk+0x158528` = return after `WaitForAddress`
-- `sdk+0x124a8c / +0x124b40` = `WaitLightEvent`
-- `sdk+0x127058` = `ReceiveLightMessageQueue`
-- `sdk+0x158420` = return after `ArbitrateLock`
-- `sdk+0x13178c` = `InternalCriticalSectionImplByHorizon::Enter`
-- `sdk+0x127e54` = `LockMutex`
+- `ModuleSystemWorker`
+- `NavMeshDepWorker`
+- `NavMeshCAStepDepWorker`
+- `phive::DepWorker`
 
-Stage K's useful result is that these dominant synchronization families now reach concrete `main` grandparent return addresses.
+## ModuleSystem work execution — CLOSED STATICALLY
 
-## Immediate next action — NO NEW BUILD
+Scheduler pointer flow is now exact:
 
-Use the exact dumped TOTK 1.2.1 main NSO already available from Stage I work.
+`component -> main+0x7eea44 -> shared DepWorker -> main+0x86a4ac -> main+0x86a988 -> main+0x2af1230 -> component vtable+0x60`
 
-Map these Stage K grandparent offsets offline:
+`main+0x11d1b14` constructs a 41-slot ModuleSystem component list.
 
-- `main+0x86a490`
-- `main+0x86bc9c`
-- `main+0x2a2d958`
-- `main+0x86a530`
-- recurring `main+0x86a678`
+Static enumeration is complete:
 
-For each offset:
+- 41/41 component slots mapped
+- 36 unique concrete `vtable+0x60` targets
+- slot names include `System`, `DenguModule`, `Resource`, `RSDB`, `Graphics`, `Actor`, `Physics`, `Event`, `EventModuleWorker`, `EventModuleSubWorker`, `UI`, `Sound`, `GameData`, `Blackboard`, `Camera`, `LOD`, `Rail`, `PlayReport`, and others recorded in the offline semantic-mapping history
+- slots 17 and 37 intentionally return an empty component name and execute `main+0x26a7fc0: RET`; keep them as unnamed no-op components and do not invent names
 
-1. identify the exact enclosing function / prologue boundary;
-2. identify the call instruction whose return address equals the captured grandparent LR;
-3. determine whether the caller is a concrete game-work function, generic wrapper, job/callback trampoline, or indirect dispatch frontier;
-4. correlate the family with strict swap2 vs swap3 CPU-tick growth;
-5. preserve ASLR-normalized `module+offset`, never raw runtime VA.
+The existing Stage K runtime record does **not** contain the resolved work-object/vtable identity at `main+0x86a988`, so it cannot tell which of the statically enumerated ModuleSystem components owns each expensive shared-worker slice.
 
-Do **not** add Stage L merely because a grandparent address exists.
+## Strict cadence correlation
 
-## Decision gate after offline mapping
+Current durable slow/fast growth from Stage K Res1X:
 
-A. Dominant families converge on a small concrete main-function set with meaningful semantics:
+- shared DepWorker callback `main+0x86a490`: P0 `2.130x`, P1 `2.164x`
+- **EventModuleSubWorker** `main+0x86bc9c`: P0 `5.590x`, P1 `2.961x`
+- generic queue/message frontier `main+0x2a2d958`: P0 `1.232x`; P1 approximately `1.179x` from visible slow windows
+- shared dispatcher LockMutex `main+0x86a530`: P1 `4.870x`; P0 slow/fast `>3.684x` because the fast frame 960 value is top-4 censored
+- `main+0x86a678`: recurring slow-cadence LockMutex subfamily, but no exact strict aggregate because of top-4 censoring
 
-> Stage K is sufficient. Record the owner set and design a narrowly targeted measurement or NCE comparison before any optimization.
+The generic queue-entry family grows far less than the EventModuleSubWorker and shared-dispatch synchronization families.
 
-B. A dominant grandparent is still a generic wrapper but has a clean frame/caller relationship:
+## Current decision
 
-> consider one more bounded depth only for that specific selected-producer family; no arbitrary stack scan.
+The requested Stage K offline semantic mapping is complete.
 
-C. The grandparent lands at indirect/callback/job dispatch boundaries:
+**Do not create Stage L merely to add another stack depth.**
 
-> map the registration/job ownership path statically or instrument the specific callback identity; do not globally widen profiling.
+**Do not implement an optimization yet.**
 
-D. Overflow, not visible families, owns most slow-cadence growth after strict-window accounting:
+The remaining attribution gap is not stack depth. It is the concrete work-object/component identity executed through the already-known shared dispatcher.
 
-> only then reconsider the bounded histogram representation.
+## Immediate next action — DESIGN ONLY, NO ARM ATTEMPT
+
+Until the user gives fresh explicit ARM64 authorization, do not build, rebuild, rerun, dispatch a workflow, or create a one-shot ARM workflow.
+
+If the investigation continues, design only the smallest bounded identity measurement that can answer:
+
+> For the already-selected producer slices that pass through `main+0x86a988`, which normalized ModuleSystem `vtable+0x60` target is actually being executed, and how does its CPU-tick contribution change between strict swap2 and swap3 windows?
+
+Required constraints for that future measurement:
+
+1. reuse the existing selected-producer / promoted-family scope; no all-thread or global profiling;
+2. identify the resolved work-object/component target at `main+0x86a988` / `main+0x2af1230 -> vtable+0x60`;
+3. store/report only normalized `main+offset` identities, never raw ASLR VAs;
+4. keep output bounded and cadence-comparable; do not add arbitrary stack walking;
+5. preserve behavior: no priority, affinity, yield, wait/signal, QueueBuffer, GPU, cadence, or synchronization changes;
+6. treat the already-resolved `EventModuleSubWorker` branch separately from shared ModuleSystem work-target attribution;
+7. one future ARM authorization, if explicitly granted, permits exactly one attempt and no automatic retry.
+
+A targeted NCE comparison can be considered only after the concrete shared-worker target identity is known or if it can answer the same owner question without widening scope.
 
 No behavior-changing optimization is justified yet.
