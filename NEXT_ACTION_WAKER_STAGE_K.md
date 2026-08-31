@@ -1,4 +1,4 @@
-# NEXT ACTION — Waker Stage K Work-Target Build Repair / Runtime Gate
+# NEXT ACTION — Waker Stage K Work-Target ARM Build Gate
 
 Updated: 2026-08-31 KST
 
@@ -16,6 +16,7 @@ Read first:
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IMPLEMENTED.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md`
+- `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_SHADOW_FIX.md`
 
 Fixed Eden baseline:
 
@@ -31,7 +32,7 @@ No ARM build/rebuild/rerun is authorized. One authorization always means exactly
 
 ## Existing canonical Stage K runtime
 
-The previous successful Stage K build/runtime remains the only Windows ARM runtime evidence:
+The previous successful Stage K build/runtime remains the only Windows ARM runtime evidence and predates the x26 work-target identity extension.
 
 - workflow: `Build dc95 X1 Waker Stage K`
 - run: `33287796384`
@@ -41,9 +42,6 @@ The previous successful Stage K build/runtime remains the only Windows ARM runti
 - artifact: `Eden-dc95-X1-waker-stage-k`
 - artifact ID: `9725325607`
 - SHA-256: `7483a09b7550f7a00cbe214e63b57ba43e6de8b0855299c731ea73412cdff926`
-- retry/rerun: none
-
-That artifact predates the x26 work-target identity extension.
 
 Primary previous runtime source:
 
@@ -60,9 +58,9 @@ Strict cadence windows remain:
 
 Mixed windows `840` and `1200` are not primary evidence.
 
-## Offline semantic mapping — CLOSED
+## Closed semantic mapping
 
-Durable classification:
+Durable Stage K classification:
 
 - `main+0x86bc9c` = **EventModuleSubWorker** coordination/execution branch
 - `main+0x86a490`, `main+0x86a530`, `main+0x86a678` = shared dependency-worker / ModuleSystem dispatcher branch
@@ -80,148 +78,113 @@ Static enumeration is complete:
 
 Do not create Stage L for more stack depth.
 
-## Work-target identity implementation — COMPLETE
+## Work-target identity implementation
 
-Canonical implementation record:
-
-`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IMPLEMENTED.md`
-
-Runtime resolver design:
+Runtime resolver:
 
 `x26 node -> [node] work object -> [work] vtable -> [vtable+0x10] shim -> [vtable+0x60] work target`
 
 The extension remains bounded to the existing selected producers, reuses the existing Stage G guest-context capture, normalizes runtime addresses before histogram storage, and does not change scheduler behavior.
 
-Compatibility layout currently in the branch:
+Compatibility layout:
 
-- full resolver transplant implementation: `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth_impl.py`
+- full resolver implementation: `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth_impl.py`
 - persistent-verifier compatibility wrapper: `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
-- dynamic Stage K main-range registration is emitted through the existing Stage H loader transplant
 
-Relevant compatibility commits before the failed ARM attempt:
+## Previous ARM failure — CLOSED AS A STATIC SOURCE DEFECT
 
-- `de634472054d78ad6b3b05dda73791d0dcb58953`
-- `e8cf2597ca4028f31d59c49f234812125b3594e1`
-- `e1026b6d8cde61f0f4e08e2dcb461b289876b381`
+The first authorized ARM attempt of the x26 extension failed:
 
-## Non-ARM validation before the latest ARM attempt
-
-Historical Stage K validator restored from the previously successful verifier shape:
-
-- commit: `6aed649e0c303866a141cebd59be314befc4cf13`
-- run: `33351875686`
-- job: `99366704957`
-- attempt: `1`
-- result: **SUCCESS**
-
-Validator cleanup:
-
-`5cf098df6b413d1c3ab8b95385bc4845eb6e6d1c`
-
-These validation actions did not consume ARM authorization.
-
-## Latest authorized Windows ARM64 attempt — FAILED
-
-Canonical failure record:
-
-`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md`
-
-Exactly one authorized ARM attempt was launched:
-
-- persistent workflow run: `33351947642`
+- run: `33351947642`
 - job: `99366911164`
 - attempt: `1`
-- event: `workflow_dispatch`
 - build/source HEAD: `5fa3b5fb59c5935eb9d48c4d6ea8f0faa52373c7`
 - result: **FAILURE**
-- artifact: **none**
-- retry/rerun: **none**
+- artifact: none
+- retry/rerun: none
 
-The one-shot dispatcher was removed afterward at:
+Failure category:
 
-`b9252798651bbb64422d6893e7a04ebe1ad3b7d4`
+`-Werror,-Wshadow`
 
-The following steps succeeded before compilation failed:
+The compatibility helper used parameter name `x1_stage_k_node`, shadowing an already-live outer local of the same name.
 
-- fixed baseline verification
-- Stage G/H/J/K reconstruction and targeted verification
-- Stage K targeted source verification
-- MSYS2 CLANGARM64 setup
-- ARM64 configure
+## Minimal shadow repair — COMPLETE
 
-Compilation then failed in generated:
+Repair commit:
 
-`src/core/hle/kernel/k_scheduler.cpp`
+`b22306fa55690e99aac94f521d302caa27893754`
 
-with two `-Werror,-Wshadow` errors.
+Only the helper parameter was renamed to `x1_stage_k_node_value`, and only its three helper-body references were updated.
 
-Exact conflict in both selected-producer blocks:
+Unchanged:
 
-```cpp
-const u64 x1_stage_k_node = x1_stage_g_context.r[26];
+- saved-x26 source
+- resolver pointer chain
+- selected-producer scope
+- context capture count
+- read/range-check counts
+- histogram shape
+- runtime behavior
+- baseline
+- persistent ARM workflow trigger
 
-auto x1_stage_k_read_work_targets = &[
-    /* conceptually */
-];
-```
+## Non-ARM/static regression validation — SUCCESS
 
-The actual lambda signature declares another parameter named `x1_stage_k_node`, shadowing the outer local. The two reported generated locations were approximately lines `309` and `560`, with the outer declarations immediately preceding them.
+Temporary Ubuntu validator:
 
-This is a generated-source lexical naming defect. No runtime evidence was produced from this attempt.
+- workflow: `Validate dc95 X1 Waker Stage K`
+- run: `33392096685`
+- job: `99487889955`
+- head SHA: `72e32bbbfd4454f2fdbd9465fb5bf1b0be5ba557`
+- attempt: `1`
+- runner: `ubuntu-latest`
+- result: **SUCCESS**
 
-## Current decision
+The validator reconstructed exact dc95 through Stage K and explicitly confirmed the generated source no longer contains the conflicting helper parameter spelling.
 
-The semantic work-target design remains valid and the runtime instrumentation remains the desired next evidence source.
+Temporary validator cleanup:
 
-However, the current source first needs one **minimal compatibility repair** before another ARM build can be considered.
+`75c9671aa0c5387e3a9b56fc18d4c216980bfdbe`
 
-**Do not create Stage L.**
+No persistent automatic Ubuntu validator remains.
 
-**Do not implement an optimization yet.**
+Canonical repair record:
 
-## Immediate next action — SOURCE FIX, THEN NON-ARM VALIDATION
+`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_SHADOW_FIX.md`
 
-Current ARM64 authorization: **NONE**.
+## Immediate next action — ARM AUTHORIZATION GATE
 
-On continuation, the first source edit should be limited to the compiler shadow defect in:
-
-`tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
-
-Preferred repair:
-
-1. rename the helper lambda parameter `x1_stage_k_node` to a non-conflicting local name such as `x1_stage_k_node_value`;
-2. update only references to that helper parameter inside the helper body;
-3. leave the outer `const u64 x1_stage_k_node = x1_stage_g_context.r[26];` logic and resolver semantics unchanged;
-4. do not change the fixed baseline;
-5. do not change persistent ARM workflow triggers;
-6. do not broaden selected-producer scope, memory-read count, context capture, histogram shape, or runtime behavior.
-
-Then perform a **non-ARM/static validation** that reconstructs the generated Stage K source and explicitly confirms the `-Wshadow` conflict is gone.
-
-Only after that validation is clean may the project be considered ready for another Windows ARM64 attempt.
-
-## Fresh ARM authorization gate
-
-Even after the source repair and non-ARM validation succeed, current ARM64 authorization remains:
+Current ARM64 authorization:
 
 **NONE**
+
+The source repair and required non-ARM/static validation are complete. Stop here unless the user gives a fresh explicit Windows ARM64 build authorization.
 
 Do not:
 
 - rerun run `33351947642`;
 - rerun job `99366911164`;
 - dispatch the persistent Windows ARM workflow;
-- create a new one-shot ARM dispatcher;
+- create a one-shot ARM dispatcher;
 
-without fresh explicit user authorization.
+without fresh explicit authorization.
 
 One fresh authorization permits exactly one new Windows ARM64 attempt. Failure never permits an automatic retry.
 
+Before any future authorized attempt, verify:
+
+1. branch is still `exp/x1-waker-stage-k-grandparent-depth`;
+2. fixed baseline is still `dc95cd09eea9749250fe31a3072684d341d19417`;
+3. `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml` is still named `Build dc95 X1 Waker Stage K`;
+4. its trigger is still `workflow_dispatch` only;
+5. the build includes the repaired wrapper commit `b22306fa55690e99aac94f521d302caa27893754` or a descendant containing exactly that repair.
+
 ## User-test gate after a future successful build
 
-If a future explicitly authorized build succeeds and produces an artifact, that is the point where the user should test.
+If a future explicitly authorized build succeeds and produces an artifact, use Res1X and collect enough 120-frame windows to cover pure swap2 and swap3 cadence.
 
-Use Res1X and collect enough 120-frame windows to cover pure swap2 and swap3 cadence. Analyze:
+Analyze:
 
 - normalized common-shim/work-target pairs
 - ModuleSystem component identities
