@@ -1,0 +1,151 @@
+name: Dispatch dc95 X1 Waker Stage K Work Target Once
+
+on:
+  push:
+    branches:
+      - exp/x1-waker-stage-k-grandparent-depth
+    paths:
+      - .github/workflows/dispatch-dc95-x1-waker-stage-k-work-target-once.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Refresh Stage K verifier without changing build process
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/build-dc95-x1-address-arbiter-attribution.yml')
+          text = path.read_text()
+          start_marker = '      - name: Verify Stage K before configure\n'
+          end_marker = '      - name: Set up MSYS2 CLANGARM64 exactly like Eden Nightly\n'
+          if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+              raise SystemExit('Stage K verifier markers are not unique')
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          new_block = r'''      - name: Verify Stage K before configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          git -C eden diff --check
+          python -m py_compile \
+            lab/tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py \
+            lab/tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py
+
+          grep -q 'struct ThreadContext' eden/src/core/hle/kernel/svc_types.h
+          grep -q 'std::array<u64, 29> r;' eden/src/core/hle/kernel/svc_types.h
+          grep -q 'u64 fp;' eden/src/core/hle/kernel/svc_types.h
+          grep -q 'IsValidVirtualAddressRange' eden/src/core/memory.h
+          grep -q 'u64 Read64' eden/src/core/memory.h
+          grep -q 'ApplicationMemory()' eden/src/core/core.h
+
+          test "$(grep -c '\[X1-WAKERK\]' eden/src/core/x1_waker_stage_k_profiler.h)" = 1
+          grep -q 'WorkPairSlotCount = 64' eden/src/core/x1_waker_stage_k_profiler.h
+          grep -q 'ReportTopCount = 4' eden/src/core/x1_waker_stage_k_profiler.h
+          grep -q 'RegisterMainModuleRange' eden/src/core/x1_waker_stage_k_profiler.h
+          grep -q 'NormalizeMainTarget' eden/src/core/x1_waker_stage_k_profiler.h
+          grep -q 'workOtherResolvedTicks=' eden/src/core/x1_waker_stage_k_profiler.h
+          grep -q 'workTop0=' eden/src/core/x1_waker_stage_k_profiler.h
+
+          test "$(grep -c 'x1_stage_k_memory.Read64' eden/src/core/hle/kernel/k_scheduler.cpp)" = 6
+          test "$(grep -c 'x1_stage_k_memory.IsValidVirtualAddressRange' eden/src/core/hle/kernel/k_scheduler.cpp)" = 6
+          test "$(grep -c 'x1_stage_g_context.fp' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
+          test "$(grep -c 'x1_stage_g_context.r\[26\]' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
+          test "$(grep -c 'x1_stage_g_context = cur_thread->GetContext()' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
+          test "$(grep -c 'x1_stage_k_profiler.RecordCpuSlice' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
+          test "$(grep -c 'X1WakerStageKProfiler::Get().RegisterMainModuleRange' eden/src/core/loader/deconstructed_rom_directory.cpp)" = 1
+          test "$(grep -c 'X1WakerStageKProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
+          test "$(grep -c 'X1WakerStageKProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
+          grep -q 'x1_stage_k_parent_fp <= x1_stage_j_fp' eden/src/core/hle/kernel/k_scheduler.cpp
+
+          diff -u .x1-stage-k-precheck/stage-f-pre-k.h eden/src/core/x1_waker_stage_f_profiler.h
+          diff -u .x1-stage-k-precheck/stage-g-pre-k.h eden/src/core/x1_waker_stage_g_profiler.h
+          diff -u .x1-stage-k-precheck/stage-j-pre-k.h eden/src/core/x1_waker_stage_j_profiler.h
+          test "$(grep -c '\[X1-WAKERH\]' .x1-stage-k-precheck/loader-pre-k.cpp)" = "$(grep -c '\[X1-WAKERH\]' eden/src/core/loader/deconstructed_rom_directory.cpp)"
+          test "$(grep -c 'modules.insert_or_assign(load_addr, module)' .x1-stage-k-precheck/loader-pre-k.cpp)" = "$(grep -c 'modules.insert_or_assign(load_addr, module)' eden/src/core/loader/deconstructed_rom_directory.cpp)"
+
+          python - <<'PY2'
+          from pathlib import Path
+          text = Path('eden/src/core/hle/kernel/k_scheduler.cpp').read_text()
+          guard = 'GetTrackedProducerIndex(cur_thread->GetThreadId());\n    if (x1_stage_g_out_index >= 0) {\n        const auto& x1_stage_g_context = cur_thread->GetContext();'
+          if guard not in text:
+              raise SystemExit('Stage K is not inside the Stage F selected-producer guard')
+          start = text.index(guard)
+          end = text.index('    if (cur_process != nullptr)', start)
+          block = text[start:end]
+          if block.count('Read64') != 7:
+              raise SystemExit('Stage K selected-producer total Read64 count mismatch')
+          if block.count('x1_stage_k_memory.Read64') != 6:
+              raise SystemExit('Stage K Read64 count mismatch')
+          if block.count('x1_stage_k_memory.IsValidVirtualAddressRange') != 6:
+              raise SystemExit('Stage K range-check count mismatch')
+          if block.count('x1_stage_g_context.fp') != 1:
+              raise SystemExit('Stage K frame-pointer sample count mismatch')
+          if block.count('x1_stage_g_context.r[26]') != 1:
+              raise SystemExit('Stage K x26 sample count mismatch')
+          if block.count('cur_thread->GetContext()') != 1:
+              raise SystemExit('Stage K must reuse one context capture')
+          if block.index('GetTrackedProducerIndex') > block.index('Read64'):
+              raise SystemExit('Stage K reads before producer selection')
+          if 'NormalizeMainTarget' not in block:
+              raise SystemExit('Stage K normalized work-target resolver missing')
+
+          profiler = Path('eden/src/core/x1_waker_stage_k_profiler.h').read_text()
+          if 'std::atomic<u64> main_base{0};' not in profiler or 'std::atomic<u64> main_end{0};' not in profiler:
+              raise SystemExit('Stage K dynamic main range storage missing')
+          if 'main_base.store(0' in profiler:
+              raise SystemExit('Stage K Initialize clears registered main range')
+
+          loader = Path('eden/src/core/loader/deconstructed_rom_directory.cpp').read_text()
+          if loader.count('std::strcmp(module, "main") == 0') != 1:
+              raise SystemExit('Stage K main module registration guard mismatch')
+          if loader.count('RegisterMainModuleRange(load_addr, next_load_addr)') != 1:
+              raise SystemExit('Stage K main range registration count mismatch')
+          PY2
+
+          ! grep -Eqi '0x85f12528|0x85f12420|0x85edea8c|0x85edeb40|0x158528|0x158420|0x124a8c|0x124b40|0x127058|0x13178c|0x127e54|0x86a820|0x86be08|0x2a904cc|0x86a490|0x86bc9c|0x2a2d958|0x86a530|0x86a678|0x86a988|0x2af1230' eden/src/core/x1_waker_stage_k_profiler.h
+          ! diff -u .x1-stage-k-precheck/kscheduler-pre-k.cpp eden/src/core/hle/kernel/k_scheduler.cpp | grep -E '^\+.*(SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until|WaitForAddress\(|SignalToAddress\()'
+          ! diff -u .x1-stage-k-precheck/rasterizer-pre-k.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
+          ! diff -u .x1-stage-k-precheck/loader-pre-k.cpp eden/src/core/loader/deconstructed_rom_directory.cpp | grep -E '^\+.*(QueueBuffer\(|swap_interval|SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until)'
+
+'''
+          updated = text[:start] + new_block + text[end:]
+          if updated == text:
+              raise SystemExit('Stage K verifier was not updated')
+          path.write_text(updated)
+          PY
+
+          git diff --check
+          git diff -- .github/workflows/build-dc95-x1-address-arbiter-attribution.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/build-dc95-x1-address-arbiter-attribution.yml
+          git commit -m "Refresh Stage K ARM verifier for x26 work target"
+          git push origin HEAD:exp/x1-waker-stage-k-grandparent-depth
+
+      - name: Dispatch persistent Stage K exactly once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/build-dc95-x1-address-arbiter-attribution.yml/dispatches" \
+            -d '{"ref":"exp/x1-waker-stage-k-grandparent-depth"}'
