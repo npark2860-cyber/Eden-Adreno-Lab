@@ -24,8 +24,8 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import base64
           from pathlib import Path
-
           path = Path('.github/workflows/build-dc95-x1-address-arbiter-attribution.yml')
           text = path.read_text()
           start_marker = '      - name: Verify Stage K before configure\n'
@@ -34,93 +34,7 @@ jobs:
               raise SystemExit('Stage K verifier markers are not unique')
           start = text.index(start_marker)
           end = text.index(end_marker, start)
-          new_block = r'''      - name: Verify Stage K before configure
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
-          git -C eden diff --check
-          python -m py_compile \
-            lab/tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py \
-            lab/tools/adreno_lab/analyze_x1_waker_stage_k_grandparent_depth.py
-
-          grep -q 'struct ThreadContext' eden/src/core/hle/kernel/svc_types.h
-          grep -q 'std::array<u64, 29> r;' eden/src/core/hle/kernel/svc_types.h
-          grep -q 'u64 fp;' eden/src/core/hle/kernel/svc_types.h
-          grep -q 'IsValidVirtualAddressRange' eden/src/core/memory.h
-          grep -q 'u64 Read64' eden/src/core/memory.h
-          grep -q 'ApplicationMemory()' eden/src/core/core.h
-
-          test "$(grep -c '\[X1-WAKERK\]' eden/src/core/x1_waker_stage_k_profiler.h)" = 1
-          grep -q 'WorkPairSlotCount = 64' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'ReportTopCount = 4' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'RegisterMainModuleRange' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'NormalizeMainTarget' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'workOtherResolvedTicks=' eden/src/core/x1_waker_stage_k_profiler.h
-          grep -q 'workTop0=' eden/src/core/x1_waker_stage_k_profiler.h
-
-          test "$(grep -c 'x1_stage_k_memory.Read64' eden/src/core/hle/kernel/k_scheduler.cpp)" = 6
-          test "$(grep -c 'x1_stage_k_memory.IsValidVirtualAddressRange' eden/src/core/hle/kernel/k_scheduler.cpp)" = 6
-          test "$(grep -c 'x1_stage_g_context.fp' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
-          test "$(grep -c 'x1_stage_g_context.r\[26\]' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
-          test "$(grep -c 'x1_stage_g_context = cur_thread->GetContext()' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
-          test "$(grep -c 'x1_stage_k_profiler.RecordCpuSlice' eden/src/core/hle/kernel/k_scheduler.cpp)" = 1
-          test "$(grep -c 'X1WakerStageKProfiler::Get().RegisterMainModuleRange' eden/src/core/loader/deconstructed_rom_directory.cpp)" = 1
-          test "$(grep -c 'X1WakerStageKProfiler::Get().Initialize' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
-          test "$(grep -c 'X1WakerStageKProfiler::Get().FrameEnd' eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp)" = 1
-          grep -q 'x1_stage_k_parent_fp <= x1_stage_j_fp' eden/src/core/hle/kernel/k_scheduler.cpp
-
-          diff -u .x1-stage-k-precheck/stage-f-pre-k.h eden/src/core/x1_waker_stage_f_profiler.h
-          diff -u .x1-stage-k-precheck/stage-g-pre-k.h eden/src/core/x1_waker_stage_g_profiler.h
-          diff -u .x1-stage-k-precheck/stage-j-pre-k.h eden/src/core/x1_waker_stage_j_profiler.h
-          test "$(grep -c '\[X1-WAKERH\]' .x1-stage-k-precheck/loader-pre-k.cpp)" = "$(grep -c '\[X1-WAKERH\]' eden/src/core/loader/deconstructed_rom_directory.cpp)"
-          test "$(grep -c 'modules.insert_or_assign(load_addr, module)' .x1-stage-k-precheck/loader-pre-k.cpp)" = "$(grep -c 'modules.insert_or_assign(load_addr, module)' eden/src/core/loader/deconstructed_rom_directory.cpp)"
-
-          python - <<'PY2'
-          from pathlib import Path
-          text = Path('eden/src/core/hle/kernel/k_scheduler.cpp').read_text()
-          guard = 'GetTrackedProducerIndex(cur_thread->GetThreadId());\n    if (x1_stage_g_out_index >= 0) {\n        const auto& x1_stage_g_context = cur_thread->GetContext();'
-          if guard not in text:
-              raise SystemExit('Stage K is not inside the Stage F selected-producer guard')
-          start = text.index(guard)
-          end = text.index('    if (cur_process != nullptr)', start)
-          block = text[start:end]
-          if block.count('Read64') != 7:
-              raise SystemExit('Stage K selected-producer total Read64 count mismatch')
-          if block.count('x1_stage_k_memory.Read64') != 6:
-              raise SystemExit('Stage K Read64 count mismatch')
-          if block.count('x1_stage_k_memory.IsValidVirtualAddressRange') != 6:
-              raise SystemExit('Stage K range-check count mismatch')
-          if block.count('x1_stage_g_context.fp') != 1:
-              raise SystemExit('Stage K frame-pointer sample count mismatch')
-          if block.count('x1_stage_g_context.r[26]') != 1:
-              raise SystemExit('Stage K x26 sample count mismatch')
-          if block.count('cur_thread->GetContext()') != 1:
-              raise SystemExit('Stage K must reuse one context capture')
-          if block.index('GetTrackedProducerIndex') > block.index('Read64'):
-              raise SystemExit('Stage K reads before producer selection')
-          if 'NormalizeMainTarget' not in block:
-              raise SystemExit('Stage K normalized work-target resolver missing')
-
-          profiler = Path('eden/src/core/x1_waker_stage_k_profiler.h').read_text()
-          if 'std::atomic<u64> main_base{0};' not in profiler or 'std::atomic<u64> main_end{0};' not in profiler:
-              raise SystemExit('Stage K dynamic main range storage missing')
-          if 'main_base.store(0' in profiler:
-              raise SystemExit('Stage K Initialize clears registered main range')
-
-          loader = Path('eden/src/core/loader/deconstructed_rom_directory.cpp').read_text()
-          if loader.count('std::strcmp(module, "main") == 0') != 1:
-              raise SystemExit('Stage K main module registration guard mismatch')
-          if loader.count('RegisterMainModuleRange(load_addr, next_load_addr)') != 1:
-              raise SystemExit('Stage K main range registration count mismatch')
-          PY2
-
-          ! grep -Eqi '0x85f12528|0x85f12420|0x85edea8c|0x85edeb40|0x158528|0x158420|0x124a8c|0x124b40|0x127058|0x13178c|0x127e54|0x86a820|0x86be08|0x2a904cc|0x86a490|0x86bc9c|0x2a2d958|0x86a530|0x86a678|0x86a988|0x2af1230' eden/src/core/x1_waker_stage_k_profiler.h
-          ! diff -u .x1-stage-k-precheck/kscheduler-pre-k.cpp eden/src/core/hle/kernel/k_scheduler.cpp | grep -E '^\+.*(SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until|WaitForAddress\(|SignalToAddress\()'
-          ! diff -u .x1-stage-k-precheck/rasterizer-pre-k.cpp eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp | grep -E '^\+.*(QueueBuffer\(|swap_interval|gpu_fence_behavior)'
-          ! diff -u .x1-stage-k-precheck/loader-pre-k.cpp eden/src/core/loader/deconstructed_rom_directory.cpp | grep -E '^\+.*(QueueBuffer\(|swap_interval|SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until)'
-
-'''
+          new_block = base64.b64decode('ICAgICAgLSBuYW1lOiBWZXJpZnkgU3RhZ2UgSyBiZWZvcmUgY29uZmlndXJlCiAgICAgICAgc2hlbGw6IGJhc2gKICAgICAgICBydW46IHwKICAgICAgICAgIHNldCAtZXVvIHBpcGVmYWlsCiAgICAgICAgICB0ZXN0ICIkKGdpdCAtQyBlZGVuIHJldi1wYXJzZSBIRUFEKSIgPSAiZGM5NWNkMDllZWE5NzQ5MjUwZmUzMWEzMDcyNjg0ZDM0MWQxOTQxNyIKICAgICAgICAgIGdpdCAtQyBlZGVuIGRpZmYgLS1jaGVjawogICAgICAgICAgcHl0aG9uIC1tIHB5X2NvbXBpbGUgXAogICAgICAgICAgICBsYWIvdG9vbHMvYWRyZW5vX2xhYi90cmFuc3BsYW50X2RjOTVfd2FrZXJfc3RhZ2Vfa19ncmFuZHBhcmVudF9kZXB0aC5weSBcCiAgICAgICAgICAgIGxhYi90b29scy9hZHJlbm9fbGFiL2FuYWx5emVfeDFfd2FrZXJfc3RhZ2Vfa19ncmFuZHBhcmVudF9kZXB0aC5weQoKICAgICAgICAgIGdyZXAgLXEgJ3N0cnVjdCBUaHJlYWRDb250ZXh0JyBlZGVuL3NyYy9jb3JlL2hsZS9rZXJuZWwvc3ZjX3R5cGVzLmgKICAgICAgICAgIGdyZXAgLXEgJ3N0ZDo6YXJyYXk8dTY0LCAyOT4gcjsnIGVkZW4vc3JjL2NvcmUvaGxlL2tlcm5lbC9zdmNfdHlwZXMuaAogICAgICAgICAgZ3JlcCAtcSAndTY0IGZwOycgZWRlbi9zcmMvY29yZS9obGUva2VybmVsL3N2Y190eXBlcy5oCiAgICAgICAgICBncmVwIC1xICdJc1ZhbGlkVmlydHVhbEFkZHJlc3NSYW5nZScgZWRlbi9zcmMvY29yZS9tZW1vcnkuaAogICAgICAgICAgZ3JlcCAtcSAndTY0IFJlYWQ2NCcgZWRlbi9zcmMvY29yZS9tZW1vcnkuaAogICAgICAgICAgZ3JlcCAtcSAnQXBwbGljYXRpb25NZW1vcnkoKScgZWRlbi9zcmMvY29yZS9jb3JlLmgKCiAgICAgICAgICB0ZXN0ICIkKGdyZXAgLWMgJ1xbWDEtV0FLRVJLXF0nIGVkZW4vc3JjL2NvcmUveDFfd2FrZXJfc3RhZ2Vfa19wcm9maWxlci5oKSIgPSAxCiAgICAgICAgICBncmVwIC1xICdXb3JrUGFpclNsb3RDb3VudCA9IDY0JyBlZGVuL3NyYy9jb3JlL3gxX3dha2VyX3N0YWdlX2tfcHJvZmlsZXIuaAogICAgICAgICAgZ3JlcCAtcSAnUmVwb3J0VG9wQ291bnQgPSA0JyBlZGVuL3NyYy9jb3JlL3gxX3dha2VyX3N0YWdlX2tfcHJvZmlsZXIuaAogICAgICAgICAgZ3JlcCAtcSAnUmVnaXN0ZXJNYWluTW9kdWxlUmFuZ2UnIGVkZW4vc3JjL2NvcmUveDFfd2FrZXJfc3RhZ2Vfa19wcm9maWxlci5oCiAgICAgICAgICBncmVwIC1xICdOb3JtYWxpemVNYWluVGFyZ2V0JyBlZGVuL3NyYy9jb3JlL3gxX3dha2VyX3N0YWdlX2tfcHJvZmlsZXIuaAogICAgICAgICAgZ3JlcCAtcSAnd29ya090aGVyUmVzb2x2ZWRUaWNrcz0nIGVkZW4vc3JjL2NvcmUveDFfd2FrZXJfc3RhZ2Vfa19wcm9maWxlci5oCiAgICAgICAgICBncmVwIC1xICd3b3JrVG9wMD0nIGVkZW4vc3JjL2NvcmUveDFfd2FrZXJfc3RhZ2Vfa19wcm9maWxlci5oCgogICAgICAgICAgdGVzdCAiJChncmVwIC1jICd4MV9zdGFnZV9rX21lbW9yeS5SZWFkNjQnIGVkZW4vc3JjL2NvcmUvaGxlL2tlcm5lbC9rX3NjaGVkdWxlci5jcHApIiA9IDYKICAgICAgICAgIHRlc3QgIiQoZ3JlcCAtYyAneDFfc3RhZ2Vfa19tZW1vcnkuSXNWYWxpZFZpcnR1YWxBZGRyZXNzUmFuZ2UnIGVkZW4vc3JjL2NvcmUvaGxlL2tlcm5lbC9rX3NjaGVkdWxlci5jcHApIiA9IDYKICAgICAgICAgIHRlc3QgIiQoZ3JlcCAtYyAneDFfc3RhZ2VfZ19jb250ZXh0LmZwJyBlZGVuL3NyYy9jb3JlL2hsZS9rZXJuZWwva19zY2hlZHVsZXIuY3BwKSIgPSAxCiAgICAgICAgICB0ZXN0ICIkKGdyZXAgLWMgJ3gxX3N0YWdlX2dfY29udGV4dC5yXFsyNlxdJyBlZGVuL3NyYy9jb3JlL2hsZS9rZXJuZWwva19zY2hlZHVsZXIuY3BwKSIgPSAxCiAgICAgICAgICB0ZXN0ICIkKGdyZXAgLWMgJ3gxX3N0YWdlX2dfY29udGV4dCA9IGN1cl90aHJlYWQtPkdldENvbnRleHQoKScgZWRlbi9zcmMvY29yZS9obGUva2VybmVsL2tfc2NoZWR1bGVyLmNwcCkiID0gMQogICAgICAgICAgdGVzdCAiJChncmVwIC1jICd4MV9zdGFnZV9rX3Byb2ZpbGVyLlJlY29yZENwdVNsaWNlJyBlZGVuL3NyYy9jb3JlL2hsZS9rZXJuZWwva19zY2hlZHVsZXIuY3BwKSIgPSAxCiAgICAgICAgICB0ZXN0ICIkKGdyZXAgLWMgJ1gxV2FrZXJTdGFnZUtQcm9maWxlcjo6R2V0KCkuUmVnaXN0ZXJNYWluTW9kdWxlUmFuZ2UnIGVkZW4vc3JjL2NvcmUvbG9hZGVyL2RlY29uc3RydWN0ZWRfcm9tX2RpcmVjdG9yeS5jcHApIiA9IDEKICAgICAgICAgIHRlc3QgIiQoZ3JlcCAtYyAnWDFXYWtlclN0YWdlS1Byb2ZpbGVyOjpHZXQoKS5Jbml0aWFsaXplJyBlZGVuL3NyYy92aWRlb19jb3JlL3JlbmRlcmVyX3Z1bGthbi92a19yYXN0ZXJpemVyLmNwcCkiID0gMQogICAgICAgICAgdGVzdCAiJChncmVwIC1jICdYMVdha2VyU3RhZ2VLUHJvZmlsZXI6OkdldCgpLkZyYW1lRW5kJyBlZGVuL3NyYy92aWRlb19jb3JlL3JlbmRlcmVyX3Z1bGthbi92a19yYXN0ZXJpemVyLmNwcCkiID0gMQogICAgICAgICAgZ3JlcCAtcSAneDFfc3RhZ2Vfa19wYXJlbnRfZnAgPD0geDFfc3RhZ2Vfal9mcCcgZWRlbi9zcmMvY29yZS9obGUva2VybmVsL2tfc2NoZWR1bGVyLmNwcAoKICAgICAgICAgIGRpZmYgLXUgLngxLXN0YWdlLWstcHJlY2hlY2svc3RhZ2UtZi1wcmUtay5oIGVkZW4vc3JjL2NvcmUveDFfd2FrZXJfc3RhZ2VfZl9wcm9maWxlci5oCiAgICAgICAgICBkaWZmIC11IC54MS1zdGFnZS1rLXByZWNoZWNrL3N0YWdlLWctcHJlLWsuaCBlZGVuL3NyYy9jb3JlL3gxX3dha2VyX3N0YWdlX2dfcHJvZmlsZXIuaAogICAgICAgICAgZGlmZiAtdSAueDEtc3RhZ2Utay1wcmVjaGVjay9zdGFnZS1qLXByZS1rLmggZWRlbi9zcmMvY29yZS94MV93YWtlcl9zdGFnZV9qX3Byb2ZpbGVyLmgKICAgICAgICAgIHRlc3QgIiQoZ3JlcCAtYyAnXFtYMS1XQUtFUkhcXScgLngxLXN0YWdlLWstcHJlY2hlY2svbG9hZGVyLXByZS1rLmNwcCkiID0gIiQoZ3JlcCAtYyAnXFtYMS1XQUtFUkhcXScgZWRlbi9zcmMvY29yZS9sb2FkZXIvZGVjb25zdHJ1Y3RlZF9yb21fZGlyZWN0b3J5LmNwcCkiCiAgICAgICAgICB0ZXN0ICIkKGdyZXAgLWMgJ21vZHVsZXMuaW5zZXJ0X29yX2Fzc2lnbihsb2FkX2FkZHIsIG1vZHVsZSknIC54MS1zdGFnZS1rLXByZWNoZWNrL2xvYWRlci1wcmUtay5jcHApIiA9ICIkKGdyZXAgLWMgJ21vZHVsZXMuaW5zZXJ0X29yX2Fzc2lnbihsb2FkX2FkZHIsIG1vZHVsZSknIGVkZW4vc3JjL2NvcmUvbG9hZGVyL2RlY29uc3RydWN0ZWRfcm9tX2RpcmVjdG9yeS5jcHApIgoKICAgICAgICAgIHB5dGhvbiAtIDw8J1BZMicKICAgICAgICAgIGZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAogICAgICAgICAgdGV4dCA9IFBhdGgoJ2VkZW4vc3JjL2NvcmUvaGxlL2tlcm5lbC9rX3NjaGVkdWxlci5jcHAnKS5yZWFkX3RleHQoKQogICAgICAgICAgZ3VhcmQgPSAnR2V0VHJhY2tlZFByb2R1Y2VySW5kZXgoY3VyX3RocmVhZC0+R2V0VGhyZWFkSWQoKSk7XG4gICAgaWYgKHgxX3N0YWdlX2dfb3V0X2luZGV4ID49IDApIHtcbiAgICAgICAgY29uc3QgYXV0byYgeDFfc3RhZ2VfZ19jb250ZXh0ID0gY3VyX3RocmVhZC0+R2V0Q29udGV4dCgpOycKICAgICAgICAgIGlmIGd1YXJkIG5vdCBpbiB0ZXh0OgogICAgICAgICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1N0YWdlIEsgaXMgbm90IGluc2lkZSB0aGUgU3RhZ2UgRiBzZWxlY3RlZC1wcm9kdWNlciBndWFyZCcpCiAgICAgICAgICBzdGFydCA9IHRleHQuaW5kZXgoZ3VhcmQpCiAgICAgICAgICBlbmQgPSB0ZXh0LmluZGV4KCcgICAgaWYgKGN1cl9wcm9jZXNzICE9IG51bGxwdHIpJywgc3RhcnQpCiAgICAgICAgICBibG9jayA9IHRleHRbc3RhcnQ6ZW5kXQogICAgICAgICAgaWYgYmxvY2suY291bnQoJ1JlYWQ2NCcpICE9IDc6CiAgICAgICAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgnU3RhZ2UgSyBzZWxlY3RlZC1wcm9kdWNlciB0b3RhbCBSZWFkNjQgY291bnQgbWlzbWF0Y2gnKQogICAgICAgICAgaWYgYmxvY2suY291bnQoJ3gxX3N0YWdlX2tfbWVtb3J5LlJlYWQ2NCcpICE9IDY6CiAgICAgICAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgnU3RhZ2UgSyBSZWFkNjQgY291bnQgbWlzbWF0Y2gnKQogICAgICAgICAgaWYgYmxvY2suY291bnQoJ3gxX3N0YWdlX2tfbWVtb3J5LklzVmFsaWRWaXJ0dWFsQWRkcmVzc1JhbmdlJykgIT0gNjoKICAgICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdTdGFnZSBLIHJhbmdlLWNoZWNrIGNvdW50IG1pc21hdGNoJykKICAgICAgICAgIGlmIGJsb2NrLmNvdW50KCd4MV9zdGFnZV9nX2NvbnRleHQuZnAnKSAhPSAxOgogICAgICAgICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1N0YWdlIEsgZnJhbWUtcG9pbnRlciBzYW1wbGUgY291bnQgbWlzbWF0Y2gnKQogICAgICAgICAgaWYgYmxvY2suY291bnQoJ3gxX3N0YWdlX2dfY29udGV4dC5yWzI2XScpICE9IDE6CiAgICAgICAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgnU3RhZ2UgSyB4MjYgc2FtcGxlIGNvdW50IG1pc21hdGNoJykKICAgICAgICAgIGlmIGJsb2NrLmNvdW50KCdjdXJfdGhyZWFkLT5HZXRDb250ZXh0KCknKSAhPSAxOgogICAgICAgICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1N0YWdlIEsgbXVzdCByZXVzZSBvbmUgY29udGV4dCBjYXB0dXJlJykKICAgICAgICAgIGlmIGJsb2NrLmluZGV4KCdHZXRUcmFja2VkUHJvZHVjZXJJbmRleCcpID4gYmxvY2suaW5kZXgoJ1JlYWQ2NCcpOgogICAgICAgICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1N0YWdlIEsgcmVhZHMgYmVmb3JlIHByb2R1Y2VyIHNlbGVjdGlvbicpCiAgICAgICAgICBpZiAnTm9ybWFsaXplTWFpblRhcmdldCcgbm90IGluIGJsb2NrOgogICAgICAgICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1N0YWdlIEsgbm9ybWFsaXplZCB3b3JrLXRhcmdldCByZXNvbHZlciBtaXNzaW5nJykKCiAgICAgICAgICBwcm9maWxlciA9IFBhdGgoJ2VkZW4vc3JjL2NvcmUveDFfd2FrZXJfc3RhZ2Vfa19wcm9maWxlci5oJykucmVhZF90ZXh0KCkKICAgICAgICAgIGlmICdzdGQ6OmF0b21pYzx1NjQ+IG1haW5fYmFzZXswfTsnIG5vdCBpbiBwcm9maWxlciBvciAnc3RkOjphdG9taWM8dTY0PiBtYWluX2VuZHswfTsnIG5vdCBpbiBwcm9maWxlcjoKICAgICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdTdGFnZSBLIGR5bmFtaWMgbWFpbiByYW5nZSBzdG9yYWdlIG1pc3NpbmcnKQogICAgICAgICAgaWYgJ21haW5fYmFzZS5zdG9yZSgwJyBpbiBwcm9maWxlcjoKICAgICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdTdGFnZSBLIEluaXRpYWxpemUgY2xlYXJzIHJlZ2lzdGVyZWQgbWFpbiByYW5nZScpCgogICAgICAgICAgbG9hZGVyID0gUGF0aCgnZWRlbi9zcmMvY29yZS9sb2FkZXIvZGVjb25zdHJ1Y3RlZF9yb21fZGlyZWN0b3J5LmNwcCcpLnJlYWRfdGV4dCgpCiAgICAgICAgICBpZiBsb2FkZXIuY291bnQoJ3N0ZDo6c3RyY21wKG1vZHVsZSwgIm1haW4iKSA9PSAwJykgIT0gMToKICAgICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdTdGFnZSBLIG1haW4gbW9kdWxlIHJlZ2lzdHJhdGlvbiBndWFyZCBtaXNtYXRjaCcpCiAgICAgICAgICBpZiBsb2FkZXIuY291bnQoJ1JlZ2lzdGVyTWFpbk1vZHVsZVJhbmdlKGxvYWRfYWRkciwgbmV4dF9sb2FkX2FkZHIpJykgIT0gMToKICAgICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdTdGFnZSBLIG1haW4gcmFuZ2UgcmVnaXN0cmF0aW9uIGNvdW50IG1pc21hdGNoJykKICAgICAgICAgIFBZMgoKICAgICAgICAgICEgZ3JlcCAtRXFpICcweDg1ZjEyNTI4fDB4ODVmMTI0MjB8MHg4NWVkZWE4Y3wweDg1ZWRlYjQwfDB4MTU4NTI4fDB4MTU4NDIwfDB4MTI0YThjfDB4MTI0YjQwfDB4MTI3MDU4fDB4MTMxNzhjfDB4MTI3ZTU0fDB4ODZhODIwfDB4ODZiZTA4fDB4MmE5MDRjY3wweDg2YTQ5MHwweDg2YmM5Y3wweDJhMmQ5NTh8MHg4NmE1MzB8MHg4NmE2Nzh8MHg4NmE5ODh8MHgyYWYxMjMwJyBlZGVuL3NyYy9jb3JlL3gxX3dha2VyX3N0YWdlX2tfcHJvZmlsZXIuaAogICAgICAgICAgISBkaWZmIC11IC54MS1zdGFnZS1rLXByZWNoZWNrL2tzY2hlZHVsZXItcHJlLWsuY3BwIGVkZW4vc3JjL2NvcmUvaGxlL2tlcm5lbC9rX3NjaGVkdWxlci5jcHAgfCBncmVwIC1FICdeXCsuKihTZXRQcmlvcml0eVwofFNldENvcmVNYXNrXCh8UmVzY2hlZHVsZVwofFlpZWxkVG9cKHxzbGVlcF9mb3J8c2xlZXBfdW50aWx8V2FpdEZvckFkZHJlc3NcKHxTaWduYWxUb0FkZHJlc3NcKCknCiAgICAgICAgICAhIGRpZmYgLXUgLngxLXN0YWdlLWstcHJlY2hlY2svcmFzdGVyaXplci1wcmUtay5jcHAgZWRlbi9zcmMvdmlkZW9fY29yZS9yZW5kZXJlcl92dWxrYW4vdmtfcmFzdGVyaXplci5jcHAgfCBncmVwIC1FICdeXCsuKihRdWV1ZUJ1ZmZlclwofHN3YXBfaW50ZXJ2YWx8Z3B1X2ZlbmNlX2JlaGF2aW9yKScKICAgICAgICAgICEgZGlmZiAtdSAueDEtc3RhZ2Utay1wcmVjaGVjay9sb2FkZXItcHJlLWsuY3BwIGVkZW4vc3JjL2NvcmUvbG9hZGVyL2RlY29uc3RydWN0ZWRfcm9tX2RpcmVjdG9yeS5jcHAgfCBncmVwIC1FICdeXCsuKihRdWV1ZUJ1ZmZlclwofHN3YXBfaW50ZXJ2YWx8U2V0UHJpb3JpdHlcKHxTZXRDb3JlTWFza1wofFJlc2NoZWR1bGVcKHxZaWVsZFRvXCh8c2xlZXBfZm9yfHNsZWVwX3VudGlsKScKCg==').decode()
           updated = text[:start] + new_block + text[end:]
           if updated == text:
               raise SystemExit('Stage K verifier was not updated')
