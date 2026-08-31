@@ -1,4 +1,4 @@
-# NEXT ACTION — Waker Stage K Post-Mapping Narrow Attribution
+# NEXT ACTION — Waker Stage K Work-Target Identity Implementation
 
 Updated: 2026-08-31 KST
 
@@ -13,6 +13,7 @@ Read first:
 - `DEBUG_HISTORY_20260830_WAKER_STAGE_K_SCOPE_FIX.md`
 - `DEBUG_HISTORY_20260830_WAKER_STAGE_K_RUNTIME.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_OFFLINE_SEMANTIC_MAPPING.md`
+- `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`
 
 Fixed Eden baseline:
 
@@ -26,9 +27,9 @@ Current ARM64 authorization: **NONE**.
 
 No ARM build/rebuild/rerun is authorized. One authorization always means exactly one ARM attempt, with no implicit retry after failure.
 
-## Stage K build/runtime state
+## Stage K canonical runtime state
 
-Canonical successful Windows ARM64 Stage K build:
+Successful Windows ARM64 Stage K build:
 
 - workflow: `Build dc95 X1 Waker Stage K`
 - run: `33287796384`
@@ -42,7 +43,7 @@ Canonical successful Windows ARM64 Stage K build:
 
 Persistent ARM workflow remains `workflow_dispatch` only.
 
-Primary runtime source remains:
+Primary runtime source:
 
 `eden_log(20260830-122027).txt`
 
@@ -50,97 +51,107 @@ SHA-256:
 
 `3b1ae0252918010736b842767b39c3cdd090215918a624e618b42a3fd57522cb`
 
-Use only pure cadence windows for strict comparison:
+Strict cadence windows remain:
 
-- fast / swap2: frames `960`, `1080`
-- slow / swap3: frames `1320`, `1440`, `1560`, `1680`
+- fast / swap2: `960`, `1080`
+- slow / swap3: `1320`, `1440`, `1560`, `1680`
 
-Do not use mixed frames `840` or `1200` as primary evidence.
+Mixed windows `840` and `1200` are not primary evidence.
 
-The Res2X capture remains invalid for resolution-sensitivity inference because it showed abnormal quarter-screen rendering and 19,776 unsupported depth-scaling errors.
+The Res2X capture remains invalid for resolution-sensitivity inference because of abnormal quarter-screen rendering and 19,776 unsupported depth-scaling errors.
 
-## Offline grandparent mapping — CLOSED
+## Offline grandparent / semantic mapping — CLOSED
 
-Exact dumped TOTK 1.2.1 main NSO:
+Durable Stage K classification:
 
-`main-9B4E43650501A4D4489B4BBFDB740F26AF3CF85.nso`
+- `main+0x86bc9c` = **EventModuleSubWorker** coordination/execution branch
+- `main+0x86a490`, `main+0x86a530`, `main+0x86a678` = shared dependency-worker / ModuleSystem dispatcher branch
+- `main+0x2a2d958` = generic indirect message/thread-dispatch frontier
 
-All addresses below are ASLR-normalized `module+offset`.
-
-| Stage K grandparent | Exact mapping | Durable classification |
-|---|---|---|
-| `main+0x86a490` | `main+0x86a48c: BL main+0x86a4ac` | shared dependency-worker callback into dispatcher |
-| `main+0x86bc9c` | `main+0x86bc98: BL main+0x86bd40` | **EventModuleSubWorker** coordination/execution path |
-| `main+0x2a2d958` | `main+0x2a2d954: BLR x8` | generic indirect thread/message-dispatch frontier |
-| `main+0x86a530` | `main+0x86a52c: BL main+0x2b17270` | shared dispatcher LockMutex site A |
-| `main+0x86a678` | `main+0x86a674: BL main+0x2b17270` | shared dispatcher LockMutex site B |
-
-`main+0x86a490`, `main+0x86a530`, and `main+0x86a678` converge on the same shared dependency-worker scheduler/dispatcher rather than three independent game owners.
-
-The shared concrete worker implementation is reused by:
-
-- `ModuleSystemWorker`
-- `NavMeshDepWorker`
-- `NavMeshCAStepDepWorker`
-- `phive::DepWorker`
-
-## ModuleSystem work execution — CLOSED STATICALLY
-
-Scheduler pointer flow is now exact:
+The shared ModuleSystem execution chain is exact:
 
 `component -> main+0x7eea44 -> shared DepWorker -> main+0x86a4ac -> main+0x86a988 -> main+0x2af1230 -> component vtable+0x60`
 
-`main+0x11d1b14` constructs a 41-slot ModuleSystem component list.
-
 Static enumeration is complete:
 
-- 41/41 component slots mapped
+- 41/41 ModuleSystem slots mapped
 - 36 unique concrete `vtable+0x60` targets
-- slot names include `System`, `DenguModule`, `Resource`, `RSDB`, `Graphics`, `Actor`, `Physics`, `Event`, `EventModuleWorker`, `EventModuleSubWorker`, `UI`, `Sound`, `GameData`, `Blackboard`, `Camera`, `LOD`, `Rail`, `PlayReport`, and others recorded in the offline semantic-mapping history
-- slots 17 and 37 intentionally return an empty component name and execute `main+0x26a7fc0: RET`; keep them as unnamed no-op components and do not invent names
+- unnamed slots 17 and 37 remain deliberately unnamed no-op components
 
-The existing Stage K runtime record does **not** contain the resolved work-object/vtable identity at `main+0x86a988`, so it cannot tell which of the statically enumerated ModuleSystem components owns each expensive shared-worker slice.
+Do not create Stage L for more stack depth.
 
-## Strict cadence correlation
+## Work-target identity design — COMPLETE
 
-Current durable slow/fast growth from Stage K Res1X:
+Canonical design record:
 
-- shared DepWorker callback `main+0x86a490`: P0 `2.130x`, P1 `2.164x`
-- **EventModuleSubWorker** `main+0x86bc9c`: P0 `5.590x`, P1 `2.961x`
-- generic queue/message frontier `main+0x2a2d958`: P0 `1.232x`; P1 approximately `1.179x` from visible slow windows
-- shared dispatcher LockMutex `main+0x86a530`: P1 `4.870x`; P0 slow/fast `>3.684x` because the fast frame 960 value is top-4 censored
-- `main+0x86a678`: recurring slow-cadence LockMutex subfamily, but no exact strict aggregate because of top-4 censoring
+`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`
 
-The generic queue-entry family grows far less than the EventModuleSubWorker and shared-dispatch synchronization families.
+The design resolves the remaining shared-worker identity through the already-saved guest `x26` register rather than another frame walk.
 
-## Current decision
+Exact work-dispatch anchor:
 
-The requested Stage K offline semantic mapping is complete.
+```text
+main+0x86a97c: LDR x0, [x26]
+main+0x86a980: LDR x8, [x0]
+main+0x86a984: LDR x8, [x8, #0x10]
+main+0x86a988: BLR x8
+```
 
-**Do not create Stage L merely to add another stack depth.**
+Existing Eden dc95 `ThreadContext` stores `r[0..28]`, so the existing Stage G context sample exposes saved `x26` as `x1_stage_g_context.r[26]`. No second guest-context sample is needed.
 
-**Do not implement an optimization yet.**
+Preferred resolver:
 
-The remaining attribution gap is not stack depth. It is the concrete work-object/component identity executed through the already-known shared dispatcher.
+`x26 node -> [node] work object -> [work] vtable -> [vtable+0x10] shim target -> [vtable+0x60] work target`
 
-## Immediate next action — DESIGN ONLY, NO ARM ATTEMPT
+Required properties:
 
-Until the user gives fresh explicit ARM64 authorization, do not build, rebuild, rerun, dispatch a workflow, or create a one-shot ARM workflow.
+- exactly four additional `Read64` sites inside the already-selected producer scope
+- range validation before every read
+- no arbitrary stack scan/walk
+- no runtime hardcode of `main+0x2af1230` or any component target
+- register dynamic `main` range from the existing Stage H loader path
+- normalize resolved shim/work targets immediately to `main+offset`
+- store/report normalized offsets only
+- fixed 64 pair slots per producer
+- report every 120 frames
+- top 4 pairs plus `resolvedTicks`, `otherResolvedTicks`, `overflowTicks`, and resolver validity accounting
+- preserve existing `tick_diff` as the CPU cost attributed to each resolved pair
 
-If the investigation continues, design only the smallest bounded identity measurement that can answer:
+Offline analysis, not runtime C++, recognizes normalized shim `main+0x2af1230` and maps work offsets against the existing 41-slot / 36-target semantic table.
 
-> For the already-selected producer slices that pass through `main+0x86a988`, which normalized ModuleSystem `vtable+0x60` target is actually being executed, and how does its CPU-tick contribution change between strict swap2 and swap3 windows?
+## Immediate next action — IMPLEMENTATION / STATIC VALIDATION ONLY
 
-Required constraints for that future measurement:
+The design phase is closed.
 
-1. reuse the existing selected-producer / promoted-family scope; no all-thread or global profiling;
-2. identify the resolved work-object/component target at `main+0x86a988` / `main+0x2af1230 -> vtable+0x60`;
-3. store/report only normalized `main+offset` identities, never raw ASLR VAs;
-4. keep output bounded and cadence-comparable; do not add arbitrary stack walking;
-5. preserve behavior: no priority, affinity, yield, wait/signal, QueueBuffer, GPU, cadence, or synchronization changes;
-6. treat the already-resolved `EventModuleSubWorker` branch separately from shared ModuleSystem work-target attribution;
-7. one future ARM authorization, if explicitly granted, permits exactly one attempt and no automatic retry.
+If continuing, implement this work-target identity resolver as a **Stage K extension**, not a new Stage L.
 
-A targeted NCE comparison can be considered only after the concrete shared-worker target identity is known or if it can answer the same owner question without widening scope.
+Implementation must remain observation-only and may be statically validated without consuming ARM64 authorization.
+
+Implementation scope is limited to:
+
+1. extend the existing Stage K profiler with dynamic `main` range registration and a bounded normalized `(shim_offset, work_offset)` histogram;
+2. reuse the existing Stage G context sample and read `x1_stage_g_context.r[26]` only inside the existing Stage F selected-producer guard;
+3. add the four validated pointer reads defined by the design record;
+4. add resolver status/coverage/overflow accounting;
+5. extend the existing offline analyzer to map normalized common-shim pairs to the static ModuleSystem component table;
+6. add static checks proving no observed raw/normalized TOTK target address is hardcoded into runtime C++;
+7. preserve all existing Stage F/G/J/K profiler scope, output cadence, and behavior invariants.
+
+Do not alter priority, affinity, yield, scheduling behavior, waits/signals, QueueBuffer, GPU work, cadence, synchronization semantics, or the fixed Eden baseline.
+
+Do not retarget or dispatch the Windows ARM workflow during implementation/static validation.
+
+## Runtime gate after implementation
+
+A Windows ARM64 build/run remains blocked until fresh explicit user authorization.
+
+If such authorization is later given:
+
+- one authorization = exactly one ARM attempt;
+- no automatic retry/rerun after failure;
+- persistent workflow must remain `workflow_dispatch` only;
+- the future capture is accepted only if common-shim resolved coverage is sufficient and strict swap2/swap3 component tick comparison is possible.
+
+`EventModuleSubWorker` remains a separate already-resolved branch and must not be merged with the shared ModuleSystem work-target histogram.
 
 No behavior-changing optimization is justified yet.
