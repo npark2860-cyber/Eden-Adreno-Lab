@@ -85,9 +85,27 @@ def main() -> int:
         "",
         "work-target node parameterization",
     )
+    body = replace_once(
+        body,
+        "x1_stage_k_node == 0",
+        "x1_stage_k_node_value == 0",
+        "work-target helper zero-node parameter",
+    )
+    body = replace_once(
+        body,
+        "(x1_stage_k_node & (alignof(u64) - 1))",
+        "(x1_stage_k_node_value & (alignof(u64) - 1))",
+        "work-target helper node-alignment parameter",
+    )
+    body = replace_once(
+        body,
+        "x1_stage_k_node_slot{x1_stage_k_node}",
+        "x1_stage_k_node_slot{x1_stage_k_node_value}",
+        "work-target helper node-slot parameter",
+    )
 
     helper = '''    const auto x1_stage_k_resolve_work_target =
-        [&kernel](u64 x1_stage_k_node, u64& x1_stage_k_shim_offset,
+        [&kernel](u64 x1_stage_k_node_value, u64& x1_stage_k_shim_offset,
                   u64& x1_stage_k_work_offset) {
         auto& x1_stage_k_work_profiler = Core::X1WakerStageKProfiler::Get();
         auto& x1_stage_k_work_memory = kernel.System().ApplicationMemory();
