@@ -1,4 +1,4 @@
-# NEXT ACTION — Waker Stage K Work-Target Runtime Gate
+# NEXT ACTION — Waker Stage K Work-Target Build Repair / Runtime Gate
 
 Updated: 2026-08-31 KST
 
@@ -15,6 +15,7 @@ Read first:
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_OFFLINE_SEMANTIC_MAPPING.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IMPLEMENTED.md`
+- `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md`
 
 Fixed Eden baseline:
 
@@ -28,9 +29,9 @@ Current ARM64 authorization: **NONE**.
 
 No ARM build/rebuild/rerun is authorized. One authorization always means exactly one ARM attempt, with no implicit retry after failure.
 
-## Existing canonical Stage K Windows ARM64 runtime
+## Existing canonical Stage K runtime
 
-The previous Stage K build/runtime remains the only Windows ARM runtime evidence:
+The previous successful Stage K build/runtime remains the only Windows ARM runtime evidence:
 
 - workflow: `Build dc95 X1 Waker Stage K`
 - run: `33287796384`
@@ -41,6 +42,8 @@ The previous Stage K build/runtime remains the only Windows ARM runtime evidence
 - artifact ID: `9725325607`
 - SHA-256: `7483a09b7550f7a00cbe214e63b57ba43e6de8b0855299c731ea73412cdff926`
 - retry/rerun: none
+
+That artifact predates the x26 work-target identity extension.
 
 Primary previous runtime source:
 
@@ -56,8 +59,6 @@ Strict cadence windows remain:
 - slow / swap3: frames `1320`, `1440`, `1560`, `1680`
 
 Mixed windows `840` and `1200` are not primary evidence.
-
-The Res2X capture remains invalid for resolution-sensitivity inference because of abnormal quarter-screen rendering and 19,776 unsupported depth-scaling errors.
 
 ## Offline semantic mapping — CLOSED
 
@@ -85,98 +86,150 @@ Canonical implementation record:
 
 `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IMPLEMENTED.md`
 
-The Stage K extension now resolves the remaining shared-worker identity through the already-saved guest x26 value rather than another frame walk.
-
-Runtime resolver:
+Runtime resolver design:
 
 `x26 node -> [node] work object -> [work] vtable -> [vtable+0x10] shim -> [vtable+0x60] work target`
 
-Implementation properties:
+The extension remains bounded to the existing selected producers, reuses the existing Stage G guest-context capture, normalizes runtime addresses before histogram storage, and does not change scheduler behavior.
 
-- remains inside the existing Stage F selected-producer scope
-- reuses the existing Stage G guest-context sample
-- reads `x1_stage_g_context.r[26]` exactly once
-- adds exactly four work-target `Read64` sites
-- Stage K total is six `Read64` / six Stage-K range checks including the existing two grandparent reads
-- no new stack depth
-- no second context capture
-- dynamic `main` range registered from the existing Stage H loader path
-- resolved shim/work addresses normalized immediately to offsets
-- work-pair histogram stores only normalized `(shim_offset, work_offset)`
-- 64 fixed work-pair slots per producer
-- top4 every 120 frames
-- resolved / other-resolved / overflow / resolver-status accounting retained
-- runtime C++ does not hardcode the common shim or any known TOTK component target
-- analyzer owns the 41-slot / 36-target semantic map
+Compatibility layout currently in the branch:
 
-## Ubuntu static validation — SUCCESS
+- full resolver transplant implementation: `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth_impl.py`
+- persistent-verifier compatibility wrapper: `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
+- dynamic Stage K main-range registration is emitted through the existing Stage H loader transplant
 
-Full exact-dc95 reconstruction validator:
+Relevant compatibility commits before the failed ARM attempt:
 
-- workflow: `Validate dc95 X1 Waker Stage K Work Target`
-- run: `33350134250`
-- job: `99361721220`
-- head: `6cc9b75d4446aa55fa18837fe73376f8fb48d5b5`
+- `de634472054d78ad6b3b05dda73791d0dcb58953`
+- `e8cf2597ca4028f31d59c49f234812125b3594e1`
+- `e1026b6d8cde61f0f4e08e2dcb461b289876b381`
+
+## Non-ARM validation before the latest ARM attempt
+
+Historical Stage K validator restored from the previously successful verifier shape:
+
+- commit: `6aed649e0c303866a141cebd59be314befc4cf13`
+- run: `33351875686`
+- job: `99366704957`
 - attempt: `1`
 - result: **SUCCESS**
 
-Analyzer incomplete-cadence regression gate:
+Validator cleanup:
 
-- run: `33350373759`
-- job: `99362422228`
-- head: `e51dc7ec854b1afc7ef46a25f7d749e4c9584f49`
+`5cf098df6b413d1c3ab8b95385bc4845eb6e6d1c`
+
+These validation actions did not consume ARM authorization.
+
+## Latest authorized Windows ARM64 attempt — FAILED
+
+Canonical failure record:
+
+`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md`
+
+Exactly one authorized ARM attempt was launched:
+
+- persistent workflow run: `33351947642`
+- job: `99366911164`
 - attempt: `1`
-- result: **SUCCESS**
+- event: `workflow_dispatch`
+- build/source HEAD: `5fa3b5fb59c5935eb9d48c4d6ea8f0faa52373c7`
+- result: **FAILURE**
+- artifact: **none**
+- retry/rerun: **none**
 
-The temporary push validator was removed at:
+The one-shot dispatcher was removed afterward at:
 
-`09916c69671607f4d6240dc3ea3121e37372b45b`
+`b9252798651bbb64422d6893e7a04ebe1ad3b7d4`
 
-These were Ubuntu static validation runs, not Windows ARM64 attempts.
+The following steps succeeded before compilation failed:
+
+- fixed baseline verification
+- Stage G/H/J/K reconstruction and targeted verification
+- Stage K targeted source verification
+- MSYS2 CLANGARM64 setup
+- ARM64 configure
+
+Compilation then failed in generated:
+
+`src/core/hle/kernel/k_scheduler.cpp`
+
+with two `-Werror,-Wshadow` errors.
+
+Exact conflict in both selected-producer blocks:
+
+```cpp
+const u64 x1_stage_k_node = x1_stage_g_context.r[26];
+
+auto x1_stage_k_read_work_targets = &[
+    /* conceptually */
+];
+```
+
+The actual lambda signature declares another parameter named `x1_stage_k_node`, shadowing the outer local. The two reported generated locations were approximately lines `309` and `560`, with the outer declarations immediately preceding them.
+
+This is a generated-source lexical naming defect. No runtime evidence was produced from this attempt.
 
 ## Current decision
 
-The Stage K work-target identity design, implementation, and Ubuntu static validation are complete.
+The semantic work-target design remains valid and the runtime instrumentation remains the desired next evidence source.
+
+However, the current source first needs one **minimal compatibility repair** before another ARM build can be considered.
 
 **Do not create Stage L.**
 
 **Do not implement an optimization yet.**
 
-The next useful evidence is a Windows ARM64 runtime capture of the implemented Stage K work-target resolver, but that action is blocked by the authorization rule.
-
-## Immediate next action — BLOCKED ON FRESH ARM64 AUTHORIZATION
+## Immediate next action — SOURCE FIX, THEN NON-ARM VALIDATION
 
 Current ARM64 authorization: **NONE**.
 
-Until the user explicitly authorizes one Windows ARM64 attempt:
+On continuation, the first source edit should be limited to the compiler shadow defect in:
 
-- do not build or rebuild ARM64;
-- do not dispatch the persistent Windows ARM workflow;
-- do not rerun any old ARM job;
-- do not create a one-shot ARM dispatcher;
-- do not change the fixed baseline;
-- do not add Stage L or broaden profiling.
+`tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
 
-If fresh authorization is later given, it permits exactly one Windows ARM64 attempt.
+Preferred repair:
 
-Before that single attempt:
+1. rename the helper lambda parameter `x1_stage_k_node` to a non-conflicting local name such as `x1_stage_k_node_value`;
+2. update only references to that helper parameter inside the helper body;
+3. leave the outer `const u64 x1_stage_k_node = x1_stage_g_context.r[26];` logic and resolver semantics unchanged;
+4. do not change the fixed baseline;
+5. do not change persistent ARM workflow triggers;
+6. do not broaden selected-producer scope, memory-read count, context capture, histogram shape, or runtime behavior.
 
-1. verify branch HEAD and source-of-truth documents;
-2. verify `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml` remains `workflow_dispatch` only;
-3. update that persistent manual workflow only as required to reconstruct the current Stage K work-target implementation;
-4. verify no push/pull-request ARM trigger is introduced;
-5. dispatch exactly one ARM attempt;
-6. do not retry automatically if it fails.
+Then perform a **non-ARM/static validation** that reconstructs the generated Stage K source and explicitly confirms the `-Wshadow` conflict is gone.
 
-If the build succeeds, the runtime capture should remain Res1X and should collect enough 120-frame windows to cover the strict swap2 and swap3 sets. The analyzer must examine:
+Only after that validation is clean may the project be considered ready for another Windows ARM64 attempt.
 
-- normalized common-shim/work-target pairs;
-- ModuleSystem component identities;
-- `workResolvedTicks`;
-- `workOtherResolvedTicks`;
-- `workOverflowTicks`;
-- resolver-status coverage;
-- equal-window fast/slow visible lower-bound target ticks.
+## Fresh ARM authorization gate
+
+Even after the source repair and non-ARM validation succeed, current ARM64 authorization remains:
+
+**NONE**
+
+Do not:
+
+- rerun run `33351947642`;
+- rerun job `99366911164`;
+- dispatch the persistent Windows ARM workflow;
+- create a new one-shot ARM dispatcher;
+
+without fresh explicit user authorization.
+
+One fresh authorization permits exactly one new Windows ARM64 attempt. Failure never permits an automatic retry.
+
+## User-test gate after a future successful build
+
+If a future explicitly authorized build succeeds and produces an artifact, that is the point where the user should test.
+
+Use Res1X and collect enough 120-frame windows to cover pure swap2 and swap3 cadence. Analyze:
+
+- normalized common-shim/work-target pairs
+- ModuleSystem component identities
+- `workResolvedTicks`
+- `workOtherResolvedTicks`
+- `workOverflowTicks`
+- resolver-status coverage
+- equal-window fast/slow visible lower-bound target ticks
 
 A concrete component owner is acceptable only if coverage is sufficient. Unknown or non-common-shim targets remain evidence and must not be guessed.
 
