@@ -8,6 +8,10 @@ Repository:
 
 `npark2860-cyber/Eden-Adreno-Lab`
 
+Current experiment branch:
+
+`exp/x1-waker-stage-k-grandparent-depth`
+
 Exact immutable Eden baseline:
 
 `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
@@ -16,13 +20,16 @@ Immutable control branch:
 
 `lab/dc95-arm64-baseline`
 
-Current experiment branch:
+**Never change the exact Eden baseline without explicit baseline-change approval.**
 
-`exp/x1-waker-stage-k-grandparent-depth`
+### ARM64 authorization rule — ABSOLUTE
 
-Never change the exact Eden baseline without explicit baseline-change approval.
-
-**ARM64 rule: no build/rebuild/rerun without fresh explicit user authorization. One authorization = exactly one attempt. Failure does not authorize retry/rerun. Current authorization: NONE.**
+- no Windows ARM64 build/rebuild/rerun without fresh explicit user authorization;
+- one authorization = exactly one ARM attempt;
+- failure does not authorize retry/rerun;
+- no automatic retry;
+- persistent ARM workflow must remain `workflow_dispatch` only;
+- current ARM64 authorization: **NONE**.
 
 Ubuntu/static validation and offline NSO analysis do not consume ARM64 authorization.
 
@@ -30,9 +37,9 @@ Runtime TIDs, raw guest addresses, promoted keys, module bases, PC/LR/caller add
 
 No broad/all-thread profiling. No behavior-changing priority/affinity/yield/reschedule/wait/signal/GPU/QueueBuffer/cadence changes.
 
-No optimization is justified yet.
-
 Do not create Stage L merely to add stack depth.
+
+Do not implement a behavior-changing optimization before concrete runtime work-target attribution exists.
 
 ## Read these records first
 
@@ -51,9 +58,26 @@ Do not create Stage L merely to add stack depth.
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_OFFLINE_SEMANTIC_MAPPING.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`
 - `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IMPLEMENTED.md`
+- `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md`
 - `NEXT_ACTION_WAKER_STAGE_K.md`
 
-Use GitHub documents as source of truth rather than reconstructing state from chat guesses.
+Use GitHub documents as source of truth. Do not reconstruct project state from chat guesses.
+
+## Repository state at this handoff
+
+Branch:
+
+`exp/x1-waker-stage-k-grandparent-depth`
+
+HEAD immediately before the docs-only handoff updates:
+
+`b9252798651bbb64422d6893e7a04ebe1ad3b7d4`
+
+That commit removed the temporary one-shot ARM dispatcher after it had already triggered the single authorized persistent workflow run.
+
+The documentation updates following that HEAD are docs-only. Verify the actual branch HEAD at the start of the next tab before source work.
+
+No source, workflow, or baseline change is authorized by this handoff itself.
 
 ## Persistent Windows ARM workflow
 
@@ -69,95 +93,30 @@ Trigger:
 
 `workflow_dispatch` only.
 
-No push-triggered ARM build is enabled.
+No push/pull-request ARM trigger is enabled.
 
-Current ARM64 authorization: **NONE**.
+Current ARM64 authorization:
 
-The work-target implementation has **not** been Windows ARM64 built or run yet.
+**NONE**
 
-## Previous Stage K Windows ARM64 build history
+## Previous successful Stage K Windows ARM64 build
 
-### Pre-scope-fix attempt — FAILED
+This remains the only successful Stage K Windows ARM artifact/runtime base and predates the x26 work-target identity extension.
 
-- run: `33254495504`
-- job: `99105748612`
-- attempt: `1`
-- build/source HEAD: `c64f01a03dba7606061ddb8e8aa9fecad91051ee`
-- C++ build: **FAILED**
-- artifact: none
-- retry/rerun: none
-
-Root cause was the Stage K lexical-scope defect fixed by:
-
-`29d4c8ef376448bd7c61d354eb125fc052ac5c0e`
-
-The earlier enum-name mismatch theory is rejected.
-
-Scope-fix Ubuntu regression gate:
-
-- run: `33279373418`
-- job: `99171791300`
-- validation HEAD: `3f0843208512d2878f8f02a8c7938216bf5ecf21`
-- result: **SUCCESS**
-
-Temporary validator cleanup:
-
-`404a14af5a607762bd121dd98190d63c5c4466c0`
-
-### Previous Stage K Windows ARM64 attempt — SUCCESS
-
-A fresh explicit authorization was consumed for exactly one attempt.
-
-- workflow: `Build dc95 X1 Waker Stage K`
-- run: `33287796384`
+- workflow run: `33287796384`
 - job: `99193953965`
 - attempt: `1`
-- event: `workflow_dispatch`
 - build/source HEAD: `25701cc1305a85c47debbbf42af1e646c8822e5b`
-- compile/package/upload: **SUCCESS**
-- retry/rerun/additional ARM attempt: none
-
-One-shot dispatcher lifecycle:
-
-- creation/dispatch commit: `25701cc1305a85c47debbbf42af1e646c8822e5b`
-- removal commit: `112541623742853bdb1c6114959f5bb5317cde89`
-
-Canonical artifact:
-
-- name: `Eden-dc95-X1-waker-stage-k`
+- result: **SUCCESS**
+- artifact: `Eden-dc95-X1-waker-stage-k`
 - artifact ID: `9725325607`
 - size: `31,427,618` bytes
 - SHA-256: `7483a09b7550f7a00cbe214e63b57ba43e6de8b0855299c731ea73412cdff926`
+- retry/rerun: none
 
-This previous artifact predates the newly implemented x26 work-target identity extension.
+## Primary previous Stage K runtime source
 
-## Previous Stage K runtime captures
-
-### Res2X — invalid for resolution-sensitivity inference
-
-Log:
-
-`eden_log(20260830-025816).txt`
-
-SHA-256:
-
-`89784845234bd896149c61b9a856ab3b8b720b6588d6a9bb6a38b34a5755d2cf`
-
-User observation:
-
-- visible image showed approximately the upper-left quarter only.
-
-Unsupported depth scaling:
-
-- D32_FLOAT: `12,091`
-- D16_UNORM: `7,685`
-- total: **19,776**
-
-Do not use subjective Res2X speed as CPU-vs-GPU evidence.
-
-### Res1X — primary previous Stage K runtime source
-
-Log:
+Res1X log:
 
 `eden_log(20260830-122027).txt`
 
@@ -172,7 +131,7 @@ Facts:
 - late Stage K windows: `grandRangeBadN=0`, `grandZeroN=0`, `badStatus=0`
 - tiny sporadic `parentUnavailable` only
 
-The chat contains no explicit textual statement that visible Res1X rendering returned to normal. Do not invent that observation.
+The Res2X capture remains invalid for resolution-sensitivity inference because the visible image showed approximately the upper-left quarter only and the log contained `19,776` unsupported depth-scaling errors.
 
 ## Strict cadence windows
 
@@ -194,89 +153,59 @@ Exact Stage I mappings:
 - `sdk+0x13178c` = `InternalCriticalSectionImplByHorizon::Enter`
 - `sdk+0x127e54` = `LockMutex`
 
-## Stage K grandparent semantic mapping — COMPLETE
+## Stage K semantic mapping — CLOSED
 
 Canonical record:
 
 `DEBUG_HISTORY_20260831_WAKER_STAGE_K_OFFLINE_SEMANTIC_MAPPING.md`
 
-Record commit:
+Exact durable grandparent classifications:
 
-`ade4a399c69de100a9e249c3def1841f90069359`
+| Captured grandparent LR | Durable classification |
+|---|---|
+| `main+0x86a490` | shared dependency-worker callback into dispatcher |
+| `main+0x86bc9c` | **EventModuleSubWorker** virtual coordination/execution path |
+| `main+0x2a2d958` | generic indirect thread/message-dispatch frontier |
+| `main+0x86a530` | shared dispatcher LockMutex site A |
+| `main+0x86a678` | shared dispatcher LockMutex site B |
 
-Exact dumped TOTK 1.2.1 main image:
-
-`main-9B4E43650501A4D4489B4BBFDB740F26AF3CF85.nso`
-
-Exact mapping:
-
-| Captured grandparent LR | Exact enclosing function | LR-producing instruction | Durable classification |
-|---|---|---|---|
-| `main+0x86a490` | `main+0x86a464` | `main+0x86a48c: BL main+0x86a4ac` | shared dependency-worker callback into dispatcher |
-| `main+0x86bc9c` | `main+0x86bc04` | `main+0x86bc98: BL main+0x86bd40` | **EventModuleSubWorker** virtual coordination/execution path |
-| `main+0x2a2d958` | `main+0x2a2d8a0` | `main+0x2a2d954: BLR x8` | generic indirect thread/message-dispatch frontier |
-| `main+0x86a530` | `main+0x86a4ac` | `main+0x86a52c: BL main+0x2b17270` | shared dispatcher LockMutex site A |
-| `main+0x86a678` | `main+0x86a4ac` | `main+0x86a674: BL main+0x2b17270` | shared dispatcher LockMutex site B |
-
-Relevant imported targets:
-
-- `main+0x2b17270` = `nn::os::LockMutex`
-- `main+0x2b17280` = `nn::os::UnlockMutex`
-- `main+0x2b17b50` = `nn::os::WaitLightEvent`
-- `main+0x2b17c50` = `nn::os::SignalLightEvent`
-- `main+0x2b183d0` = `nn::os::ReceiveLightMessageQueue`
-
-## Shared dependency-worker result
-
-`main+0x86a464` is a concrete virtual callback reached from common light-message loop `main+0x2a90478`.
-
-The same implementation is reused by:
+`main+0x86a464` is reused by at least:
 
 - `ModuleSystemWorker`
 - `NavMeshDepWorker`
 - `NavMeshCAStepDepWorker`
 - `phive::DepWorker`
 
-Therefore the shared callback itself is not a unique gameplay owner.
+Therefore that shared callback is not a unique gameplay owner.
 
-`main+0x86a4ac` is the synchronization-heavy dispatcher. Important sites:
+`main+0x86bc04` resolves through vtable/constructor/registration to concrete owner:
 
-- `main+0x86a52c` -> LockMutex
-- `main+0x86a674` -> LockMutex
-- `main+0x86a81c` -> WaitLightEvent
-- `main+0x86a988` -> queued work-object virtual execution
-
-Thus `main+0x86a490`, `main+0x86a530`, and `main+0x86a678` are observations inside the same shared dependency-worker infrastructure.
-
-## EventModuleSubWorker result
-
-`main+0x86bc04` resolves through vtable/constructor/registration to:
-
-**`EventModuleSubWorker`**
+**EventModuleSubWorker**
 
 Exact path:
 
 `EventModuleSubWorker -> main+0x86bc04 -> main+0x86bd40 -> selected-object virtual operation -> nn::os::WaitLightEvent`
 
-This remains a concrete separate branch.
+Keep EventModuleSubWorker separate from the shared ModuleSystem work-target histogram.
 
-## ModuleSystem work-target static mapping — COMPLETE
+## ModuleSystem work-target static mapping — CLOSED
 
-Exact pointer flow:
+Exact shared execution pointer flow:
 
 `component -> main+0x7eea44 -> shared DepWorker -> main+0x86a4ac -> main+0x86a988 -> main+0x2af1230 -> component vtable+0x60`
 
 Facts:
 
-- `main+0x11d1b14` constructs a 41-slot ModuleSystem list
-- all 41 slots mapped
-- 36 unique concrete `vtable+0x60` targets
-- component identities include `System`, `DenguModule`, `Resource`, `RSDB`, `Graphics`, `Actor`, `Physics`, `Event`, `EventModuleWorker`, `EventModuleSubWorker`, `UI`, `Sound`, `GameData`, `Blackboard`, `Camera`, `LOD`, `Rail`, `PlayReport`, and the other entries recorded in the semantic-mapping history
-- slots 17 and 37 deliberately have empty names and execute `main+0x26a7fc0: RET`; keep them unnamed no-op components
+- `main+0x11d1b14` constructs a 41-slot ModuleSystem list;
+- all 41 slots are statically mapped;
+- 36 unique concrete `vtable+0x60` targets;
+- slots 17 and 37 deliberately have empty names and execute `main+0x26a7fc0: RET`; keep them unnamed no-op components.
+
+The remaining problem is runtime selection: which concrete ModuleSystem target dominates the expensive shared-worker slices in strict swap2 vs swap3 cadence.
 
 ## Previous strict Stage K slow/fast correlation
 
-From the previous Res1X capture:
+From the primary Res1X capture:
 
 - shared DepWorker callback `main+0x86a490`: P0 `2.130x`, P1 `2.164x`
 - **EventModuleSubWorker** `main+0x86bc9c`: P0 `5.590x`, P1 `2.961x`
@@ -286,90 +215,202 @@ From the previous Res1X capture:
 
 The generic queue-entry family grows much less than EventModuleSubWorker and shared-dispatch synchronization families.
 
-## Stage K work-target identity design — COMPLETE
-
-Canonical design record:
-
-`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`
+## Stage K x26 work-target identity extension
 
 Design decision:
 
 Use saved guest `x26`, not another stack level.
 
-Exact work-dispatch anchor:
-
-```text
-main+0x86a97c: LDR x0, [x26]
-main+0x86a980: LDR x8, [x0]
-main+0x86a984: LDR x8, [x8, #0x10]
-main+0x86a988: BLR x8
-```
-
-Exact dc95 `ThreadContext` stores `r[0..28]`, so existing Stage G context exposes saved x26 as `x1_stage_g_context.r[26]`.
-
-## Stage K work-target identity implementation — COMPLETE / STATIC-VALIDATED
-
-Canonical implementation record:
-
-`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IMPLEMENTED.md`
-
-Implementation commits:
-
-- profiler: `fb91aee04fecf2a9c171163f37e58e577f24fcb9`
-- x26 resolver transplant: `7419259d7dd7053033542f3a199481aa31353e76`
-- analyzer mapping: `59170e90d97dc6a9676232cfba24744008ef8ce4`
-- analyzer incomplete-cadence guard: `c02e0a138aa1d17f44626c4300900fcb875c6869`
-
-Implemented resolver:
+Runtime resolver:
 
 `x26 node -> [node] work object -> [work] vtable -> [vtable+0x10] shim -> [vtable+0x60] concrete work target`
 
-Hard limits:
+Existing Stage G context supplies saved x26 through:
 
-- existing selected producers only
-- existing guest-context sample reused
-- saved x26 read once
-- four additional work-target `Read64` sites
-- total Stage K reads: six, including two existing grandparent reads
-- six Stage K range validations
-- no new stack walk
-- no second context capture
-- dynamic `main` range registered from existing Stage H loader path
-- normalization before histogram storage
-- normalized `(shim_offset, work_offset)` keys only
-- 64 pair slots per producer
-- top4 per 120 frames
-- resolved / other-resolved / overflow / resolver-status accounting
-- no runtime hardcode of common shim or component targets
+`x1_stage_g_context.r[26]`
 
-Analyzer owns the known common-shim and 41-slot / 36-target semantic table.
+Instrumentation remains bounded:
 
-## Ubuntu validation of work-target implementation — SUCCESS
+- existing selected producers only;
+- existing guest-context sample reused;
+- no new stack walk;
+- no second context capture;
+- normalized shim/work offsets stored rather than raw ASLR VAs;
+- 64 bounded pair slots per producer;
+- top4 every 120 frames;
+- resolved / other-resolved / overflow / resolver-status accounting;
+- no runtime hardcode of known component targets.
 
-Full exact-dc95 reconstruction validator:
+Analyzer owns the static semantic map.
 
-- workflow: `Validate dc95 X1 Waker Stage K Work Target`
-- run: `33350134250`
-- job: `99361721220`
-- head SHA: `6cc9b75d4446aa55fa18837fe73376f8fb48d5b5`
+## Compatibility implementation currently in branch
+
+Full resolver transplant implementation:
+
+`tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth_impl.py`
+
+Persistent-verifier compatibility wrapper:
+
+`tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
+
+Stage K main-range registration is emitted through the existing Stage H loader transplant so the Stage K compatibility pass does not change the loader in a way that violates the historical persistent verifier shape.
+
+Relevant compatibility commits:
+
+- `de634472054d78ad6b3b05dda73791d0dcb58953`
+- `e8cf2597ca4028f31d59c49f234812125b3594e1`
+- `e1026b6d8cde61f0f4e08e2dcb461b289876b381`
+
+Historical Stage K validator restoration:
+
+- commit: `6aed649e0c303866a141cebd59be314befc4cf13`
+- validator run: `33351875686`
+- job: `99366704957`
 - attempt: `1`
 - result: **SUCCESS**
 
-Focused analyzer regression gate after incomplete-cadence correction:
+Validator cleanup:
 
-- run: `33350373759`
-- job: `99362422228`
-- head SHA: `e51dc7ec854b1afc7ef46a25f7d749e4c9584f49`
-- attempt: `1`
+`5cf098df6b413d1c3ab8b95385bc4845eb6e6d1c`
+
+Temporary dispatch-only workflow commit:
+
+`5fa3b5fb59c5935eb9d48c4d6ea8f0faa52373c7`
+
+One-shot dispatch run:
+
+- run: `33351943782`
+- job: `99366897776`
 - result: **SUCCESS**
 
-The temporary push validator was removed at:
+The one-shot dispatcher was then deleted at:
 
-`09916c69671607f4d6240dc3ea3121e37372b45b`
+`b9252798651bbb64422d6893e7a04ebe1ad3b7d4`
 
-No validator rerun was used.
+## Latest authorized Windows ARM64 attempt — FAILED
 
-These Ubuntu runs are not Windows ARM64 attempts and do not consume ARM authorization.
+Canonical record:
+
+`DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md`
+
+Exactly one fresh authorization was consumed for the following attempt:
+
+- persistent workflow run: `33351947642`
+- job: `99366911164`
+- attempt: `1`
+- event: `workflow_dispatch`
+- build/source HEAD: `5fa3b5fb59c5935eb9d48c4d6ea8f0faa52373c7`
+- result: **FAILURE**
+- artifact: **none**
+- retry/rerun: **none**
+
+Successful steps before failure included:
+
+- exact baseline checkout/verification;
+- transplant chain through Stage K;
+- Stage K targeted source verification;
+- MSYS2 CLANGARM64 setup;
+- ARM64 configure.
+
+Actual C++ compilation failed in generated:
+
+`src/core/hle/kernel/k_scheduler.cpp`
+
+with two identical-category errors under:
+
+`-Werror,-Wshadow`
+
+The generated producer blocks have an outer declaration:
+
+```cpp
+const u64 x1_stage_k_node = x1_stage_g_context.r[26];
+```
+
+followed by helper lambda insertion whose first parameter is also named:
+
+```cpp
+u64 x1_stage_k_node
+```
+
+The helper parameter therefore shadows the outer local.
+
+Reported generated locations were approximately:
+
+- outer line `308`, helper parameter line `309`
+- outer line `559`, helper parameter line `560`
+
+Build stopped after the two compiler errors. Packaging, metadata, and artifact upload were skipped.
+
+### Interpretation
+
+This is a **generated-source lexical naming defect** in the compatibility wrapper.
+
+It is not runtime evidence against:
+
+- the x26 work-node model;
+- the work-object/vtable pointer chain;
+- the static 41-slot ModuleSystem mapping;
+- the EventModuleSubWorker attribution;
+- the normalized work-pair histogram design.
+
+No new runtime evidence exists because no runnable artifact was produced.
+
+## Current causal frontier
+
+Measured chain remains:
+
+GPU command starvation
+-> dominant guest submitter/victim
+-> dynamic waker
+-> promoted AddressArbiter handshake
+-> two selected producer threads
+-> producer CPU growth + producer Arbitration growth
+-> exact Nintendo SDK blocker semantics
+-> Stage J main/LockMutex parent
+-> Stage K concrete main grandparent
+-> offline semantic resolution
+-> **EventModuleSubWorker concrete branch + shared dependency-worker / ModuleSystem dispatcher branch**
+-> 41 statically-known ModuleSystem slots / 36 unique work targets
+-> x26 runtime work-target resolver implemented
+-> **current blocker: helper-lambda `x1_stage_k_node` shadow compile error**
+-> runtime work-target identity still unobserved.
+
+## Immediate next action
+
+Current ARM64 authorization:
+
+**NONE**
+
+The next tab should first perform only the minimal source repair in:
+
+`tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
+
+Preferred repair:
+
+1. rename the helper lambda parameter `x1_stage_k_node` to a non-conflicting name such as `x1_stage_k_node_value`;
+2. update only references to that helper parameter inside the helper body;
+3. leave the outer saved-x26 declaration and resolver semantics unchanged;
+4. do not alter selected-producer scope, read count, context capture, histogram layout, baseline, or ARM workflow trigger.
+
+Then run a **non-ARM/static validation** that reconstructs the generated Stage K source and confirms the `-Wshadow` conflict is gone.
+
+After non-ARM validation succeeds, stop at the ARM authorization gate.
+
+Do not rerun run `33351947642` or job `99366911164` and do not dispatch a new Windows ARM64 attempt without fresh explicit user authorization.
+
+One future fresh authorization permits exactly one new ARM attempt. No automatic retry.
+
+If that future build succeeds and produces an artifact, the project reaches the **user-test gate**: user runs Res1X and supplies a new Stage K log containing the work-target pair fields.
+
+Then analyze:
+
+- normalized common-shim/work-target pairs;
+- ModuleSystem component identities;
+- `workResolvedTicks`;
+- `workOtherResolvedTicks`;
+- `workOverflowTicks`;
+- resolver-status coverage;
+- strict equal-window swap2 vs swap3 visible lower-bound target ticks.
 
 ## Closed historical findings — do not reopen without new evidence
 
@@ -388,56 +429,19 @@ These Ubuntu runs are not Windows ARM64 attempts and do not consume ARM authoriz
 - NVDRV IPC dispatch ~= `0.02-0.03 ms/request`.
 - host scheduler starvation is closed as primary owner for dynamic-waker and selected-producer slowdowns.
 
-## Current causal frontier
-
-Measured chain:
-
-GPU command starvation
--> dominant guest submitter/victim
--> dynamic waker
--> promoted AddressArbiter handshake
--> two selected producer threads
--> producer CPU growth + producer Arbitration growth
--> exact Nintendo SDK blocker semantics
--> Stage J main/LockMutex parent
--> Stage K concrete main grandparent
--> offline semantic resolution
--> **EventModuleSubWorker concrete branch + shared dependency-worker / ModuleSystem dispatcher branch**
--> 41 statically-known ModuleSystem slots / 36 unique work targets
--> **runtime work-target identity resolver now implemented but not yet Windows ARM64 observed**.
-
-The remaining question is which concrete ModuleSystem work target owns the expensive shared-worker slices under strict swap2 vs swap3 cadence.
-
-## Immediate next action — BLOCKED ON ARM64 AUTHORIZATION
-
-Current ARM64 authorization: **NONE**.
-
-Implementation and Ubuntu static validation are complete.
-
-Do not build, rebuild, rerun, dispatch the persistent Windows ARM workflow, or create a one-shot ARM workflow until fresh explicit authorization is given.
-
-If authorization is later given:
-
-1. verify current branch/HEAD and this handoff;
-2. verify persistent workflow remains `workflow_dispatch` only;
-3. update the persistent manual Stage K workflow only as needed to reconstruct the current work-target implementation;
-4. dispatch exactly one Windows ARM64 attempt;
-5. no automatic retry/rerun after failure;
-6. if build succeeds, use Res1X runtime and collect strict 120-frame swap2/swap3 windows;
-7. analyze normalized work pairs, ModuleSystem identity, resolved/other/overflow coverage, and visible lower-bound CPU tick growth;
-8. keep EventModuleSubWorker separate from the shared ModuleSystem histogram.
-
-Do not create Stage L and do not implement a behavior-changing optimization before this runtime attribution exists.
-
 ## New-tab startup instruction
 
 On a fresh tab:
 
 1. use GitHub documents as source of truth;
 2. verify branch `exp/x1-waker-stage-k-grandparent-depth` and actual HEAD;
-3. verify `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml` remains `Build dc95 X1 Waker Stage K` / `workflow_dispatch` only;
-4. verify ARM64 authorization is **NONE**;
-5. read `DEBUG_HISTORY_20260831_WAKER_STAGE_K_OFFLINE_SEMANTIC_MAPPING.md`, `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`, `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IMPLEMENTED.md`, and `NEXT_ACTION_WAKER_STAGE_K.md`;
-6. treat five-grandparent semantic mapping and x26 work-target implementation as closed;
-7. do not create Stage L;
-8. without fresh ARM authorization, do not perform a Windows ARM build/run.
+3. verify fixed baseline is still `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`;
+4. verify `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml` remains `Build dc95 X1 Waker Stage K` / `workflow_dispatch` only;
+5. verify ARM64 authorization is **NONE**;
+6. read `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_ARM_BUILD_FAILURE.md` and `NEXT_ACTION_WAKER_STAGE_K.md` before editing source;
+7. treat five-grandparent semantic mapping, EventModuleSubWorker attribution, ModuleSystem 41-slot static mapping, and x26 work-target design as closed;
+8. first fix only the helper-parameter shadow defect;
+9. run non-ARM/static validation before considering another ARM attempt;
+10. without fresh ARM authorization, do not perform a Windows ARM build/rerun;
+11. do not create Stage L;
+12. do not implement a behavior-changing optimization before runtime work-target attribution.
