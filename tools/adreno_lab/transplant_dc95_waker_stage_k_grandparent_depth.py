@@ -131,10 +131,12 @@ def main() -> int:
         "persistent-verifier RecordCpuSlice spelling",
     )
 
-    producer_token = "GetTrackedProducerIndex(cur_thread->GetThreadId());"
-    producer_pos = text.index(producer_token)
-    helper_insert = text.rfind("\n", 0, producer_pos) + 1
-    text = text[:helper_insert] + helper + text[helper_insert:]
+    producer_decl = (
+        "    const s32 x1_stage_g_out_index =\n"
+        "        Core::X1WakerStageFProfiler::Get().GetTrackedProducerIndex(cur_thread->GetThreadId());\n"
+    )
+    producer_pos = text.index(producer_decl)
+    text = text[:producer_pos] + helper + text[producer_pos:]
     scheduler.write_text(text, encoding="utf-8")
 
     final_scheduler = scheduler.read_text(encoding="utf-8")
