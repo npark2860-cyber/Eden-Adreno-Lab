@@ -1,0 +1,26 @@
+name: TEMP Dispatch X1 LDXR Runtime Once
+
+on:
+  push:
+    branches:
+      - exp/x1-arm64-exclusive-callback-attribution
+    paths:
+      - .github/workflows/dispatch-x1-ldxr-runtime-once.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch persistent ARM64 workflow exactly once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-dc95-x1-address-arbiter-attribution.yml/dispatches" \
+            -f ref="${GITHUB_REF_NAME}"
