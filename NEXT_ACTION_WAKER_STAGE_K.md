@@ -1,4 +1,4 @@
-# NEXT ACTION — ARM64 Exclusive Read / LDXR Attribution
+# NEXT ACTION — ARM64 Exclusive Read / LDXR Runtime Attribution
 
 Updated: 2026-09-01 KST
 
@@ -7,8 +7,9 @@ Updated: 2026-09-01 KST
 Read first:
 
 - `CURRENT_HANDOFF.md`
-- `DEBUG_HISTORY_20260901_WAKER_STAGE_K_NONCOMMON_PAIR_PARTIAL_MAPPING.md`
+- `DEBUG_HISTORY_20260901_WAKER_STAGE_K_NONCOMMON_OWNER_MAPPING_COMPLETE.md`
 - `DEBUG_HISTORY_20260901_ARM64_EXCLUSIVE_CALLBACK_RUNTIME.md`
+- `DEBUG_HISTORY_20260901_ARM64_EXCLUSIVE_READ_IMPLEMENTED.md`
 
 Repository:
 
@@ -36,7 +37,7 @@ Current ARM64 authorization:
 
 Do not build/rebuild/rerun Windows ARM64 without a fresh explicit user authorization. One authorization means exactly one attempt; failure does not authorize retry.
 
-## Latest exclusive-write experiment — CLOSED
+## Exclusive-write / STXR runtime — CLOSED
 
 Authorized build/run:
 
@@ -51,114 +52,77 @@ Runtime log:
 
 `eden_log(20260901-134628).txt`
 
-Exact runtime identity:
-
-- Eden `HEAD-dc95cd09ee-HEAD`
-- TOTK `1.2.1`
-- title ID `0100F2C0115B6000`
-- Qualcomm Adreno X1-85
-- main NSO build ID `9B4E43650501A4D4489B4BBFDB740F26AF3CF85`
-
-## Runtime conclusion
-
-`[X1-XEXCL]` measured selected-producer exclusive-write/STXR operations at Dynarmic ARM64 `DoExclusiveOperation(...)`.
-
 Closed findings:
 
-1. **STXR contention/retry storm is not the primary owner.**
-   - heavy-window failure rates stay below approximately `0.52%`.
+1. STXR contention/retry storm is not the primary owner; heavy-window failure rates remain below about `0.52%`.
+2. Per-call STXR callback slowdown is absent; average remains about `112-132 ns`.
+3. Direct STXR callback time is only about `3-5%` of selected-producer CPU wall in compared windows.
+4. STXR volume strongly tracks producer CPU growth, so exclusive traffic remains a useful workload marker.
 
-2. **Per-call STXR callback slowdown is not present.**
-   - `callbackAvgNs` remains approximately `112-132 ns` across light and heavy windows.
+Do not reopen STXR retry-storm or per-call STXR slowdown without new evidence.
 
-3. **Direct measured STXR callback time is not dominant.**
-   - approximately `3-5%` of selected-producer CPU wall in compared windows.
+## Exclusive-read / LDXR implementation — READY
 
-4. **Exclusive-write volume strongly follows producer CPU growth.**
-   - frame 720 -> 1080 producer 0: attempts `3.62x`, CPU wall `3.77x`.
-   - frame 720 -> 1080 producer 1: attempts `2.86x`, CPU wall `3.48x`.
+Implementation is complete and statically validated against exact dc95.
 
-Therefore the exclusive path is a strong workload marker/component, but the measured STXR callback body itself is not the missing dominant CPU owner.
+Temporary Ubuntu validator run:
 
-Do not reopen STXR retry storm or per-call callback slowdown without new evidence.
+`33517281924`
 
-## Immediate next experimental frontier
+Result:
 
-The current experiment did **not** measure the exclusive-read/LDXR side.
+**SUCCESS**
 
-Dynarmic ARM64 already has the dedicated path:
+The temporary validator workflow was removed after success.
 
-`EmitExclusiveReadCallTrampoline(...)`
+The existing `[X1-XEXCL]` record retains STXR fields and appends:
 
-which executes:
+- `readAttempts`
+- `readNs`
+- `readAvgNs`
+- `readMaxNs`
+- `readBadSize`
+- size splits `rs8`, `rs16`, `rs32`, `rs64`, `rs128`
 
-`global_monitor->ReadAndMark<T>(...)`
+Measured path:
 
-If a fresh Windows ARM64 attempt is explicitly authorized, the next minimal experiment is:
+`EmitExclusiveReadCallTrampoline -> global_monitor->ReadAndMark<T>`
 
-**selected-producer exclusive-read / LDXR `ReadAndMark` attribution**
+and the 128-bit `Vector` equivalent.
 
-Use the same two Stage F selected producers and the same 120-frame reporting boundary.
+Producer identity is still resolved once per Dynarmic RunThread slice, not per exclusive operation.
 
-Record only observation data:
+No guest atomic semantics, global-monitor behavior, scheduler behavior, GPU behavior, QueueBuffer behavior, or cadence behavior was changed.
 
-- exclusive-read attempts
-- size split (8/16/32/64/128 where applicable)
-- cumulative `ReadAndMark` time
-- average `ReadAndMark` time
-- maximum `ReadAndMark` time
+## Immediate next action
 
-Correlate the result against:
+A fresh explicit Windows ARM64 authorization is required before runtime validation.
 
-- `[X1-XEXCL]` STXR time/attempts
-- `[X1-WAKERG]` producer CPU wall/ticks
-- actual `[X1-CADENCE]` swap2/swap3 evidence in that runtime
+If authorized, perform exactly one build/run attempt from the current experiment branch and obtain a runtime log containing the new appended LDXR fields.
 
-Do not assume fixed frame numbers from an older runtime. The latest log is swap2 around frame 720/744 and swap3 by frame 1101 and at 1199/1200.
+Then compare actual cadence windows from that same runtime, not fixed frame IDs copied from older logs.
 
-## Implementation constraints
+Primary questions:
 
-Observation only.
+1. Does LDXR `ReadAndMark` average time rise materially in slow/swap3 windows?
+2. Does LDXR attempt volume rise in proportion to producer CPU wall?
+3. What fraction of selected-producer CPU wall is explained by `readNs + callbackNs`?
+4. Does combined LDXR+STXR exclusive time become large enough to explain the `gsys::SystemTask` / `EventModuleSubWorker` slowdown, or is exclusive traffic merely a workload marker?
 
-Do not change:
+## Stage K semantic owner status — CLOSED
 
-- guest atomic/exclusive semantics
-- global-monitor behavior
-- CPU accuracy or unsafe options
-- scheduler priority/affinity/yield/reschedule
-- waits/signals
-- GPU behavior
-- QueueBuffer behavior
-- cadence/frame pacing
-- immutable Eden baseline
+The prior dominant non-common owners are no longer unresolved.
 
-Do not broaden to all threads.
+- `main+0x96e2a8 -> main+0x26936d0` = **`gsys::SystemTask` internal work/phase dispatcher**
+- `main+0x86bc04 -> main+0x2ada93c` = **EventModuleSubWorker** owner pair
+- `main+0x244fc20 -> main+0x2ad6b20` = **`ActorAIGroupMgr::Job`**
 
-Resolve selected producer identity once per Dynarmic run slice, as in the STXR experiment; do not perform expensive producer lookup inside every exclusive-read operation.
-
-No new Stage L is needed.
-
-## Parallel offline semantic work still open
-
-The prior Stage K semantic frontier remains valid and independent of the exclusive experiment.
-
-Unresolved non-common work-object owners:
-
-1. `main+0x96e2a8 -> main+0x26936d0`
-2. `main+0x244fc20 -> main+0x2ad6b20`
-
-Known owner already closed:
-
-`main+0x86bc04 -> main+0x2ada93c` = **EventModuleSubWorker** owner pair.
-
-The exact NSO for offline naming remains:
-
-`main-9B4E43650501A4D4489B4BBFDB740F26AF3CF85.nso`
-
-Do not infer semantic names without the exact binary evidence.
+Runtime correlation keeps `gsys::SystemTask` and EventModuleSubWorker higher priority than ActorAIGroupMgr::Job.
 
 ## Stop condition
 
-Without fresh ARM authorization, stop after static design/implementation validation or offline NSO analysis.
+Without fresh ARM authorization, stop here.
 
-Do not dispatch a Windows ARM64 build automatically.
+Do not automatically dispatch Windows ARM64.
+Do not create Stage L.
+Do not implement behavior-changing optimization from LDXR/STXR suspicion alone.
