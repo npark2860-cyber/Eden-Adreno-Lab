@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Observation-only attribution of ARM64 Dynarmic exclusive-write/STXR handling for Stage F producers.
+# Observation-only attribution of ARM64 Dynarmic exclusive read/write handling for Stage F producers.
 
 from pathlib import Path
 import sys
@@ -24,14 +24,17 @@ def main() -> int:
     if not stage_f.exists() or "GetTrackedProducerIndex" not in stage_f.read_text(encoding="utf-8"):
         raise RuntimeError("Stage F tracked-producer accessor must exist before this pass")
 
-    # 1) Add two no-op-by-default observation hooks to Dynarmic A64 callbacks.
+    # 1) Add no-op-by-default read/write observation hooks to Dynarmic A64 callbacks.
     config = root / "src/dynarmic/src/dynarmic/interface/A64/config.h"
     text = config.read_text(encoding="utf-8")
-    exclusive_anchor = '''    virtual bool MemoryWriteExclusive128(VAddr /*vaddr*/, Vector /*value*/, Vector /*expected*/) { return false; }
-'''
+    exclusive_anchor = '''    virtual bool MemoryWriteExclusive128(VAddr /*vaddr*/, Vector /*value*/, Vector /*expected*/) { return false; }\n'''
     exclusive_replacement = exclusive_anchor + '''
-    // Optional host-side observation hook for an exclusive-write operation. These hooks are
+    // Optional host-side observation hooks for exclusive read/write operations. These hooks are
     // diagnostic only and must not participate in guest-visible exclusive semantics.
+    virtual std::int32_t GetExclusiveReadProfileIndex() { return -1; }
+    virtual void RecordExclusiveReadProfile(std::int32_t /*profile_index*/,
+                                            std::uint32_t /*bitsize*/,
+                                            std::uint64_t /*elapsed_ns*/) {}
     virtual std::int32_t GetExclusiveWriteProfileIndex() { return -1; }
     virtual void RecordExclusiveWriteProfile(std::int32_t /*profile_index*/,
                                              std::uint32_t /*bitsize*/, bool /*success*/,
@@ -41,8 +44,7 @@ def main() -> int:
                         "Dynarmic A64 exclusive observation hooks")
     config.write_text(text, encoding="utf-8")
 
-    # 2) Observe the final DoExclusiveOperation result, including monitor-level failures that
-    # never reach MemoryWriteExclusive*. Time only already-selected Stage F producers.
+    # 2) Observe ReadAndMark and final DoExclusiveOperation only for selected Stage F producers.
     address_space = root / "src/dynarmic/src/dynarmic/backend/arm64/a64_address_space.cpp"
     text = address_space.read_text(encoding="utf-8")
     text = replace_once(
@@ -52,7 +54,69 @@ def main() -> int:
         "ARM64 exclusive chrono include",
     )
 
-    generic_old = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, T value) -> u32 {
+    generic_read_old = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr) -> T {
+        return conf.global_monitor->ReadAndMark<T>(conf.processor_id, vaddr, [&]() -> T {
+            return (conf.callbacks->*callback)(vaddr);
+        });
+    };
+'''
+    generic_read_new = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr) -> T {
+        const auto run_exclusive_read = [&]() -> T {
+            return conf.global_monitor->ReadAndMark<T>(conf.processor_id, vaddr, [&]() -> T {
+                return (conf.callbacks->*callback)(vaddr);
+            });
+        };
+
+        const std::int32_t profile_index = conf.callbacks->GetExclusiveReadProfileIndex();
+        if (profile_index < 0) {
+            return run_exclusive_read();
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        const T value = run_exclusive_read();
+        const auto end = std::chrono::steady_clock::now();
+        const auto elapsed_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+        conf.callbacks->RecordExclusiveReadProfile(
+            profile_index, static_cast<std::uint32_t>(sizeof(T) * 8), elapsed_ns);
+        return value;
+    };
+'''
+    text = replace_once(text, generic_read_old, generic_read_new,
+                        "generic ARM64 exclusive-read observation")
+
+    vector_read_old = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr) -> Vector {
+        return conf.global_monitor->ReadAndMark<Vector>(conf.processor_id, vaddr, [&]() -> Vector {
+            return conf.callbacks->MemoryRead128(vaddr);
+        });
+    };
+'''
+    vector_read_new = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr) -> Vector {
+        const auto run_exclusive_read = [&]() -> Vector {
+            return conf.global_monitor->ReadAndMark<Vector>(conf.processor_id, vaddr,
+                                                             [&]() -> Vector {
+                                                                 return conf.callbacks->MemoryRead128(vaddr);
+                                                             });
+        };
+
+        const std::int32_t profile_index = conf.callbacks->GetExclusiveReadProfileIndex();
+        if (profile_index < 0) {
+            return run_exclusive_read();
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        const Vector value = run_exclusive_read();
+        const auto end = std::chrono::steady_clock::now();
+        const auto elapsed_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+        conf.callbacks->RecordExclusiveReadProfile(profile_index, 128, elapsed_ns);
+        return value;
+    };
+'''
+    text = replace_once(text, vector_read_old, vector_read_new,
+                        "128-bit ARM64 exclusive-read observation")
+
+    generic_write_old = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, T value) -> u32 {
         return conf.global_monitor->DoExclusiveOperation<T>(conf.processor_id, vaddr,
                                                             [&](T expected) -> bool {
                                                                 return (conf.callbacks->*callback)(vaddr, value, expected);
@@ -61,7 +125,7 @@ def main() -> int:
                  : 1;
     };
 '''
-    generic_new = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, T value) -> u32 {
+    generic_write_new = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, T value) -> u32 {
         const auto run_exclusive = [&]() -> bool {
             return conf.global_monitor->DoExclusiveOperation<T>(
                 conf.processor_id, vaddr, [&](T expected) -> bool {
@@ -84,10 +148,10 @@ def main() -> int:
         return success ? 0 : 1;
     };
 '''
-    text = replace_once(text, generic_old, generic_new,
+    text = replace_once(text, generic_write_old, generic_write_new,
                         "generic ARM64 exclusive-write result observation")
 
-    vector_old = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, Vector value) -> u32 {
+    vector_write_old = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, Vector value) -> u32 {
         return conf.global_monitor->DoExclusiveOperation<Vector>(conf.processor_id, vaddr,
                                                                  [&](Vector expected) -> bool {
                                                                      return conf.callbacks->MemoryWriteExclusive128(vaddr, value, expected);
@@ -96,7 +160,7 @@ def main() -> int:
                  : 1;
     };
 '''
-    vector_new = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, Vector value) -> u32 {
+    vector_write_new = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, Vector value) -> u32 {
         const auto run_exclusive = [&]() -> bool {
             return conf.global_monitor->DoExclusiveOperation<Vector>(
                 conf.processor_id, vaddr, [&](Vector expected) -> bool {
@@ -118,19 +182,20 @@ def main() -> int:
         return success ? 0 : 1;
     };
 '''
-    text = replace_once(text, vector_old, vector_new,
+    text = replace_once(text, vector_write_old, vector_write_new,
                         "128-bit ARM64 exclusive-write result observation")
     address_space.write_text(text, encoding="utf-8")
 
-    # 3) Keep producer selection outside the hot exclusive path. RunThread already knows the
-    # currently executing KThread, so resolve Stage F producer identity once per JIT run slice.
+    # 3) Resolve selected producer identity once per RunThread, outside hot read/write paths.
     arm_h = root / "src/core/arm/dynarmic/arm_dynarmic_64.h"
     text = arm_h.read_text(encoding="utf-8")
     text = replace_once(text, '#include <atomic>\n', '#include <atomic>\n#include <cstdint>\n',
                         "DynarmicCallbacks64 cstdint include")
-    hook_decl_anchor = '''    bool MemoryWriteExclusive128(u64 vaddr, Dynarmic::A64::Vector value, Dynarmic::A64::Vector expected) override;
-'''
-    hook_decl_replacement = hook_decl_anchor + '''    std::int32_t GetExclusiveWriteProfileIndex() override;
+    hook_decl_anchor = '''    bool MemoryWriteExclusive128(u64 vaddr, Dynarmic::A64::Vector value, Dynarmic::A64::Vector expected) override;\n'''
+    hook_decl_replacement = hook_decl_anchor + '''    std::int32_t GetExclusiveReadProfileIndex() override;
+    void RecordExclusiveReadProfile(std::int32_t profile_index, std::uint32_t bitsize,
+                                    std::uint64_t elapsed_ns) override;
+    std::int32_t GetExclusiveWriteProfileIndex() override;
     void RecordExclusiveWriteProfile(std::int32_t profile_index, std::uint32_t bitsize,
                                      bool success, std::uint64_t elapsed_ns) override;
     void SetX1ExclusiveProducerIndex(s32 producer_index) noexcept {
@@ -169,6 +234,20 @@ def main() -> int:
 }
 '''
     exclusive_impl_replacement = exclusive_impl_anchor + '''
+std::int32_t DynarmicCallbacks64::GetExclusiveReadProfileIndex() {
+    return m_x1_exclusive_producer_index;
+}
+
+void DynarmicCallbacks64::RecordExclusiveReadProfile(std::int32_t profile_index,
+                                                      std::uint32_t bitsize,
+                                                      std::uint64_t elapsed_ns) {
+    if (profile_index < 0) {
+        return;
+    }
+    X1Arm64ExclusiveProfiler::Get().RecordRead(static_cast<u32>(profile_index), bitsize,
+                                               elapsed_ns);
+}
+
 std::int32_t DynarmicCallbacks64::GetExclusiveWriteProfileIndex() {
     return m_x1_exclusive_producer_index;
 }
@@ -179,8 +258,8 @@ void DynarmicCallbacks64::RecordExclusiveWriteProfile(std::int32_t profile_index
     if (profile_index < 0) {
         return;
     }
-    X1Arm64ExclusiveProfiler::Get().Record(static_cast<u32>(profile_index), bitsize, success,
-                                           elapsed_ns);
+    X1Arm64ExclusiveProfiler::Get().RecordWrite(static_cast<u32>(profile_index), bitsize, success,
+                                                elapsed_ns);
 }
 '''
     text = replace_once(text, exclusive_impl_anchor, exclusive_impl_replacement,
@@ -205,7 +284,7 @@ void DynarmicCallbacks64::RecordExclusiveWriteProfile(std::int32_t profile_index
                         "selected producer identity once per Dynarmic run slice")
     arm_cpp.write_text(text, encoding="utf-8")
 
-    # 4) Reuse the Stage K/F Qualcomm logging gate and exact 120-frame reporting boundary.
+    # 4) Reuse Stage K/F Qualcomm gate and exact 120-frame reporting boundary.
     rasterizer = root / "src/video_core/renderer_vulkan/vk_rasterizer.cpp"
     text = rasterizer.read_text(encoding="utf-8")
     text = replace_once(
@@ -245,21 +324,25 @@ void DynarmicCallbacks64::RecordExclusiveWriteProfile(std::int32_t profile_index
     checks = {
         profiler: [
             "[X1-XEXCL]", "ProducerCount = 2", "ReportFrames = 120", "callbackNs=",
-            "s32=", "Record(u32 producer_index, u32 bitsize, bool success, u64 elapsed_ns)",
+            "readAttempts=", "readAvgNs=", "rs32=", "RecordWrite(", "RecordRead(",
         ],
-        config: ["GetExclusiveWriteProfileIndex", "RecordExclusiveWriteProfile"],
+        config: [
+            "GetExclusiveReadProfileIndex", "RecordExclusiveReadProfile",
+            "GetExclusiveWriteProfileIndex", "RecordExclusiveWriteProfile",
+        ],
         address_space: [
-            "std::chrono::steady_clock::now", "DoExclusiveOperation<T>",
-            "DoExclusiveOperation<Vector>", "RecordExclusiveWriteProfile",
-            "profile_index < 0",
+            "ReadAndMark<T>", "ReadAndMark<Vector>", "DoExclusiveOperation<T>",
+            "DoExclusiveOperation<Vector>", "RecordExclusiveReadProfile",
+            "RecordExclusiveWriteProfile", "std::chrono::steady_clock::now",
         ],
         arm_h: [
+            "GetExclusiveReadProfileIndex() override", "RecordExclusiveReadProfile",
             "GetExclusiveWriteProfileIndex() override", "RecordExclusiveWriteProfile",
             "m_x1_exclusive_producer_index{-1}",
         ],
         arm_cpp: [
             "GetTrackedProducerIndex(thread->GetThreadId())", "SetX1ExclusiveProducerIndex",
-            "X1Arm64ExclusiveProfiler::Get().Record", "m_jit->Run()",
+            "RecordRead", "RecordWrite", "m_jit->Run()",
         ],
         rasterizer: [
             "X1Arm64ExclusiveProfiler::Get().Initialize",
@@ -273,14 +356,22 @@ void DynarmicCallbacks64::RecordExclusiveWriteProfile(std::int32_t profile_index
                 raise RuntimeError(f"{path}: required marker missing: {marker}")
 
     final_address_space = address_space.read_text(encoding="utf-8")
+    if final_address_space.count("GetExclusiveReadProfileIndex()") != 2:
+        raise RuntimeError("exclusive read profiling must cover generic and 128-bit trampolines only")
+    if final_address_space.count("RecordExclusiveReadProfile(") != 2:
+        raise RuntimeError("exclusive read profiling record hook count mismatch")
     if final_address_space.count("GetExclusiveWriteProfileIndex()") != 2:
-        raise RuntimeError("exclusive profiling must cover generic and 128-bit write trampolines only")
+        raise RuntimeError("exclusive write profiling must cover generic and 128-bit trampolines only")
     if final_address_space.count("RecordExclusiveWriteProfile(") != 2:
-        raise RuntimeError("exclusive profiling record hook count mismatch")
+        raise RuntimeError("exclusive write profiling record hook count mismatch")
+    if final_address_space.count("ReadAndMark<T>") != 1:
+        raise RuntimeError("generic exclusive-read semantics duplicated or removed")
+    if final_address_space.count("ReadAndMark<Vector>") != 1:
+        raise RuntimeError("128-bit exclusive-read semantics duplicated or removed")
     if final_address_space.count("DoExclusiveOperation<T>") != 1:
-        raise RuntimeError("generic exclusive semantics duplicated or removed")
+        raise RuntimeError("generic exclusive-write semantics duplicated or removed")
     if final_address_space.count("DoExclusiveOperation<Vector>") != 1:
-        raise RuntimeError("128-bit exclusive semantics duplicated or removed")
+        raise RuntimeError("128-bit exclusive-write semantics duplicated or removed")
 
     final_arm_cpp = arm_cpp.read_text(encoding="utf-8")
     run_start = final_arm_cpp.index("HaltReason ArmDynarmic64::RunThread")
@@ -294,9 +385,9 @@ void DynarmicCallbacks64::RecordExclusiveWriteProfile(std::int32_t profile_index
         raise RuntimeError("producer identity must be resolved exactly once per RunThread")
 
     inserted = "\n".join((
-        exclusive_replacement, generic_new, vector_new, hook_decl_replacement,
-        member_replacement, exclusive_impl_replacement, run_new, init_replacement,
-        frame_replacement,
+        exclusive_replacement, generic_read_new, vector_read_new, generic_write_new,
+        vector_write_new, hook_decl_replacement, member_replacement,
+        exclusive_impl_replacement, run_new, init_replacement, frame_replacement,
     ))
     for forbidden in (
         "SetPriority(", "SetCoreMask(", "Reschedule(", "YieldTo(", "sleep_for", "sleep_until",
@@ -305,7 +396,7 @@ void DynarmicCallbacks64::RecordExclusiveWriteProfile(std::int32_t profile_index
         if forbidden in inserted:
             raise RuntimeError(f"behavior-changing token found in exclusive profiler patch: {forbidden}")
 
-    print("Transplanted dc95 ARM64 selected-producer exclusive callback attribution")
+    print("Transplanted dc95 ARM64 selected-producer LDXR/STXR callback attribution")
     return 0
 
 
