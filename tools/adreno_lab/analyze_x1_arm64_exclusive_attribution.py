@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Analyze selected-producer ARM64 exclusive-write/STXR attribution windows.
+# Analyze selected-producer ARM64 exclusive read/write attribution windows.
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -17,6 +17,12 @@ LINE_RE = re.compile(
     r"s32=(?P<s32_n>\d+)/(?P<s32_ok>\d+)/(?P<s32_fail>\d+)/(?P<s32_ns>\d+) "
     r"s64=(?P<s64_n>\d+)/(?P<s64_ok>\d+)/(?P<s64_fail>\d+)/(?P<s64_ns>\d+) "
     r"s128=(?P<s128_n>\d+)/(?P<s128_ok>\d+)/(?P<s128_fail>\d+)/(?P<s128_ns>\d+)"
+    r"(?: readAttempts=(?P<read_attempts>\d+) readNs=(?P<read_ns>\d+) "
+    r"readAvgNs=(?P<read_avg_ns>\d+) readMaxNs=(?P<read_max_ns>\d+) "
+    r"readBadSize=(?P<read_bad_size>\d+) "
+    r"rs8=(?P<rs8_n>\d+)/(?P<rs8_ns>\d+) rs16=(?P<rs16_n>\d+)/(?P<rs16_ns>\d+) "
+    r"rs32=(?P<rs32_n>\d+)/(?P<rs32_ns>\d+) rs64=(?P<rs64_n>\d+)/(?P<rs64_ns>\d+) "
+    r"rs128=(?P<rs128_n>\d+)/(?P<rs128_ns>\d+))?"
 )
 
 DEFAULT_FAST = (960, 1080)
@@ -39,6 +45,13 @@ class Window:
     size_success: tuple[int, ...]
     size_failure: tuple[int, ...]
     size_ns: tuple[int, ...]
+    read_attempts: int | None
+    read_ns: int | None
+    read_avg_ns: int | None
+    read_max_ns: int | None
+    read_bad_size: int | None
+    read_size_attempts: tuple[int, ...] | None
+    read_size_ns: tuple[int, ...] | None
 
     @property
     def failure_rate(self) -> float:
@@ -52,6 +65,11 @@ def parse_frame_list(value: str) -> tuple[int, ...]:
     return frames
 
 
+def optional_int(match: re.Match[str], name: str) -> int | None:
+    value = match.group(name)
+    return None if value is None else int(value)
+
+
 def parse_log(path: Path) -> list[Window]:
     windows: list[Window] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -62,6 +80,13 @@ def parse_log(path: Path) -> list[Window]:
         size_success = tuple(int(match.group(f"s{name}_ok")) for name in SIZE_NAMES)
         size_failure = tuple(int(match.group(f"s{name}_fail")) for name in SIZE_NAMES)
         size_ns = tuple(int(match.group(f"s{name}_ns")) for name in SIZE_NAMES)
+        has_read = match.group("read_attempts") is not None
+        read_size_attempts = (
+            tuple(int(match.group(f"rs{name}_n")) for name in SIZE_NAMES) if has_read else None
+        )
+        read_size_ns = (
+            tuple(int(match.group(f"rs{name}_ns")) for name in SIZE_NAMES) if has_read else None
+        )
         window = Window(
             frame=int(match.group("frame")),
             producer=int(match.group("producer")),
@@ -76,47 +101,69 @@ def parse_log(path: Path) -> list[Window]:
             size_success=size_success,
             size_failure=size_failure,
             size_ns=size_ns,
+            read_attempts=optional_int(match, "read_attempts"),
+            read_ns=optional_int(match, "read_ns"),
+            read_avg_ns=optional_int(match, "read_avg_ns"),
+            read_max_ns=optional_int(match, "read_max_ns"),
+            read_bad_size=optional_int(match, "read_bad_size"),
+            read_size_attempts=read_size_attempts,
+            read_size_ns=read_size_ns,
         )
         if window.success + window.failure != window.attempts:
             raise ValueError(f"frame {window.frame} producer {window.producer}: success+fail mismatch")
         if sum(size_attempts) + window.bad_size != window.attempts:
-            raise ValueError(f"frame {window.frame} producer {window.producer}: size accounting mismatch")
+            raise ValueError(f"frame {window.frame} producer {window.producer}: write size accounting mismatch")
+        if has_read:
+            assert window.read_attempts is not None
+            assert window.read_bad_size is not None
+            assert window.read_size_attempts is not None
+            if sum(window.read_size_attempts) + window.read_bad_size != window.read_attempts:
+                raise ValueError(
+                    f"frame {window.frame} producer {window.producer}: read size accounting mismatch"
+                )
         windows.append(window)
     if not windows:
         raise ValueError("no [X1-XEXCL] records found")
     return windows
 
 
-def aggregate(selected: list[Window]) -> dict[str, object]:
-    attempts = sum(item.attempts for item in selected)
-    success = sum(item.success for item in selected)
-    failure = sum(item.failure for item in selected)
-    callback_ns = sum(item.callback_ns for item in selected)
-    size_attempts = tuple(sum(item.size_attempts[i] for item in selected) for i in range(5))
-    size_success = tuple(sum(item.size_success[i] for item in selected) for i in range(5))
-    size_failure = tuple(sum(item.size_failure[i] for item in selected) for i in range(5))
-    size_ns = tuple(sum(item.size_ns[i] for item in selected) for i in range(5))
-    return {
-        "windows": len(selected),
-        "attempts": attempts,
-        "success": success,
-        "failure": failure,
-        "failure_rate": 0.0 if attempts == 0 else failure * 100.0 / attempts,
-        "callback_ns": callback_ns,
-        "callback_avg_ns": 0.0 if attempts == 0 else callback_ns / attempts,
-        "attempts_per_window": 0.0 if not selected else attempts / len(selected),
-        "callback_ns_per_window": 0.0 if not selected else callback_ns / len(selected),
-        "size_attempts": size_attempts,
-        "size_success": size_success,
-        "size_failure": size_failure,
-        "size_ns": size_ns,
-    }
-
-
 def ratio(slow: float, fast: float) -> str:
     if fast == 0.0:
         return "inf" if slow > 0.0 else "n/a"
     return f"{slow / fast:.3f}x"
+
+
+def avg(total: int, count: int) -> float:
+    return 0.0 if count == 0 else total / count
+
+
+def aggregate_write(selected: list[Window]) -> dict[str, object]:
+    attempts = sum(item.attempts for item in selected)
+    failure = sum(item.failure for item in selected)
+    callback_ns = sum(item.callback_ns for item in selected)
+    return {
+        "attempts": attempts,
+        "failure": failure,
+        "failure_rate": 0.0 if attempts == 0 else failure * 100.0 / attempts,
+        "callback_ns": callback_ns,
+        "callback_avg_ns": avg(callback_ns, attempts),
+        "attempts_per_window": attempts / len(selected),
+        "callback_ns_per_window": callback_ns / len(selected),
+    }
+
+
+def aggregate_read(selected: list[Window]) -> dict[str, float] | None:
+    if not selected or any(item.read_attempts is None or item.read_ns is None for item in selected):
+        return None
+    attempts = sum(int(item.read_attempts) for item in selected)
+    callback_ns = sum(int(item.read_ns) for item in selected)
+    return {
+        "attempts": float(attempts),
+        "callback_ns": float(callback_ns),
+        "callback_avg_ns": avg(callback_ns, attempts),
+        "attempts_per_window": attempts / len(selected),
+        "callback_ns_per_window": callback_ns / len(selected),
+    }
 
 
 def print_cadence_summary(windows: list[Window], fast_frames: tuple[int, ...], slow_frames: tuple[int, ...]) -> None:
@@ -134,56 +181,49 @@ def print_cadence_summary(windows: list[Window], fast_frames: tuple[int, ...], s
             )
             continue
 
-        fast = aggregate(fast_selected)
-        slow = aggregate(slow_selected)
+        fast_w = aggregate_write(fast_selected)
+        slow_w = aggregate_write(slow_selected)
         print(
             f"producer={producer} fastFrames={','.join(str(w.frame) for w in fast_selected)} "
             f"slowFrames={','.join(str(w.frame) for w in slow_selected)}"
         )
         print(
-            f"  attempts/window {fast['attempts_per_window']:.1f} -> {slow['attempts_per_window']:.1f} "
-            f"ratio={ratio(float(slow['attempts_per_window']), float(fast['attempts_per_window']))}"
+            f"  STXR attempts/window {fast_w['attempts_per_window']:.1f} -> {slow_w['attempts_per_window']:.1f} "
+            f"ratio={ratio(float(slow_w['attempts_per_window']), float(fast_w['attempts_per_window']))}"
         )
         print(
-            f"  failRate {fast['failure_rate']:.3f}% -> {slow['failure_rate']:.3f}% "
-            f"failures {fast['failure']} -> {slow['failure']}"
+            f"  STXR failRate {fast_w['failure_rate']:.3f}% -> {slow_w['failure_rate']:.3f}%"
         )
         print(
-            f"  callbackAvgNs {fast['callback_avg_ns']:.1f} -> {slow['callback_avg_ns']:.1f} "
-            f"ratio={ratio(float(slow['callback_avg_ns']), float(fast['callback_avg_ns']))}"
+            f"  STXR callbackAvgNs {fast_w['callback_avg_ns']:.1f} -> {slow_w['callback_avg_ns']:.1f} "
+            f"ratio={ratio(float(slow_w['callback_avg_ns']), float(fast_w['callback_avg_ns']))}"
         )
         print(
-            f"  callbackNs/window {fast['callback_ns_per_window']:.1f} -> {slow['callback_ns_per_window']:.1f} "
-            f"ratio={ratio(float(slow['callback_ns_per_window']), float(fast['callback_ns_per_window']))}"
+            f"  STXR callbackNs/window {fast_w['callback_ns_per_window']:.1f} -> {slow_w['callback_ns_per_window']:.1f} "
+            f"ratio={ratio(float(slow_w['callback_ns_per_window']), float(fast_w['callback_ns_per_window']))}"
         )
 
-        fast_size_attempts = fast["size_attempts"]
-        slow_size_attempts = slow["size_attempts"]
-        fast_size_fail = fast["size_failure"]
-        slow_size_fail = slow["size_failure"]
-        fast_size_ns = fast["size_ns"]
-        slow_size_ns = slow["size_ns"]
-        for index, name in enumerate(SIZE_NAMES):
-            f_n = int(fast_size_attempts[index])
-            s_n = int(slow_size_attempts[index])
-            if f_n == 0 and s_n == 0:
-                continue
-            f_fail = int(fast_size_fail[index])
-            s_fail = int(slow_size_fail[index])
-            f_ns = int(fast_size_ns[index])
-            s_ns = int(slow_size_ns[index])
-            f_avg = 0.0 if f_n == 0 else f_ns / f_n
-            s_avg = 0.0 if s_n == 0 else s_ns / s_n
-            f_fail_rate = 0.0 if f_n == 0 else f_fail * 100.0 / f_n
-            s_fail_rate = 0.0 if s_n == 0 else s_fail * 100.0 / s_n
-            print(
-                f"  size={name} attempts={f_n}->{s_n} failRate={f_fail_rate:.3f}%->{s_fail_rate:.3f}% "
-                f"avgNs={f_avg:.1f}->{s_avg:.1f} avgRatio={ratio(s_avg, f_avg)}"
-            )
+        fast_r = aggregate_read(fast_selected)
+        slow_r = aggregate_read(slow_selected)
+        if fast_r is None or slow_r is None:
+            print("  LDXR read attribution not present in all selected windows")
+            continue
+        print(
+            f"  LDXR attempts/window {fast_r['attempts_per_window']:.1f} -> {slow_r['attempts_per_window']:.1f} "
+            f"ratio={ratio(slow_r['attempts_per_window'], fast_r['attempts_per_window'])}"
+        )
+        print(
+            f"  LDXR callbackAvgNs {fast_r['callback_avg_ns']:.1f} -> {slow_r['callback_avg_ns']:.1f} "
+            f"ratio={ratio(slow_r['callback_avg_ns'], fast_r['callback_avg_ns'])}"
+        )
+        print(
+            f"  LDXR callbackNs/window {fast_r['callback_ns_per_window']:.1f} -> {slow_r['callback_ns_per_window']:.1f} "
+            f"ratio={ratio(slow_r['callback_ns_per_window'], fast_r['callback_ns_per_window'])}"
+        )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Analyze X1 ARM64 exclusive callback attribution")
+    parser = argparse.ArgumentParser(description="Analyze X1 ARM64 exclusive read/write attribution")
     parser.add_argument("log", type=Path)
     parser.add_argument("--fast", type=parse_frame_list, default=DEFAULT_FAST,
                         help="comma-separated fast cadence frame IDs")
@@ -193,11 +233,17 @@ def main() -> int:
 
     windows = parse_log(args.log)
     for window in windows:
+        read_text = ""
+        if window.read_attempts is not None:
+            read_text = (
+                f" readAttempts={window.read_attempts} readNs={window.read_ns} "
+                f"readAvgNs={window.read_avg_ns} readMaxNs={window.read_max_ns}"
+            )
         print(
             f"frame={window.frame} producer={window.producer} attempts={window.attempts} "
             f"success={window.success} fail={window.failure} failRate={window.failure_rate:.3f}% "
             f"callbackNs={window.callback_ns} callbackAvgNs={window.callback_avg_ns} "
-            f"callbackMaxNs={window.callback_max_ns}"
+            f"callbackMaxNs={window.callback_max_ns}{read_text}"
         )
     print_cadence_summary(windows, args.fast, args.slow)
     return 0
