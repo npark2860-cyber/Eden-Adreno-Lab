@@ -1,0 +1,140 @@
+name: TEMP Validate X1 ARM64 Exclusive Attribution
+
+on:
+  push:
+    branches:
+      - exp/x1-arm64-exclusive-callback-attribution
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout lab branch
+        uses: actions/checkout@v4
+        with:
+          path: lab
+
+      - name: Checkout exact dc95 Eden
+        uses: actions/checkout@v4
+        with:
+          repository: eden-emulator/mirror
+          ref: dc95cd09eea9749250fe31a3072684d341d19417
+          path: eden
+          fetch-depth: 1
+
+      - name: Verify exact baseline and Python syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C eden rev-parse HEAD)" = "dc95cd09eea9749250fe31a3072684d341d19417"
+          python -m py_compile lab/tools/adreno_lab/transplant_dc95_arm64_exclusive_callback_attribution.py
+
+      - name: Build exact-file validation fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/xexcl"
+          rm -rf "$ROOT"
+          mkdir -p \
+            "$ROOT/src/dynarmic/src/dynarmic/interface/A64" \
+            "$ROOT/src/dynarmic/src/dynarmic/backend/arm64" \
+            "$ROOT/src/core/arm/dynarmic" \
+            "$ROOT/src/core" \
+            "$ROOT/src/video_core/renderer_vulkan"
+
+          cp eden/src/dynarmic/src/dynarmic/interface/A64/config.h \
+            "$ROOT/src/dynarmic/src/dynarmic/interface/A64/config.h"
+          cp eden/src/dynarmic/src/dynarmic/backend/arm64/a64_address_space.cpp \
+            "$ROOT/src/dynarmic/src/dynarmic/backend/arm64/a64_address_space.cpp"
+          cp eden/src/core/arm/dynarmic/arm_dynarmic_64.h \
+            "$ROOT/src/core/arm/dynarmic/arm_dynarmic_64.h"
+          cp eden/src/core/arm/dynarmic/arm_dynarmic_64.cpp \
+            "$ROOT/src/core/arm/dynarmic/arm_dynarmic_64.cpp"
+          cp lab/src/core/x1_arm64_exclusive_profiler.h \
+            "$ROOT/src/core/x1_arm64_exclusive_profiler.h"
+
+          cat > "$ROOT/src/core/x1_waker_stage_f_profiler.h" <<'EOF'
+          // validation fixture: Stage G has already exposed the dynamic producer accessor
+          GetTrackedProducerIndex
+          EOF
+
+          cat > "$ROOT/src/video_core/renderer_vulkan/vk_rasterizer.cpp" <<'EOF'
+          #include "core/x1_waker_stage_k_profiler.h"
+
+          void Init() {
+              Core::X1WakerStageKProfiler::Get().Initialize(
+                  device.GetDriverID() == VK_DRIVER_ID_QUALCOMM_PROPRIETARY);
+          }
+
+          void Frame() {
+              Core::X1WakerStageEProfiler::Get().FrameEnd();
+              Core::X1WakerStageKProfiler::Get().FrameEnd();
+              Core::X1WakerStageJProfiler::Get().FrameEnd();
+              Core::X1WakerStageGProfiler::Get().FrameEnd();
+              Core::X1WakerStageFProfiler::Get().FrameEnd();
+          }
+          EOF
+
+          echo "$ROOT" > "$RUNNER_TEMP/xexcl-root"
+
+      - name: Apply exclusive attribution transplant to exact dc95 files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$(cat "$RUNNER_TEMP/xexcl-root")"
+          python lab/tools/adreno_lab/transplant_dc95_arm64_exclusive_callback_attribution.py "$ROOT"
+
+      - name: Verify observation-only invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$(cat "$RUNNER_TEMP/xexcl-root")"
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'xexcl'
+          config = (root / 'src/dynarmic/src/dynarmic/interface/A64/config.h').read_text()
+          address = (root / 'src/dynarmic/src/dynarmic/backend/arm64/a64_address_space.cpp').read_text()
+          arm_h = (root / 'src/core/arm/dynarmic/arm_dynarmic_64.h').read_text()
+          arm_cpp = (root / 'src/core/arm/dynarmic/arm_dynarmic_64.cpp').read_text()
+          raster = (root / 'src/video_core/renderer_vulkan/vk_rasterizer.cpp').read_text()
+          profiler = (root / 'src/core/x1_arm64_exclusive_profiler.h').read_text()
+
+          assert config.count('GetExclusiveWriteProfileIndex') == 1
+          assert config.count('RecordExclusiveWriteProfile') == 1
+          assert address.count('DoExclusiveOperation<T>') == 1
+          assert address.count('DoExclusiveOperation<Vector>') == 1
+          assert address.count('GetExclusiveWriteProfileIndex()') == 2
+          assert address.count('RecordExclusiveWriteProfile(') == 2
+          assert address.count('std::chrono::steady_clock::now()') == 4
+          assert '#include <chrono>' in address
+
+          assert arm_h.count('m_x1_exclusive_producer_index{-1}') == 1
+          assert arm_cpp.count('GetTrackedProducerIndex(thread->GetThreadId())') == 1
+          start = arm_cpp.index('HaltReason ArmDynarmic64::RunThread')
+          end = arm_cpp.index('HaltReason ArmDynarmic64::StepThread', start)
+          run = arm_cpp[start:end]
+          assert run.count('ClearExclusiveState()') == 1
+          assert run.count('m_jit->Run()') == 1
+          assert run.count('SetX1ExclusiveProducerIndex') == 2
+
+          assert raster.count('X1Arm64ExclusiveProfiler::Get().Initialize') == 1
+          assert raster.count('X1Arm64ExclusiveProfiler::Get().FrameEnd') == 1
+          assert raster.index('X1Arm64ExclusiveProfiler::Get().FrameEnd') < raster.index('X1WakerStageFProfiler::Get().FrameEnd')
+
+          assert '[X1-XEXCL]' in profiler
+          assert 'ProducerCount = 2' in profiler
+          assert 'ReportFrames = 120' in profiler
+          assert 'callbackNs=' in profiler
+
+          inserted = '\n'.join((config, address, arm_h, arm_cpp, raster, profiler))
+          for forbidden in ('SetPriority(', 'SetCoreMask(', 'Reschedule(', 'YieldTo(', 'sleep_for', 'sleep_until'):
+              assert forbidden not in inserted
+          PY
+
+          echo "Exact dc95 ARM64 exclusive attribution static validation: PASS"
