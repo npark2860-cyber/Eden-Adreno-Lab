@@ -134,7 +134,7 @@ jobs:
           assert address.count('std::chrono::steady_clock::now()') == 8
 
           assert emit.count('PrepareForCall({}, args[1], args[0])') == 1
-          assert emit.count('CallbackOnlyEmitExclusiveWriteMemory') == 1
+          assert emit.count('void CallbackOnlyEmitExclusiveWriteMemory(') == 1
 
           assert arm_h.count('m_x1_exclusive_producer_index{-1}') == 1
           assert arm_h.count('m_x1_exclusive_pc_sample_state') == 1
