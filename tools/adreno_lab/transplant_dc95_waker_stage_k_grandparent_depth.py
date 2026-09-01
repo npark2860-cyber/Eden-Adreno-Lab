@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import importlib.util
+import shutil
 import sys
 
 
@@ -11,6 +12,16 @@ def load_impl():
     spec = importlib.util.spec_from_file_location("x1_stage_k_impl", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("failed to load Stage K implementation")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_exclusive_impl():
+    path = Path(__file__).with_name("transplant_dc95_arm64_exclusive_callback_attribution.py")
+    spec = importlib.util.spec_from_file_location("x1_arm64_exclusive_impl", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load ARM64 exclusive attribution implementation")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -178,7 +189,25 @@ def main() -> int:
     if final_loader.count(stage_k_registration) != 1:
         raise RuntimeError("final loader Stage K main-range registration count mismatch")
 
-    print("Transplanted exact dc95 X1 waker Stage K grandparent + x26 work target (persistent-verifier compatible)")
+    # The exclusive-attribution experiment is chained only on the dedicated experiment branch.
+    # Preserve the persistent workflow's exact dc95 checkout and Stage K reconstruction; copy one
+    # observation-only profiler header and apply the already statically validated transplant.
+    lab_root = Path(__file__).resolve().parents[2]
+    exclusive_profiler_source = lab_root / "src/core/x1_arm64_exclusive_profiler.h"
+    exclusive_profiler_target = root / "src/core/x1_arm64_exclusive_profiler.h"
+    if not exclusive_profiler_source.exists():
+        raise RuntimeError("ARM64 exclusive profiler source header missing")
+    shutil.copyfile(exclusive_profiler_source, exclusive_profiler_target)
+
+    exclusive_impl = load_exclusive_impl()
+    exclusive_result = exclusive_impl.main()
+    if exclusive_result not in (None, 0):
+        return int(exclusive_result)
+
+    if not exclusive_profiler_target.exists():
+        raise RuntimeError("ARM64 exclusive profiler was not copied into exact dc95 tree")
+
+    print("Transplanted exact dc95 X1 waker Stage K grandparent + x26 work target + ARM64 exclusive attribution")
     return 0
 
 
