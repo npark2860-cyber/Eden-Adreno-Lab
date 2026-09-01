@@ -1,4 +1,4 @@
-# NEXT ACTION — Waker Stage K Runtime Work-Object Semantic Mapping
+# NEXT ACTION — ARM64 Exclusive Read / LDXR Attribution
 
 Updated: 2026-09-01 KST
 
@@ -7,36 +7,26 @@ Updated: 2026-09-01 KST
 Read first:
 
 - `CURRENT_HANDOFF.md`
-- `DEBUG_HISTORY_20260831_WAKER_STAGE_K_OFFLINE_SEMANTIC_MAPPING.md`
-- `DEBUG_HISTORY_20260831_WAKER_STAGE_K_WORK_TARGET_IDENTITY_DESIGN.md`
-- `DEBUG_HISTORY_20260901_WAKER_STAGE_K_WORK_TARGET_RUNTIME.md`
 - `DEBUG_HISTORY_20260901_WAKER_STAGE_K_NONCOMMON_PAIR_PARTIAL_MAPPING.md`
-
-Use GitHub documents as source of truth. Do not reconstruct state from chat guesses.
-
-## Fixed baseline / branch
+- `DEBUG_HISTORY_20260901_ARM64_EXCLUSIVE_CALLBACK_RUNTIME.md`
 
 Repository:
 
 `npark2860-cyber/Eden-Adreno-Lab`
 
-Branch:
+Current experiment branch:
 
-`exp/x1-waker-stage-k-grandparent-depth`
+`exp/x1-arm64-exclusive-callback-attribution`
 
 Exact immutable Eden baseline:
 
 `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
 
-Persistent ARM workflow:
+Persistent Windows ARM64 workflow:
 
 `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
 
-Workflow name:
-
-`Build dc95 X1 Waker Stage K`
-
-Trigger:
+Workflow trigger remains:
 
 `workflow_dispatch` only.
 
@@ -44,108 +34,131 @@ Current ARM64 authorization:
 
 **NONE**
 
-Do not build/rebuild/rerun Windows ARM64 without a fresh explicit authorization. No ARM build is needed for the immediate next action.
+Do not build/rebuild/rerun Windows ARM64 without a fresh explicit user authorization. One authorization means exactly one attempt; failure does not authorize retry.
 
-## Exact runtime / NSO identity
+## Latest exclusive-write experiment — CLOSED
 
-Current x26 runtime log:
+Authorized build/run:
 
-`eden_log.txt`
+- workflow run `33503843213`
+- job `99843127546`
+- attempt `1`
+- workflow head `fc843a23246e6ee7134b14b3692376b875c5993c`
+- result: **SUCCESS**
+- retry/rerun: none
 
-Confirmed:
+Runtime log:
 
-- Eden exact baseline: `HEAD-dc95cd09ee-HEAD`
+`eden_log(20260901-134628).txt`
+
+Exact runtime identity:
+
+- Eden `HEAD-dc95cd09ee-HEAD`
 - TOTK `1.2.1`
 - title ID `0100F2C0115B6000`
-- renderer: Vulkan
-- GPU: Qualcomm Adreno X1-85
-- resolution: `Res1X`
-- exact main build ID: `9B4E43650501A4D4489B4BBFDB740F26AF3CF85`
-- x26 Stage K work-object fields are populated.
+- Qualcomm Adreno X1-85
+- main NSO build ID `9B4E43650501A4D4489B4BBFDB740F26AF3CF85`
 
-Use ASLR-normalized `main+offset` only for durable analysis.
+## Runtime conclusion
 
-## x26 pair interpretation
+`[X1-XEXCL]` measured selected-producer exclusive-write/STXR operations at Dynarmic ARM64 `DoExclusiveOperation(...)`.
 
-The resolver records the selected work object's vtable members:
+Closed findings:
 
-`workTopN=<vtable+0x10 offset>/<vtable+0x60 offset>/<ticks>/<count>/<percent>`
+1. **STXR contention/retry storm is not the primary owner.**
+   - heavy-window failure rates stay below approximately `0.52%`.
 
-For the known ModuleSystem family only:
+2. **Per-call STXR callback slowdown is not present.**
+   - `callbackAvgNs` remains approximately `112-132 ns` across light and heavy windows.
 
-- `vtable+0x10 = main+0x2af1230` is the common ModuleSystem shim;
-- that shim tail-dispatches to the component's `vtable+0x60` target.
+3. **Direct measured STXR callback time is not dominant.**
+   - approximately `3-5%` of selected-producer CPU wall in compared windows.
 
-For a non-common-shim object, `vtable+0x60` is a stable secondary vtable fingerprint/member pointer until static control flow proves a stronger execution meaning.
+4. **Exclusive-write volume strongly follows producer CPU growth.**
+   - frame 720 -> 1080 producer 0: attempts `3.62x`, CPU wall `3.77x`.
+   - frame 720 -> 1080 producer 1: attempts `2.86x`, CPU wall `3.48x`.
 
-Do not call every second pair member a concrete executed work target.
+Therefore the exclusive path is a strong workload marker/component, but the measured STXR callback body itself is not the missing dominant CPU owner.
 
-## One dominant non-common owner — CLOSED
+Do not reopen STXR retry storm or per-call callback slowdown without new evidence.
 
-Runtime pair:
+## Immediate next experimental frontier
 
-`main+0x86bc04 -> main+0x2ada93c`
+The current experiment did **not** measure the exclusive-read/LDXR side.
 
-Exact prior NSO analysis already proved `main+0x86bc04` belongs to the concrete:
+Dynarmic ARM64 already has the dedicated path:
 
-**EventModuleSubWorker**
+`EmitExclusiveReadCallTrampoline(...)`
 
-Therefore this x26 work-object pair owner is now closed as **EventModuleSubWorker**.
+which executes:
 
-The individual semantic method name of `main+0x2ada93c` remains unassigned; do not invent one.
+`global_monitor->ReadAndMark<T>(...)`
 
-## Immediate next action — OFFLINE ONLY
+If a fresh Windows ARM64 attempt is explicitly authorized, the next minimal experiment is:
 
-Two dominant non-common owners remain unresolved:
+**selected-producer exclusive-read / LDXR `ReadAndMark` attribution**
+
+Use the same two Stage F selected producers and the same 120-frame reporting boundary.
+
+Record only observation data:
+
+- exclusive-read attempts
+- size split (8/16/32/64/128 where applicable)
+- cumulative `ReadAndMark` time
+- average `ReadAndMark` time
+- maximum `ReadAndMark` time
+
+Correlate the result against:
+
+- `[X1-XEXCL]` STXR time/attempts
+- `[X1-WAKERG]` producer CPU wall/ticks
+- actual `[X1-CADENCE]` swap2/swap3 evidence in that runtime
+
+Do not assume fixed frame numbers from an older runtime. The latest log is swap2 around frame 720/744 and swap3 by frame 1101 and at 1199/1200.
+
+## Implementation constraints
+
+Observation only.
+
+Do not change:
+
+- guest atomic/exclusive semantics
+- global-monitor behavior
+- CPU accuracy or unsafe options
+- scheduler priority/affinity/yield/reschedule
+- waits/signals
+- GPU behavior
+- QueueBuffer behavior
+- cadence/frame pacing
+- immutable Eden baseline
+
+Do not broaden to all threads.
+
+Resolve selected producer identity once per Dynarmic run slice, as in the STXR experiment; do not perform expensive producer lookup inside every exclusive-read operation.
+
+No new Stage L is needed.
+
+## Parallel offline semantic work still open
+
+The prior Stage K semantic frontier remains valid and independent of the exclusive experiment.
+
+Unresolved non-common work-object owners:
 
 1. `main+0x96e2a8 -> main+0x26936d0`
 2. `main+0x244fc20 -> main+0x2ad6b20`
 
-Use the exact dumped TOTK 1.2.1 main image:
+Known owner already closed:
+
+`main+0x86bc04 -> main+0x2ada93c` = **EventModuleSubWorker** owner pair.
+
+The exact NSO for offline naming remains:
 
 `main-9B4E43650501A4D4489B4BBFDB740F26AF3CF85.nso`
 
-For each remaining pair, trace:
-
-- `vtable+0x10` function code shape;
-- the owning vtable and adjacent slots;
-- callers / xrefs;
-- constructors/destructors;
-- registration tables;
-- nearby names/strings/RTTI-like data;
-- relation to already-resolved Stage K anchors.
-
-The exact NSO bytes are not currently visible in the active uploaded-file set. Re-obtain/re-upload the same exact dump before assigning either semantic name. Do not substitute another TOTK build or infer names from offset proximity.
-
-Priority order:
-
-1. `main+0x96e2a8 -> main+0x26936d0`
-2. `main+0x244fc20 -> main+0x2ad6b20`
-3. map the individual `main+0x2ada93c` EventModuleSubWorker vtable member only if useful after owner attribution is complete.
-
-## Current x26 cadence correlation
-
-Current uploaded x26 log provides:
-
-- fast / swap2: frames `960`, `1080`
-- slow / swap3 available in this file: frames `1320`, `1440`, `1560`
-
-A current-x26 `frame=1680` record with `workResolvedN` was not found. Do not mix the older 2026-08-30 Stage K frame `1680` record, which predates the x26 fields, into this comparison.
-
-Partial current-file slow3/fast pair-tick ratios:
-
-| Pair / owner | Producer 0 | Producer 1 |
-|---|---:|---:|
-| `0x96e2a8 -> 0x26936d0` | `1.242x` | `1.517x` |
-| `EventModuleSubWorker` (`0x86bc04 -> 0x2ada93c`) | `1.673x` | `1.234x` |
-| `0x244fc20 -> 0x2ad6b20` | `0.895x` | top-4 censored; exact ratio unavailable |
-
-Across the three available slow windows, the first two rows together average approximately `33.24%` of producer-0 CPU ticks and `28.87%` of producer-1 CPU ticks.
-
-These are current-file partial correlations, not a sole-cause claim and not a substitute for a future fourth slow x26 window if one becomes available.
+Do not infer semantic names without the exact binary evidence.
 
 ## Stop condition
 
-Stop after the two remaining semantic owners are mapped and their existing runtime correlation is interpreted.
+Without fresh ARM authorization, stop after static design/implementation validation or offline NSO analysis.
 
-Do not create Stage L or implement behavior-changing scheduler/GPU/QueueBuffer/wait/signal/priority/affinity/yield changes from this evidence alone.
+Do not dispatch a Windows ARM64 build automatically.
