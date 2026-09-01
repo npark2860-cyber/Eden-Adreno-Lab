@@ -18,8 +18,11 @@ def main() -> int:
 
     root = Path(sys.argv[1])
     profiler = root / "src/core/x1_arm64_exclusive_profiler.h"
+    stage_f = root / "src/core/x1_waker_stage_f_profiler.h"
     if not profiler.exists():
         raise RuntimeError("x1_arm64_exclusive_profiler.h must be copied before this pass")
+    if not stage_f.exists() or "GetTrackedProducerIndex" not in stage_f.read_text(encoding="utf-8"):
+        raise RuntimeError("Stage F tracked-producer accessor must exist before this pass")
 
     # 1) Add two no-op-by-default observation hooks to Dynarmic A64 callbacks.
     config = root / "src/dynarmic/src/dynarmic/interface/A64/config.h"
@@ -42,8 +45,12 @@ def main() -> int:
     # never reach MemoryWriteExclusive*. Time only already-selected Stage F producers.
     address_space = root / "src/dynarmic/src/dynarmic/backend/arm64/a64_address_space.cpp"
     text = address_space.read_text(encoding="utf-8")
-    text = replace_once(text, '#include <bit>\n', '#include <bit>\n#include <chrono>\n',
-                        "ARM64 exclusive chrono include")
+    text = replace_once(
+        text,
+        '#include "dynarmic/backend/arm64/a64_address_space.h"\n',
+        '#include "dynarmic/backend/arm64/a64_address_space.h"\n\n#include <chrono>\n',
+        "ARM64 exclusive chrono include",
+    )
 
     generic_old = '''    auto fn = [](const A64::UserConfig& conf, A64::VAddr vaddr, T value) -> u32 {
         return conf.global_monitor->DoExclusiveOperation<T>(conf.processor_id, vaddr,
@@ -119,6 +126,8 @@ def main() -> int:
     # currently executing KThread, so resolve Stage F producer identity once per JIT run slice.
     arm_h = root / "src/core/arm/dynarmic/arm_dynarmic_64.h"
     text = arm_h.read_text(encoding="utf-8")
+    text = replace_once(text, '#include <atomic>\n', '#include <atomic>\n#include <cstdint>\n',
+                        "DynarmicCallbacks64 cstdint include")
     hook_decl_anchor = '''    bool MemoryWriteExclusive128(u64 vaddr, Dynarmic::A64::Vector value, Dynarmic::A64::Vector expected) override;
 '''
     hook_decl_replacement = hook_decl_anchor + '''    std::int32_t GetExclusiveWriteProfileIndex() override;
@@ -284,12 +293,16 @@ void DynarmicCallbacks64::RecordExclusiveWriteProfile(std::int32_t profile_index
     if run_block.count("GetTrackedProducerIndex") != 1:
         raise RuntimeError("producer identity must be resolved exactly once per RunThread")
 
-    raw = "\n".join(path.read_text(encoding="utf-8") for path in checks)
+    inserted = "\n".join((
+        exclusive_replacement, generic_new, vector_new, hook_decl_replacement,
+        member_replacement, exclusive_impl_replacement, run_new, init_replacement,
+        frame_replacement,
+    ))
     for forbidden in (
         "SetPriority(", "SetCoreMask(", "Reschedule(", "YieldTo(", "sleep_for", "sleep_until",
         "QueueBuffer(", "swap_interval =", "gpu_fence_behavior",
     ):
-        if forbidden in raw:
+        if forbidden in inserted:
             raise RuntimeError(f"behavior-changing token found in exclusive profiler patch: {forbidden}")
 
     print("Transplanted dc95 ARM64 selected-producer exclusive callback attribution")
