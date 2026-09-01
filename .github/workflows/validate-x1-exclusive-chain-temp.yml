@@ -1,0 +1,40 @@
+name: TEMP Validate X1 Exclusive Chain
+
+on:
+  push:
+    branches:
+      - exp/x1-arm64-exclusive-callback-attribution
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate chained experiment scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py \
+            tools/adreno_lab/transplant_dc95_arm64_exclusive_callback_attribution.py \
+            tools/adreno_lab/analyze_x1_arm64_exclusive_attribution.py
+
+          test "$(grep -c 'load_exclusive_impl' tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py)" = 2
+          test "$(grep -c 'exclusive_impl.main()' tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py)" = 1
+          test "$(grep -c 'shutil.copyfile(exclusive_profiler_source, exclusive_profiler_target)' tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py)" = 1
+          test "$(grep -c '\[X1-XEXCL\]' src/core/x1_arm64_exclusive_profiler.h)" = 1
+          grep -q 'GetExclusiveWriteProfileIndex' tools/adreno_lab/transplant_dc95_arm64_exclusive_callback_attribution.py
+          grep -q 'DoExclusiveOperation<T>' tools/adreno_lab/transplant_dc95_arm64_exclusive_callback_attribution.py
+          grep -q 'DoExclusiveOperation<Vector>' tools/adreno_lab/transplant_dc95_arm64_exclusive_callback_attribution.py
+          grep -q 'DEFAULT_FAST = (960, 1080)' tools/adreno_lab/analyze_x1_arm64_exclusive_attribution.py
+          grep -q 'DEFAULT_SLOW = (1320, 1440, 1560)' tools/adreno_lab/analyze_x1_arm64_exclusive_attribution.py
+
+          ! grep -E 'SetPriority\(|SetCoreMask\(|Reschedule\(|YieldTo\(|sleep_for|sleep_until' \
+            src/core/x1_arm64_exclusive_profiler.h \
+            tools/adreno_lab/transplant_dc95_arm64_exclusive_callback_attribution.py
+
+          echo 'Exclusive chain validation: PASS'
