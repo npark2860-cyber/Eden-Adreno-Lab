@@ -224,9 +224,6 @@ def main() -> int:
 }
 '''
     text = replace_once(text, old, new, "DynarmicCallbacks64 exclusive caller implementation")
-    # std::numeric_limits is used only by this low-rate observation hook.
-    text = replace_once(text, '#include <memory>\n', '#include <memory>\n#include <limits>\n',
-                        "ARM64 caller numeric limits include")
     arm_cpp.write_text(text, encoding="utf-8")
 
     # 5) Register the exact SDK runtime range from the existing loader path.
