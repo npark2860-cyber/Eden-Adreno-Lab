@@ -16,30 +16,40 @@ permissions:
 jobs:
   compile-current-nce-context:
     runs-on: windows-11-arm
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up CLANGARM64 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            clang:p boost:p fmt:p unordered_dense:p
+
       - name: Compile actual Eden CurrentNceContext header
-        shell: cmd
+        shell: msys2 {0}
         run: |
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-          if not exist "%VSWHERE%" exit /b 10
-          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
-          if not defined VSROOT exit /b 11
-          call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
-          if errorlevel 1 exit /b 12
-          > imp002_probe.cpp echo #include "core/arm/nce/current_nce_context.h"
-          >> imp002_probe.cpp echo int main() {
-          >> imp002_probe.cpp echo     using Carrier = Core::NCE::CurrentNceContext;
-          >> imp002_probe.cpp echo     Carrier::Install(nullptr);
-          >> imp002_probe.cpp echo     if (Carrier::Get() != nullptr) return 1;
-          >> imp002_probe.cpp echo     Carrier::Clear();
-          >> imp002_probe.cpp echo     return Carrier::Get() == nullptr ? 0 : 2;
-          >> imp002_probe.cpp echo }
-          cl /nologo /std:c++20 /EHsc /W4 /I src /c imp002_probe.cpp /Fo:imp002_probe.obj
-          if errorlevel 1 exit /b 13
-          if not exist imp002_probe.obj exit /b 14
-          echo CURRENT_NCE_CONTEXT_COMPILE=PASS
+          set -euo pipefail
+          cat > imp002_probe.cpp <<'EOF'
+          #include "core/arm/nce/current_nce_context.h"
+          int main() {
+              using Carrier = Core::NCE::CurrentNceContext;
+              Carrier::Install(nullptr);
+              if (Carrier::Get() != nullptr) return 1;
+              Carrier::Clear();
+              return Carrier::Get() == nullptr ? 0 : 2;
+          }
+          EOF
+          clang++ \
+            -std=c++20 \
+            -Wall -Wextra \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 \
+            -Isrc \
+            -c imp002_probe.cpp \
+            -o imp002_probe.o
+          test -s imp002_probe.o
+          echo "CURRENT_NCE_CONTEXT_COMPILE=PASS"
