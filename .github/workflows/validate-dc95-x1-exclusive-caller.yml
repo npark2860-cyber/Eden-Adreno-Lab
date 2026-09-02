@@ -36,6 +36,29 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
+          stage_f = Path('eden/src/core/x1_waker_stage_f_profiler.h')
+          text = stage_f.read_text()
+          enabled_anchor = '''    [[nodiscard]] bool Enabled() const noexcept {
+        return enabled.load(std::memory_order_relaxed);
+    }
+'''
+          if text.count(enabled_anchor) != 1:
+              raise SystemExit('Stage F fixture accessor anchor mismatch')
+          accessor = enabled_anchor + '''
+    [[nodiscard]] s32 GetTrackedProducerIndex(u64 thread_id) const noexcept {
+        if (!Enabled() || thread_id == 0) {
+            return -1;
+        }
+        for (size_t i = 0; i < ProducerCount; ++i) {
+            if (producers[i].thread_id.load(std::memory_order_acquire) == thread_id) {
+                return static_cast<s32>(i);
+            }
+        }
+        return -1;
+    }
+'''
+          stage_f.write_text(text.replace(enabled_anchor, accessor, 1))
+
           rasterizer = Path('eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp')
           text = rasterizer.read_text()
           anchor = '#include "common/settings.h"\n'
