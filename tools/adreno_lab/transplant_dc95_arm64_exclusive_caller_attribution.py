@@ -226,28 +226,15 @@ def main() -> int:
     text = replace_once(text, old, new, "DynarmicCallbacks64 exclusive caller implementation")
     arm_cpp.write_text(text, encoding="utf-8")
 
-    # 5) Register the exact SDK runtime range from the existing loader path.
+    # 5) Stage H pre-registers the exact sdk runtime range before the persistent Stage-K
+    # snapshot. Do not touch the loader here; only assert that the required observation-only
+    # registration survived the retained Stage K reconstruction.
     loader = root / "src/core/loader/deconstructed_rom_directory.cpp"
-    text = loader.read_text(encoding="utf-8")
-    text = replace_once(
-        text,
-        '#include "core/x1_waker_stage_k_profiler.h"\n',
-        '#include "core/x1_waker_stage_k_profiler.h"\n'
-        '#include "core/x1_arm64_exclusive_caller_profiler.h"\n',
-        "exclusive caller loader include",
-    )
-    main_registration = '''        if (std::strcmp(module, "main") == 0) {
-            Core::X1WakerStageKProfiler::Get().RegisterMainModuleRange(load_addr, next_load_addr);
-        }
-'''
-    caller_registration = main_registration + '''        if (std::strcmp(module, "sdk") == 0) {
-            Core::X1Arm64ExclusiveCallerProfiler::Get().RegisterSdkModuleRange(load_addr,
-                                                                               next_load_addr);
-        }
-'''
-    text = replace_once(text, main_registration, caller_registration,
-                        "exclusive caller SDK range registration")
-    loader.write_text(text, encoding="utf-8")
+    final_loader = loader.read_text(encoding="utf-8")
+    if final_loader.count('#include "core/x1_arm64_exclusive_caller_profiler.h"') != 1:
+        raise RuntimeError("exclusive caller loader include must be pre-registered by Stage H")
+    if final_loader.count("RegisterSdkModuleRange") != 1:
+        raise RuntimeError("exclusive caller SDK range must be pre-registered by Stage H")
 
     # 6) Reuse the same Qualcomm gate and 120-frame report boundary.
     rasterizer = root / "src/video_core/renderer_vulkan/vk_rasterizer.cpp"
@@ -300,9 +287,6 @@ def main() -> int:
         raise RuntimeError("exclusive caller sample shape mismatch")
     if final_arm.count("IsValidVirtualAddressRange(caller_address, sizeof(u64))") != 1:
         raise RuntimeError("exclusive caller stack safety check missing")
-    final_loader = loader.read_text(encoding="utf-8")
-    if final_loader.count("RegisterSdkModuleRange") != 1:
-        raise RuntimeError("exclusive caller SDK range registration mismatch")
     if not caller_profiler_target.exists():
         raise RuntimeError("exclusive caller profiler header was not copied")
 
