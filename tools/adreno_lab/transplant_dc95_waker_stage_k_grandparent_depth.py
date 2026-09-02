@@ -37,6 +37,16 @@ def load_exclusive_pc_impl():
     return module
 
 
+def load_exclusive_caller_impl():
+    path = Path(__file__).with_name("transplant_dc95_arm64_exclusive_caller_attribution.py")
+    spec = importlib.util.spec_from_file_location("x1_arm64_exclusive_caller_impl", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load ARM64 exclusive caller attribution implementation")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
     if count != 1:
@@ -225,7 +235,15 @@ def main() -> int:
     if not (root / "src/core/x1_arm64_exclusive_pc_profiler.h").exists():
         raise RuntimeError("ARM64 exclusive PC profiler was not copied into exact dc95 tree")
 
-    print("Transplanted exact dc95 X1 waker Stage K grandparent + x26 work target + ARM64 exclusive + PC attribution")
+    exclusive_caller_impl = load_exclusive_caller_impl()
+    exclusive_caller_result = exclusive_caller_impl.main()
+    if exclusive_caller_result not in (None, 0):
+        return int(exclusive_caller_result)
+
+    if not (root / "src/core/x1_arm64_exclusive_caller_profiler.h").exists():
+        raise RuntimeError("ARM64 exclusive caller profiler was not copied into exact dc95 tree")
+
+    print("Transplanted exact dc95 X1 waker Stage K grandparent + x26 work target + ARM64 exclusive + PC + caller attribution")
     return 0
 
 
