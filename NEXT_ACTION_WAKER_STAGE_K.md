@@ -11,6 +11,7 @@ Read first:
 - `DEBUG_HISTORY_20260901_ARM64_EXCLUSIVE_CALLBACK_RUNTIME.md`
 - `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_PC_RUNTIME_STATIC_MAPPING.md`
 - `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_CALLER_IMPLEMENTED.md`
+- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_CALLER_BUILD_VERIFIER_FIX.md`
 - this file
 
 Repository:
@@ -31,7 +32,7 @@ Persistent trigger:
 Current ARM64 authorization:
 **NONE**
 
-No Windows ARM64 build/rebuild/rerun without fresh explicit user authorization. One authorization means exactly one attempt; failure does not authorize retry.
+No Windows ARM64 build/rebuild/rerun without fresh explicit user authorization. One authorization means exactly one attempt. Failure does not authorize retry.
 
 ## Closed facts
 
@@ -41,14 +42,12 @@ No Windows ARM64 build/rebuild/rerun without fresh explicit user authorization. 
 - `main+0x86bc04 -> main+0x2ada93c` = **EventModuleSubWorker**
 - `main+0x244fc20 -> main+0x2ad6b20` = **ActorAIGroupMgr::Job**
 
-### Exclusive total cost
+### Exclusive runtime facts
 
 - no STXR retry storm;
-- LDXR `ReadAndMark` is roughly 47% of measured exclusive read+write time;
+- LDXR `ReadAndMark` is about 47% of measured exclusive read+write time;
 - slow amplification is mainly operation-count growth;
-- roughly 94-96% of measured exclusive time is 32-bit traffic.
-
-### Exact guest-PC ownership
+- about 94-96% of measured exclusive time is 32-bit traffic.
 
 Exact SDK build ID:
 `B9046C31EB5D31271BE970FE732D38DF49C6AA21`
@@ -60,74 +59,105 @@ Exact SDK build ID:
 
 SystemTask child-work atomics `main+0x9715e0` and `main+0x98245c` rise sharply at the same swap2 -> swap3 transition as SystemTask work ticks. SystemTask also directly reaches SDK LockMutex/UnlockMutex.
 
-Do not claim all SDK lock traffic belongs to SystemTask until caller partition is observed.
+Do not assign all SDK lock traffic to SystemTask until caller partition is observed.
 
-## Caller attribution — IMPLEMENTED / STATICALLY VALIDATED
+## Caller attribution implementation
 
-New branch layer:
+Runtime tag:
 `[X1-XEXCLCALL]`
 
-Exact stack proof for the stated SDK build:
-
-At the first Enter LDAXR `sdk+0x131754`:
+At exact SDK Enter hot PC `sdk+0x131754`:
 
 `guest SP + 0x38 = saved higher-level nn::os::LockMutex caller LR`
 
-Implementation scope:
+Scope:
 
-- existing two Stage F selected producers only;
-- target only `sdk+0x131754`;
-- independent `1/64` sampling;
-- one guarded guest `Read64(SP+0x38)` only after target-PC + sample gates;
-- bounded 256-slot caller table, probe limit 8, top 12;
-- report every 120 frames;
-- dynamic SDK module range, no raw ASLR base;
-- existing `[X1-XEXCL]` totals unchanged;
-- existing `[X1-XEXCLPC]` 1/16 PC samples unchanged;
-- no IR/opcode/x64-backend modification;
-- guest SP passed from exact ARM64 `A64JitState::sp`.
+- two existing Stage F selected producers only;
+- target only the exact Enter LDAXR;
+- independent 1/64 sampling;
+- one guarded `Read64(SP+0x38)` after target-PC + sample gates;
+- bounded top-N caller aggregation;
+- existing `[X1-XEXCL]` and `[X1-XEXCLPC]` unchanged;
+- guest SP passed from ARM64 `A64JitState::sp`;
+- no behavior change.
 
-Successful exact-dc95 Ubuntu validator:
+## First authorized caller ARM attempt — FAILED BEFORE BUILD
 
-- run `33595564876`
-- result: **SUCCESS**
+Authorized run:
 
-The first two temporary validator attempts were fixture/YAML failures, not caller-transform failures. The temporary validator workflow has been removed.
+- run `33602356948`
+- job `100158688515`
+- attempt `1`
+- event `workflow_dispatch`
+- head `7288400ffe1e378c4657fab473d4d86896d12ded`
 
-Final implementation diff before documentation is exactly four paths:
+Exactly one ARM run was created. The one-shot dispatcher was removed immediately. No retry/rerun occurred.
 
-- `src/core/x1_arm64_exclusive_caller_profiler.h`
-- `tools/adreno_lab/transplant_dc95_arm64_exclusive_caller_attribution.py`
-- `tools/adreno_lab/analyze_x1_arm64_exclusive_caller_attribution.py`
-- minimal chain extension in `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
+The run reached the Stage K transplant and successfully applied:
 
-Persistent ARM workflow unchanged.
-Baseline unchanged.
+- Stage K;
+- exclusive totals;
+- exclusive PC attribution;
+- exclusive caller attribution.
+
+It then failed at `Verify Stage K before configure`.
+Configure and C++ compilation did **not** start.
+
+Failure cause:
+
+The caller transform added the SDK range registration to `deconstructed_rom_directory.cpp` after the pre-Stage-K loader snapshot, violating the persistent verifier's byte-for-byte loader diff.
+
+This was a verifier/snapshot ordering failure, not a caller-code compiler failure.
+
+## Fix — CLOSED OFFLINE
+
+The SDK range registration has been moved to Stage H.
+
+Current ordering:
+
+1. Stage H copies the caller profiler header.
+2. Stage H pre-registers both `main` and `sdk` module ranges.
+3. pre-Stage-K snapshot therefore already contains the final loader state.
+4. caller transform no longer modifies the loader and only verifies the Stage H SDK registration is present.
+
+Persistent ARM workflow remains unchanged.
+Baseline remains unchanged.
+
+Exact-dc95 Ubuntu validation after the fix:
+
+- run `33602762070`
+- result **SUCCESS**
+
+Validated specifically:
+
+- Stage H main + SDK registrations;
+- loader snapshot after Stage H;
+- exclusive totals + PC + caller transforms;
+- final loader byte-for-byte identical to Stage H snapshot;
+- `ReadAndMark` / `DoExclusiveOperation` semantics retained;
+- guest-SP propagation retained;
+- caller stack range-check retained;
+- no behavior-changing scheduler/pacing/GPU tokens.
+
+Temporary validator workflow was removed after success.
 
 ## Immediate next action
 
 Current ARM64 authorization:
 **NONE**
 
-Stop until the user gives a fresh explicit authorization.
+Stop here until the user gives a **fresh explicit authorization**.
 
 If authorized:
 
-1. perform exactly one Windows ARM64 build/run attempt from `exp/x1-arm64-exclusive-caller-attribution`;
+1. perform exactly one Windows ARM64 attempt from `exp/x1-arm64-exclusive-caller-attribution`;
 2. do not retry if it fails;
-3. collect a runtime log containing `[X1-XEXCLCALL]`, `[X1-XEXCLPC]`, `[X1-XEXCL]`, `[X1-WAKERH]`, Stage K, and cadence records;
-4. choose swap=2 / swap=3 report windows from that same run, not old frame IDs;
-5. run `analyze_x1_arm64_exclusive_caller_attribution.py` with explicit `--fast` and `--slow` report frames;
-6. normalize top caller LRs to durable `module+offset`;
-7. disassemble/map dominant `main+offset` caller LRs with the exact TOTK 1.2.1 main NSO;
-8. partition SDK `InternalCriticalSection::Enter` traffic among SystemTask, EventModuleSubWorker, ActorAIGroupMgr::Job, and other callers;
-9. compare caller share/count changes across cadence.
+3. confirm Stage K verifier now passes with the Stage-H SDK registration;
+4. if build succeeds, run TOTK 1.2.1 and collect `[X1-XEXCLCALL]`, `[X1-XEXCLPC]`, `[X1-XEXCL]`, Stage K, module and cadence records;
+5. select swap=2 and swap=3 windows from that same runtime;
+6. normalize top caller LRs to `module+offset`;
+7. partition dominant SDK Enter traffic among SystemTask, EventModuleSubWorker, ActorAIGroupMgr::Job, and other callers.
 
-## Decision after runtime
-
-If one caller family explains most of the slow-added SDK Enter traffic, descend only into that owner and identify why it invokes more critical sections.
-
-If traffic is broadly distributed across unrelated callers, treat the ARM64 Dynarmic callback/global-monitor cost as a shared amplification tax rather than inventing one game-side owner.
-
-Do not implement a behavior-changing optimization before this partition is known.
+Do not reuse the failed run as authorization for another ARM attempt.
 Do not create Stage L.
+Do not implement a behavior-changing optimization before caller partition is known.
