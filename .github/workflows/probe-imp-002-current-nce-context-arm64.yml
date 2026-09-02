@@ -1,0 +1,45 @@
+name: Probe IMP-002 CurrentNceContext ARM64
+
+on:
+  push:
+    branches:
+      - exp/imp-002-current-nce-context
+    paths:
+      - src/core/arm/nce/current_nce_context.h
+      - src/core/arm/nce/arm_nce.cpp
+      - .github/workflows/probe-imp-002-current-nce-context-arm64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-current-nce-context:
+    runs-on: windows-11-arm
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile actual Eden CurrentNceContext header
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 10
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 11
+          call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          if errorlevel 1 exit /b 12
+          > imp002_probe.cpp echo #include "core/arm/nce/current_nce_context.h"
+          >> imp002_probe.cpp echo int main() {
+          >> imp002_probe.cpp echo     using Carrier = Core::NCE::CurrentNceContext;
+          >> imp002_probe.cpp echo     Carrier::Install(nullptr);
+          >> imp002_probe.cpp echo     if (Carrier::Get() != nullptr) return 1;
+          >> imp002_probe.cpp echo     Carrier::Clear();
+          >> imp002_probe.cpp echo     return Carrier::Get() == nullptr ? 0 : 2;
+          >> imp002_probe.cpp echo }
+          cl /nologo /std:c++20 /EHsc /W4 /I src /c imp002_probe.cpp /Fo:imp002_probe.obj
+          if errorlevel 1 exit /b 13
+          if not exist imp002_probe.obj exit /b 14
+          echo CURRENT_NCE_CONTEXT_COMPILE=PASS
