@@ -38,25 +38,27 @@ jobs:
 
           stage_f = Path('eden/src/core/x1_waker_stage_f_profiler.h')
           text = stage_f.read_text()
-          enabled_anchor = '''    [[nodiscard]] bool Enabled() const noexcept {
-        return enabled.load(std::memory_order_relaxed);
-    }
-'''
+          enabled_anchor = (
+              "    [[nodiscard]] bool Enabled() const noexcept {\n"
+              "        return enabled.load(std::memory_order_relaxed);\n"
+              "    }\n"
+          )
           if text.count(enabled_anchor) != 1:
               raise SystemExit('Stage F fixture accessor anchor mismatch')
-          accessor = enabled_anchor + '''
-    [[nodiscard]] s32 GetTrackedProducerIndex(u64 thread_id) const noexcept {
-        if (!Enabled() || thread_id == 0) {
-            return -1;
-        }
-        for (size_t i = 0; i < ProducerCount; ++i) {
-            if (producers[i].thread_id.load(std::memory_order_acquire) == thread_id) {
-                return static_cast<s32>(i);
-            }
-        }
-        return -1;
-    }
-'''
+          accessor = enabled_anchor + (
+              "\n"
+              "    [[nodiscard]] s32 GetTrackedProducerIndex(u64 thread_id) const noexcept {\n"
+              "        if (!Enabled() || thread_id == 0) {\n"
+              "            return -1;\n"
+              "        }\n"
+              "        for (size_t i = 0; i < ProducerCount; ++i) {\n"
+              "            if (producers[i].thread_id.load(std::memory_order_acquire) == thread_id) {\n"
+              "                return static_cast<s32>(i);\n"
+              "            }\n"
+              "        }\n"
+              "        return -1;\n"
+              "    }\n"
+          )
           stage_f.write_text(text.replace(enabled_anchor, accessor, 1))
 
           rasterizer = Path('eden/src/video_core/renderer_vulkan/vk_rasterizer.cpp')
@@ -65,7 +67,7 @@ jobs:
           if text.count(anchor) != 1:
               raise SystemExit('rasterizer fixture include anchor mismatch')
           text = text.replace(anchor, anchor + '#include "core/x1_waker_stage_k_profiler.h"\n', 1)
-          text += '''\n#if 0\nvoid X1ExclusiveStaticFixture() {\n    Core::X1WakerStageKProfiler::Get().Initialize(\n        device.GetDriverID() == VK_DRIVER_ID_QUALCOMM_PROPRIETARY);\n    Core::X1WakerStageEProfiler::Get().FrameEnd();\n    Core::X1WakerStageKProfiler::Get().FrameEnd();\n    Core::X1WakerStageJProfiler::Get().FrameEnd();\n    Core::X1WakerStageGProfiler::Get().FrameEnd();\n    Core::X1WakerStageFProfiler::Get().FrameEnd();\n}\n#endif\n'''
+          text += '\n#if 0\nvoid X1ExclusiveStaticFixture() {\n    Core::X1WakerStageKProfiler::Get().Initialize(\n        device.GetDriverID() == VK_DRIVER_ID_QUALCOMM_PROPRIETARY);\n    Core::X1WakerStageEProfiler::Get().FrameEnd();\n    Core::X1WakerStageKProfiler::Get().FrameEnd();\n    Core::X1WakerStageJProfiler::Get().FrameEnd();\n    Core::X1WakerStageGProfiler::Get().FrameEnd();\n    Core::X1WakerStageFProfiler::Get().FrameEnd();\n}\n#endif\n'
           rasterizer.write_text(text)
 
           loader = Path('eden/src/core/loader/deconstructed_rom_directory.cpp')
@@ -74,7 +76,7 @@ jobs:
           if text.count(anchor) != 1:
               raise SystemExit('loader fixture include anchor mismatch')
           text = text.replace(anchor, anchor + '#include "core/x1_waker_stage_k_profiler.h"\n', 1)
-          text += '''\n#if 0\nvoid X1LoaderStaticFixture() {\n        if (std::strcmp(module, "main") == 0) {\n            Core::X1WakerStageKProfiler::Get().RegisterMainModuleRange(load_addr, next_load_addr);\n        }\n}\n#endif\n'''
+          text += '\n#if 0\nvoid X1LoaderStaticFixture() {\n        if (std::strcmp(module, "main") == 0) {\n            Core::X1WakerStageKProfiler::Get().RegisterMainModuleRange(load_addr, next_load_addr);\n        }\n}\n#endif\n'
           loader.write_text(text)
           PY
 
