@@ -1,12 +1,6 @@
 name: Probe IMP-001 HostMemory ARM64
 
 on:
-  push:
-    branches:
-      - exp/imp-001-windows-hostmemory-execute
-    paths:
-      - src/common/host_memory.cpp
-      - .github/workflows/probe-imp-001-hostmemory-arm64.yml
   workflow_dispatch:
 
 permissions:
