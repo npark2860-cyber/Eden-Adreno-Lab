@@ -1,0 +1,44 @@
+name: Probe IMP-001 HostMemory ARM64
+
+on:
+  push:
+    branches:
+      - exp/imp-001-windows-hostmemory-execute
+    paths:
+      - src/common/host_memory.cpp
+      - .github/workflows/probe-imp-001-hostmemory-arm64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-hostmemory:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up CLANGARM64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            clang:p boost:p unordered_dense:p fmt:p
+
+      - name: Compile HostMemory translation unit
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          clang++ \
+            -std=c++20 \
+            -Wall -Wextra \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE \
+            -Isrc \
+            -c src/common/host_memory.cpp \
+            -o host_memory.o
+          test -s host_memory.o
+          echo "HOSTMEMORY_COMPILE=PASS"
