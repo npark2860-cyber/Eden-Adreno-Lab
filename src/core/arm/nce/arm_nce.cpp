@@ -9,6 +9,7 @@
 
 #include "common/signal_chain.h"
 #include "core/arm/nce/arm_nce.h"
+#include "core/arm/nce/current_nce_context.h"
 #include "core/arm/nce/interpreter_visitor.h"
 #include "core/arm/nce/patcher.h"
 #include "core/core.h"
@@ -225,11 +226,17 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     // TODO: finding and creating the post handler needs to be locked
     // to deal with dynamic loading of NROs.
     const auto& post_handlers = process->GetPostHandlers();
+
+    // Keep a host-owned per-thread locator installed only for the native guest interval. Linux
+    // generated helpers still use physical TPIDR_EL0; Windows generated-code consumption is
+    // intentionally deferred to the later transition-ABI seam.
+    NCE::CurrentNceContext::Install(thread_params);
     if (auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
         hr = ReturnToRunCodeByTrampoline(thread_params, &m_guest_ctx, it->second);
     } else {
         hr = ReturnToRunCodeByExceptionLevelChange(m_thread_id, thread_params);  // Android: Use "process handle SIGUSR2 -n true -p true -s false" (and SIGURG) in LLDB when debugging
     }
+    NCE::CurrentNceContext::Clear();
 
     // Critical section for thread cleanup
     std::atomic_thread_fence(std::memory_order_acquire);
