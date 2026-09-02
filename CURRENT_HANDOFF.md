@@ -1,14 +1,35 @@
-# CURRENT HANDOFF — Eden ARM64 / Adreno X1 Exclusive Caller Attribution
+# CURRENT HANDOFF — Eden Windows ARM64 / Dynarmic Exclusive Investigation
 
 Updated: 2026-09-02 KST
 
-## Source of truth / hard rules
+## Read this first in a new tab
+
+Primary final record:
+
+- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_CALLER_RUNTIME_FINAL.md`
+
+Supporting records:
+
+- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_PC_RUNTIME_STATIC_MAPPING.md`
+- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_CALLER_IMPLEMENTED.md`
+- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_CALLER_BUILD_VERIFIER_FIX.md`
+- `DEBUG_HISTORY_20260901_ARM64_EXCLUSIVE_CALLBACK_RUNTIME.md`
+- `NEXT_ACTION_WAKER_STAGE_K.md`
+
+The final runtime record above supersedes older statements that caller runtime was still pending.
+
+## Repository state
 
 Repository:
 `npark2860-cyber/Eden-Adreno-Lab`
 
-Current experiment branch:
+Current branch:
 `exp/x1-arm64-exclusive-caller-attribution`
+
+Branch HEAD before final documentation commits:
+`b5043d94da0f827d246cd6bca594548c0b21655a`
+
+Re-read the actual branch HEAD when opening a new tab because documentation commits follow it.
 
 Immutable Eden baseline:
 `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
@@ -19,306 +40,156 @@ Immutable control branch:
 Persistent Windows ARM64 workflow:
 `.github/workflows/build-dc95-x1-address-arbiter-attribution.yml`
 
-Workflow name:
-`Build dc95 X1 Waker Stage K`
-
 Persistent trigger:
 `workflow_dispatch` only.
 
-### Windows ARM64 authorization — ABSOLUTE
+Current Windows ARM64 authorization:
+**NONE**
 
-- no Windows ARM64 build/rebuild/rerun without fresh explicit user authorization;
-- one authorization = exactly one attempt;
-- failure does not authorize retry;
-- no automatic retry;
-- current ARM64 authorization: **NONE**.
+Hard rule: no Windows ARM64 build/rebuild/rerun without a fresh explicit user authorization. One authorization means exactly one attempt; failure does not authorize retry.
 
-Ubuntu/static validation and offline NSO analysis do not consume ARM authorization.
+## Final authorized caller-attribution build
 
-Never change the exact baseline without explicit approval.
-Do not hardcode runtime TIDs or raw ASLR module bases as durable knowledge; use `module+offset`.
-No broad/all-thread profiling.
-No scheduler/priority/affinity/yield/wait/signal/GPU/QueueBuffer/cadence behavior changes by default.
-Do not create Stage L merely to add stack depth.
-
-## Read these current records first
-
-- `CURRENT_HANDOFF.md`
-- `DEBUG_HISTORY_20260901_WAKER_STAGE_K_NONCOMMON_OWNER_MAPPING_COMPLETE.md`
-- `DEBUG_HISTORY_20260901_ARM64_EXCLUSIVE_CALLBACK_RUNTIME.md`
-- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_PC_RUNTIME_STATIC_MAPPING.md`
-- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_CALLER_IMPLEMENTED.md`
-- `NEXT_ACTION_WAKER_STAGE_K.md`
-
-These 2026-09-02 records supersede older handoff statements about unresolved Stage K owners, old cadence frame IDs, and the previous exclusive-PC branch.
-
-## Current repository state
-
-Branch:
-`exp/x1-arm64-exclusive-caller-attribution`
-
-Base before caller implementation:
-`9e60061e6821ea0e4293dd04095c4707bcb1da24`
-
-Caller implementation/static validation was completed on this branch. Re-read actual branch HEAD at the start of the next tab because documentation commits follow the source commits.
-
-Final caller implementation diff before documentation contains exactly:
-
-- `src/core/x1_arm64_exclusive_caller_profiler.h`
-- `tools/adreno_lab/analyze_x1_arm64_exclusive_caller_attribution.py`
-- `tools/adreno_lab/transplant_dc95_arm64_exclusive_caller_attribution.py`
-- minimal caller-chain extension in `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
-
-No temporary validator workflow remains.
-No persistent ARM workflow diff remains.
-No baseline change occurred.
-
-## Latest authorized Windows ARM64 runtime build — SUCCESS
-
-This is still the exclusive-PC runtime build; no caller build has been authorized yet.
-
-- workflow run: `33532663563`
-- job: `99939361617`
+- workflow run: `33603651504`
 - attempt: `1`
 - event: `workflow_dispatch`
-- workflow head: `cf592457de3b657549c3e11e8dd41d03a5a47965`
-- result: **SUCCESS**
+- build head: `27c23fcd18a5d38f068d942b6953da295dd23784`
+- conclusion: **SUCCESS**
 - retry/rerun: none
+- one-shot dispatcher: removed
 
-Artifact:
+## Final runtime identity
 
-- name: `Eden-dc95-X1-waker-stage-k`
-- artifact ID: `9811512280`
-- size: `31,447,663` bytes
-- SHA-256: `d36a856e8e9905e185bebfe0db8f2aeb2be6e78d76733cf332a0d8c7773b8505`
-
-The one-shot dispatcher was removed after dispatch. Current ARM authorization is **NONE**.
-
-## Exact runtime / module identity
-
-Latest PC-attribution runtime log:
-`eden_log(20260902-043629).txt`
+Runtime log:
+`eden_log(20260902-083624).txt`
 
 Confirmed:
 
 - Eden `HEAD-dc95cd09ee-HEAD`
+- Windows 11 25H2 build `26220.9223`
 - TOTK `1.2.1`
 - title ID `0100F2C0115B6000`
-- Vulkan
-- Qualcomm Adreno X1-85
+- CPU backend Dynarmic
+- Vulkan / Qualcomm Adreno X1-85
+- Adreno driver `512.863.0`
 - main build ID `9B4E43650501A4D4489B4BBFDB740F26AF3CF85`
 - SDK build ID `B9046C31EB5D31271BE970FE732D38DF49C6AA21`
 
-Exact dumped main and SDK NSOs were used for static disassembly. Dump mapping remains:
+Durable addresses use `module+offset`, never raw ASLR runtime addresses.
 
-`module+X -> NSO file offset X + 0x100`
+## Final performance conclusion
 
-The dumped module images are already decompressed.
+The current investigation has established the following.
 
-Actual cadence for the latest PC runtime:
+### 1. Dynarmic ARM64 exclusive handling is a real performance amplifier
 
-- report frames `480..1800`: `swap=2`
-- report frames `1920..2400`: `swap=3`
+Exact dc95 ARM64 Dynarmic uses callback-based exclusive handling:
 
-Never reuse cadence frame numbers blindly across runs.
+- LDXR-family -> callback trampoline -> global monitor `ReadAndMark`
+- STXR-family -> callback trampoline -> global monitor `DoExclusiveOperation`
 
-## Stage K semantic owners — CLOSED
+The dominant traffic is 32-bit.
 
-All recurring non-common work-target pairs are mapped:
+### 2. Slow cadence mainly increases operation count, not callback latency
 
-1. `main+0x96e2a8 -> main+0x26936d0`
-   = **gsys::SystemTask internal work/phase dispatcher**
-2. `main+0x86bc04 -> main+0x2ada93c`
-   = **EventModuleSubWorker**
-3. `main+0x244fc20 -> main+0x2ad6b20`
-   = **ActorAIGroupMgr::Job**
+Stable swap2 vs stable swap3 windows in the final runtime show approximately:
 
-Do not reopen these identities merely to add stack depth.
+- Producer 0 exclusive write count `~3.67x`, read count `~3.59x`
+- Producer 1 exclusive write count `~3.70x`, read count `~3.63x`
+- per-callback latency changes only by roughly `1-7%`
+- STXR failure rate rises to only about `2.25-2.31%`
 
-## ARM64 Dynarmic exclusive implementation — CLOSED FACT
+Therefore there is no evidence of an STXR retry storm or several-times per-call latency collapse.
 
-Exact dc95 ARM64 Dynarmic exclusive reads/writes are callback based rather than x64-style inline fastmem-exclusive handling.
+The guest executes roughly `3.5-3.7x` more exclusive synchronization operations in slow cadence, and the callback-only ARM64 implementation turns that growth into host CPU cost.
 
-Observed path includes:
+### 3. Dominant shared primitive is exactly identified
 
-- LDXR-family -> ARM64 callback trampoline -> global monitor `ReadAndMark`
-- STXR-family -> ARM64 callback trampoline -> global monitor `DoExclusiveOperation` -> Eden exclusive memory callback / host atomic CAS
+Exact SDK mapping:
 
-Current upstream ARM64 Dynarmic also retains callback-only exclusive handling.
-
-## Exclusive total-cost runtime — CLOSED
-
-STXR-only and LDXR+STXR runtime established:
-
-- no STXR retry storm;
-- no dramatic STXR single-call latency explosion;
-- LDXR `ReadAndMark` accounts for roughly 47% of measured exclusive read+write time;
-- selected-producer combined exclusive aggregate CPU increases roughly `1.32x` in slow windows;
-- principal amplification is operation-count growth, not per-operation latency growth;
-- roughly 94-96% of measured exclusive time is 32-bit traffic;
-- representative slow windows place exclusive read+write near 10-12% of selected-producer CPU wall.
-
-Exclusive handling is a material shared cost but not by itself the sole slowdown owner.
-
-## Exact 32-bit LDXR PC attribution — CLOSED
-
-`[X1-XEXCLPC]` runtime used:
-
-- two selected Stage F producers only;
-- 32-bit LDXR only;
-- exact guest PC from Dynarmic location descriptor;
-- 1/16 sampling;
-- bounded top-N report every 120 frames;
-- exact `[X1-XEXCL]` totals kept separate.
-
-### Dominant SDK sites
-
-Exact static identities:
-
-- `sdk+0x131754` = first `LDAXR` inside `nn::os::detail::InternalCriticalSectionImplByHorizon::Enter()`
-- `sdk+0x13181c` = `LDAXR` inside `nn::os::detail::InternalCriticalSectionImplByHorizon::Leave()`
+- `sdk+0x131754` = first LDAXR in `nn::os::detail::InternalCriticalSectionImplByHorizon::Enter()`
+- `sdk+0x13181c` = LDAXR in `InternalCriticalSectionImplByHorizon::Leave()`
 - `sdk+0x127e20` = `nn::os::LockMutex`
 - `sdk+0x127ee0` = `nn::os::UnlockMutex`
 
-Thus the largest shared 32-bit exclusive sites are real Nintendo SDK critical-section operations.
-
 This proves synchronization-operation density growth, not lock-contention root causation.
 
-## gsys::SystemTask child-work synchronization — DIRECTLY CONNECTED
+### 4. Stage K semantic owners are closed
 
-Slow-emergent main-module LDXR sites:
+- `main+0x96e2a8 -> main+0x26936d0` = **gsys::SystemTask internal work/phase dispatcher**
+- `main+0x86bc04 -> main+0x2ada93c` = **EventModuleSubWorker**
+- `main+0x244fc20 -> main+0x2ad6b20` = **ActorAIGroupMgr::Job**
 
-- `main+0x9715e0`
-- `main+0x98245c`
+Do not reopen these identities merely for more stack depth.
 
-Exact static chain:
+### 5. SystemTask is directly tied to increased child-work synchronization
 
-`gsys::SystemTask main+0x96e2a8`
-` -> main+0x96e674`
-` -> main+0x970160`
-` -> child-work processing`
+Exact main NSO mapping closed:
 
-- `main+0x9715e0` atomically updates child-work `+0x58` shared index/counter.
-- `main+0x98245c` atomically updates child-work `+0xb8` shared progress/index counter.
+- `main+0x9715e0` = SystemTask child-work `+0x58` shared index/counter atomic update
+- `main+0x98245c` = SystemTask child-work `+0xb8` progress/index atomic update
 
-These sites rise sharply at the same swap2 -> swap3 transition as SystemTask Stage K work ticks.
+These rise with slow cadence and the SystemTask subtree directly reaches `nn::os::LockMutex/UnlockMutex`.
 
-The same SystemTask subtree directly calls `nn::os::LockMutex/UnlockMutex`, so SystemTask definitely contributes to dominant SDK critical-section traffic.
+SystemTask is a proven contributor, but not proven to own all added synchronization traffic.
 
-Do not claim it owns all SDK traffic until caller partition is observed.
+### 6. Caller attribution worked and found additional slow-emergent families
 
-## Shared dependency dispatcher correction
+`[X1-XEXCLCALL]` recovered the higher-level LockMutex caller LR.
 
-Correct exact BL instruction addresses:
+The shared dependency dispatcher caller return addresses:
 
-- `main+0x86a52c` = LockMutex
-- `main+0x86a5ec` = UnlockMutex
-- `main+0x86a674` = LockMutex
-- `main+0x86a7c0` = UnlockMutex
+- `main+0x86a530`
+- `main+0x86a678`
 
-Older `main+0x86a530` / `main+0x86a678` BL labels were off by four bytes.
+remain relatively flat and do not explain the whole `3.5-3.7x` increase.
 
-Nearby local LDXR sites are comparatively flatter than dominant SDK Enter/Leave growth, so added SDK traffic is not all attributable to this shared dispatcher.
+Strong slow-emergent caller families include:
 
-## Exclusive caller attribution — IMPLEMENTED / STATICALLY VALIDATED
+- `main+0x7efd30`
+- `main+0x7ef838`
+- `main+0x7f028c`
+- `main+0x7f07f0`
+- `main+0x7f00a8`
+- `main+0xa81e20`
+- `main+0xa5a360`
+- `main+0x9be4b4`
+- `main+0x9be380`
 
-New runtime prefix:
-`[X1-XEXCLCALL]`
+These are intentionally left as unresolved secondary owner mappings because active work is moving to Windows ARM64 NCE.
 
-### Exact stack proof
+Caller table saturation/dropped samples occurred in slow windows, so do not use the top-N caller table as an exhaustive percentage partition.
 
-For exact SDK build `B9046C31...`:
+## Optimization judgment
 
-- `nn::os::LockMutex` saves the higher-level external LR at `LockMutex-SP + 0x8`.
-- the path into `InternalCriticalSectionImplByHorizon::Enter()` preserves that LR.
-- `Enter()` lowers SP by `0x30` before the first LDAXR at `sdk+0x131754`.
+There is legitimate optimization headroom in Dynarmic ARM64 exclusive handling, especially the 32-bit common path. A future Dynarmic experiment could test a safe exclusive fast path/common-case specialization or other reduction in callback/global-monitor overhead.
 
-Therefore, exactly at that target LDAXR:
+However, current evidence does **not** support claiming that this change alone restores 20/30 FPS. The original guest-side reason for the `3.5-3.7x` synchronization-volume increase is not fully closed.
 
-`guest SP + 0x38 = higher-level nn::os::LockMutex caller LR`
+## Windows ARM64 NCE handoff relevance
 
-### Guest-SP transport
+A separate Windows ARM64 NCE effort is already active outside this branch/tab.
 
-No IR opcode or x64 backend modification was required.
+Treat this Dynarmic investigation as an A/B baseline for NCE:
 
-Exact dc95 ARM64 maintains guest SP in `A64JitState::sp`. The caller layer adds one diagnostic load of this field into callback argument X3 before the exclusive-read relocation. The existing ARM64 exclusive trampoline preserves the argument while replacing X0 with UserConfig and tail-branching to the callback function.
+- Dynarmic ARM64 has a measured callback-only exclusive tax;
+- slow cadence greatly increases guest exclusive volume;
+- dominant shared primitive is Nintendo SDK critical-section / LockMutex;
+- SystemTask child-work synchronization is one proven contributor;
+- several other slow-emergent lock caller families exist.
 
-### Sampling scope
+If NCE bypasses or reduces the Dynarmic exclusive callback/global-monitor path, compare the same TOTK scene/cadence against this record.
 
-- existing two selected producers only;
-- only 32-bit exclusive read;
-- only exact target `sdk+0x131754`;
-- independent `1/64` sample;
-- only after target + sample gates, one guarded `Read64(SP+0x38)`;
-- stack range checked first;
-- 256 fixed caller slots / producer;
-- probe limit 8;
-- top 12 caller LRs / 120 frames;
-- invalid-stack and dropped-sample accounting;
-- runtime SDK range registered dynamically;
-- existing exact totals and 1/16 PC samples unchanged.
+## Stop condition
 
-### Exact-dc95 Ubuntu validation
+This Dynarmic attribution branch is now **documented and parked**.
 
-Temporary validator run history:
+Do not spend another ARM build merely to map every remaining caller.
 
-- `33595304786`: fixture failed before caller transform because synthetic Stage F lacked the accessor normally inserted by Stage G.
-- `33595436819`: temporary workflow YAML parse failure; no job executed.
-- `33595564876`: **SUCCESS**.
+Resume only when:
 
-Successful validation confirmed unchanged `ReadAndMark` / `DoExclusiveOperation` shape, one guest-SP load, one target test, one guarded stack read path, one SDK range registration, Python syntax, and no behavior-changing scheduling/GPU/cadence tokens.
+1. NCE A/B results need Dynarmic baseline interpretation;
+2. a concrete Dynarmic exclusive fast-path prototype is ready to benchmark; or
+3. one specific unresolved caller becomes necessary to answer a new question.
 
-Temporary validator workflow was deleted after success.
-
-## Immediate next action
-
-Current ARM64 authorization:
-**NONE**
-
-Stop here until a fresh explicit authorization is provided.
-
-If authorized, perform exactly one Windows ARM64 build/run attempt from:
-
-`exp/x1-arm64-exclusive-caller-attribution`
-
-Expected runtime evidence:
-
-- `[X1-XEXCLCALL]`
-- `[X1-XEXCLPC]`
-- `[X1-XEXCL]`
-- `[X1-WAKERH]`
-- Stage K work records
-- cadence records from the same run
-
-Use `analyze_x1_arm64_exclusive_caller_attribution.py` with explicit fast/slow frame lists from that run.
-
-Normalize dominant caller LRs to `module+offset`, statically map them with the exact main NSO, then partition SDK Enter/LockMutex traffic among:
-
-- gsys::SystemTask
-- EventModuleSubWorker
-- ActorAIGroupMgr::Job
-- other callers
-
-If one family dominates slow-added lock traffic, descend only into that family. If traffic is broad across unrelated owners, treat callback/global-monitor exclusive handling as a shared ARM64 amplification tax rather than inventing one game-side owner.
-
-Do not auto-build.
-Do not rerun on failure.
-Do not create Stage L.
-Do not implement behavior-changing optimization before this caller partition is known.
-
-## Closed historical findings — do not reopen without new evidence
-
-- Draw reason-level barrier owner = `PostCopyBarrier`.
-- Draw outside-RP large texture parent = `FillImageViews`.
-- repeated alias copies are not trivial unchanged-state duplicates; blind dedupe rejected.
-- exact dc95 `HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false`.
-- dominant Uniform path = adaptive mapped fast stream/re-stream.
-- classic-cache fallback did not break gameplay ceiling.
-- QueueBuffer swap2 ~= nominal 30 FPS opportunity; swap3 ~= nominal 20 FPS; VI ~= 60 Hz.
-- raw3->effective2 clamp did not improve upstream frame generation.
-- DFPS not root.
-- BufferQueue free-slot/backpressure not primary owner.
-- GPU worker predominantly waits for command supply.
-- NVDRV handler / SubmitGPFIFO / locks / fence / syncpoint are not the missing interval owner.
-- NVDRV IPC dispatch ~= `0.02-0.03 ms/request`.
-- host scheduler starvation closed as primary owner for selected-producer slowdowns.
+Otherwise prioritize the separate Windows ARM64 NCE work.
