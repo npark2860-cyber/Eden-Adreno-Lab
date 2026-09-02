@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# Add observation-only Stage H guest module range reporting and pre-register Stage K main range.
+# Add observation-only Stage H guest module range reporting and pre-register Stage K/main + caller/sdk ranges.
 
 from pathlib import Path
+import shutil
 import sys
 
 
@@ -21,12 +22,24 @@ def main() -> int:
     if not loader.exists():
         raise RuntimeError("exact dc95 deconstructed_rom_directory.cpp not found")
 
+    # The caller-attribution experiment needs the exact sdk runtime range before the Stage-K
+    # snapshot. Copy the observation-only profiler here so later Stage K/caller passes do not
+    # have to mutate the loader after the persistent verifier snapshot.
+    lab_root = Path(__file__).resolve().parents[2]
+    caller_profiler_source = lab_root / "src/core/x1_arm64_exclusive_caller_profiler.h"
+    caller_profiler_target = root / "src/core/x1_arm64_exclusive_caller_profiler.h"
+    if not caller_profiler_source.exists():
+        raise RuntimeError("ARM64 exclusive caller profiler source header missing")
+    shutil.copyfile(caller_profiler_source, caller_profiler_target)
+
     text = loader.read_text(encoding="utf-8")
     text = replace_once(
         text,
         '#include "core/core.h"\n',
-        '#include "core/core.h"\n#include "core/x1_waker_stage_k_profiler.h"\n',
-        "Stage K main-range profiler include",
+        '#include "core/core.h"\n'
+        '#include "core/x1_waker_stage_k_profiler.h"\n'
+        '#include "core/x1_arm64_exclusive_caller_profiler.h"\n',
+        "Stage K/caller module-range profiler includes",
     )
     anchor = '''        next_load_addr = *tentative_next_load_addr;
         modules.insert_or_assign(load_addr, module);
@@ -43,6 +56,10 @@ def main() -> int:
         if (std::strcmp(module, "main") == 0) {
             Core::X1WakerStageKProfiler::Get().RegisterMainModuleRange(load_addr, next_load_addr);
         }
+        if (std::strcmp(module, "sdk") == 0) {
+            Core::X1Arm64ExclusiveCallerProfiler::Get().RegisterSdkModuleRange(load_addr,
+                                                                               next_load_addr);
+        }
 '''
     text = replace_once(text, anchor, replacement, "Stage H bounded module range report")
     loader.write_text(text, encoding="utf-8")
@@ -55,7 +72,9 @@ def main() -> int:
         "modules.insert_or_assign(load_addr, module)",
         "next_load_addr - load_addr",
         "X1WakerStageKProfiler::Get().RegisterMainModuleRange",
+        "X1Arm64ExclusiveCallerProfiler::Get().RegisterSdkModuleRange",
         'std::strcmp(module, "main") == 0',
+        'std::strcmp(module, "sdk") == 0',
     )
     for marker in required:
         if marker not in final:
@@ -65,6 +84,10 @@ def main() -> int:
         raise RuntimeError("Stage H must add exactly one bounded module-range log site")
     if final.count("X1WakerStageKProfiler::Get().RegisterMainModuleRange") != 1:
         raise RuntimeError("Stage H must pre-register the Stage K main range exactly once")
+    if final.count("X1Arm64ExclusiveCallerProfiler::Get().RegisterSdkModuleRange") != 1:
+        raise RuntimeError("Stage H must pre-register the caller SDK range exactly once")
+    if not caller_profiler_target.exists():
+        raise RuntimeError("Stage H caller profiler header copy missing")
 
     lowered = final.lower()
     for forbidden_value in ("0x85f12528", "0x85f12420", "0x85edea8c", "0x85edeb40", "0x80", "0x81"):
@@ -80,7 +103,7 @@ def main() -> int:
     if any(token in added for token in forbidden):
         raise RuntimeError("behavior-changing token found in Stage H loader instrumentation")
 
-    print("Transplanted exact dc95 X1 waker Stage H module-range mapping + Stage K main range")
+    print("Transplanted exact dc95 X1 waker Stage H module-range mapping + Stage K main + caller sdk ranges")
     return 0
 
 
