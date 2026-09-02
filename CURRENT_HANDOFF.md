@@ -1,4 +1,4 @@
-# CURRENT HANDOFF — Eden ARM64 / Adreno X1 Exclusive + Producer Attribution
+# CURRENT HANDOFF — Eden ARM64 / Adreno X1 Exclusive Caller Attribution
 
 Updated: 2026-09-02 KST
 
@@ -8,7 +8,7 @@ Repository:
 `npark2860-cyber/Eden-Adreno-Lab`
 
 Current experiment branch:
-`exp/x1-arm64-exclusive-pc-attribution`
+`exp/x1-arm64-exclusive-caller-attribution`
 
 Immutable Eden baseline:
 `eden-emulator/mirror@dc95cd09eea9749250fe31a3072684d341d19417`
@@ -36,7 +36,7 @@ Persistent trigger:
 Ubuntu/static validation and offline NSO analysis do not consume ARM authorization.
 
 Never change the exact baseline without explicit approval.
-Do not hardcode runtime TIDs/module bases/raw guest addresses as durable knowledge; normalize addresses to `module+offset`.
+Do not hardcode runtime TIDs or raw ASLR module bases as durable knowledge; use `module+offset`.
 No broad/all-thread profiling.
 No scheduler/priority/affinity/yield/wait/signal/GPU/QueueBuffer/cadence behavior changes by default.
 Do not create Stage L merely to add stack depth.
@@ -46,26 +46,36 @@ Do not create Stage L merely to add stack depth.
 - `CURRENT_HANDOFF.md`
 - `DEBUG_HISTORY_20260901_WAKER_STAGE_K_NONCOMMON_OWNER_MAPPING_COMPLETE.md`
 - `DEBUG_HISTORY_20260901_ARM64_EXCLUSIVE_CALLBACK_RUNTIME.md`
-- `DEBUG_HISTORY_20260901_ARM64_EXCLUSIVE_READ_IMPLEMENTED.md`
-- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_PC_ATTRIBUTION_IMPLEMENTED.md`
 - `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_PC_RUNTIME_STATIC_MAPPING.md`
+- `DEBUG_HISTORY_20260902_ARM64_EXCLUSIVE_CALLER_IMPLEMENTED.md`
 - `NEXT_ACTION_WAKER_STAGE_K.md`
 
-The 2026-09-02 records supersede older handoff statements about unresolved non-common owners, old cadence-frame IDs, or the older Stage K branch.
+These 2026-09-02 records supersede older handoff statements about unresolved Stage K owners, old cadence frame IDs, and the previous exclusive-PC branch.
 
 ## Current repository state
 
 Branch:
-`exp/x1-arm64-exclusive-pc-attribution`
+`exp/x1-arm64-exclusive-caller-attribution`
 
-Branch HEAD before the 2026-09-02 runtime/static documentation commits:
-`ba1db576ced97264ff8be3369d0bc90eb90b3be1`
+Base before caller implementation:
+`9e60061e6821ea0e4293dd04095c4707bcb1da24`
 
-The final HEAD must be re-read from GitHub after these documentation-only commits.
+Caller implementation/static validation was completed on this branch. Re-read actual branch HEAD at the start of the next tab because documentation commits follow the source commits.
 
-No source, persistent-workflow, or baseline behavior change is part of the 2026-09-02 documentation update.
+Final caller implementation diff before documentation contains exactly:
 
-## Latest authorized Windows ARM64 build — SUCCESS
+- `src/core/x1_arm64_exclusive_caller_profiler.h`
+- `tools/adreno_lab/analyze_x1_arm64_exclusive_caller_attribution.py`
+- `tools/adreno_lab/transplant_dc95_arm64_exclusive_caller_attribution.py`
+- minimal caller-chain extension in `tools/adreno_lab/transplant_dc95_waker_stage_k_grandparent_depth.py`
+
+No temporary validator workflow remains.
+No persistent ARM workflow diff remains.
+No baseline change occurred.
+
+## Latest authorized Windows ARM64 runtime build — SUCCESS
+
+This is still the exclusive-PC runtime build; no caller build has been authorized yet.
 
 - workflow run: `33532663563`
 - job: `99939361617`
@@ -82,14 +92,14 @@ Artifact:
 - size: `31,447,663` bytes
 - SHA-256: `d36a856e8e9905e185bebfe0db8f2aeb2be6e78d76733cf332a0d8c7773b8505`
 
-The temporary one-shot dispatcher was removed immediately after dispatch. Current ARM authorization is again **NONE**.
+The one-shot dispatcher was removed after dispatch. Current ARM authorization is **NONE**.
 
-## Latest runtime source
+## Exact runtime / module identity
 
-User log:
+Latest PC-attribution runtime log:
 `eden_log(20260902-043629).txt`
 
-Confirmed runtime identity:
+Confirmed:
 
 - Eden `HEAD-dc95cd09ee-HEAD`
 - TOTK `1.2.1`
@@ -97,38 +107,24 @@ Confirmed runtime identity:
 - Vulkan
 - Qualcomm Adreno X1-85
 - main build ID `9B4E43650501A4D4489B4BBFDB740F26AF3CF85`
-- sdk build ID `B9046C31EB5D31271BE970FE732D38DF49C6AA21`
-- main runtime base `0x80e1f000`, size `0x472b000`
-- sdk runtime base `0x85bf3000`, size `0xdd9000`
+- SDK build ID `B9046C31EB5D31271BE970FE732D38DF49C6AA21`
 
-Raw bases are observational only; durable knowledge below uses `module+offset`.
+Exact dumped main and SDK NSOs were used for static disassembly. Dump mapping remains:
 
-Actual cadence for this run:
+`module+X -> NSO file offset X + 0x100`
+
+The dumped module images are already decompressed.
+
+Actual cadence for the latest PC runtime:
 
 - report frames `480..1800`: `swap=2`
 - report frames `1920..2400`: `swap=3`
 
-Do not reuse old-run frame numbers.
+Never reuse cadence frame numbers blindly across runs.
 
-## Exact local NSO dumps used for static analysis
+## Stage K semantic owners — CLOSED
 
-Exact archive remained available locally during the 2026-09-02 analysis:
-`sdk-B9046C31EB5D31271BE970FE732D38DF49C6AA21(1).zip`
-
-Required exact modules:
-
-- main: `9B4E43650501A4D4489B4BBFDB740F26AF3CF85`
-- sdk: `B9046C31EB5D31271BE970FE732D38DF49C6AA21`
-
-Dump layout already validated:
-
-`module+X -> NSO file offset X + 0x100`
-
-The dumped module images are already decompressed. Do not decompress them again.
-
-## Stage K non-common owner mapping — CLOSED
-
-All recurring non-common work-target pairs are semantically mapped:
+All recurring non-common work-target pairs are mapped:
 
 1. `main+0x96e2a8 -> main+0x26936d0`
    = **gsys::SystemTask internal work/phase dispatcher**
@@ -137,208 +133,178 @@ All recurring non-common work-target pairs are semantically mapped:
 3. `main+0x244fc20 -> main+0x2ad6b20`
    = **ActorAIGroupMgr::Job**
 
-Runtime correlation keeps SystemTask and EventModuleSubWorker higher priority than ActorAIGroupMgr::Job.
+Do not reopen these identities merely to add stack depth.
 
-Do not reopen these owner identities merely to add stack depth.
+## ARM64 Dynarmic exclusive implementation — CLOSED FACT
 
-## ARM64 Dynarmic exclusive path — established implementation fact
+Exact dc95 ARM64 Dynarmic exclusive reads/writes are callback based rather than x64-style inline fastmem-exclusive handling.
 
-For exact dc95 ARM64 Dynarmic, guest exclusive memory operations use callback paths rather than x64-style inline fastmem exclusive handling.
+Observed path includes:
 
-The project added observation-only selected-producer attribution for:
+- LDXR-family -> ARM64 callback trampoline -> global monitor `ReadAndMark`
+- STXR-family -> ARM64 callback trampoline -> global monitor `DoExclusiveOperation` -> Eden exclusive memory callback / host atomic CAS
 
-- STXR attempts/success/failure/time;
-- LDXR `ReadAndMark` attempts/time/size distribution;
-- sampled exact 32-bit LDXR guest PCs via Dynarmic IR location descriptors.
+Current upstream ARM64 Dynarmic also retains callback-only exclusive handling.
 
-Existing exact totals and sampled PC attribution are separate.
+## Exclusive total-cost runtime — CLOSED
 
-## STXR runtime — CLOSED
+STXR-only and LDXR+STXR runtime established:
 
-Evidence excludes the initial retry-storm hypothesis:
+- no STXR retry storm;
+- no dramatic STXR single-call latency explosion;
+- LDXR `ReadAndMark` accounts for roughly 47% of measured exclusive read+write time;
+- selected-producer combined exclusive aggregate CPU increases roughly `1.32x` in slow windows;
+- principal amplification is operation-count growth, not per-operation latency growth;
+- roughly 94-96% of measured exclusive time is 32-bit traffic;
+- representative slow windows place exclusive read+write near 10-12% of selected-producer CPU wall.
 
-- STXR failure rate stays low;
-- no dramatic per-call STXR latency increase in slow windows;
-- STXR callback by itself is only a minority of selected-producer CPU time.
+Exclusive handling is a material shared cost but not by itself the sole slowdown owner.
 
-Do not reopen STXR retry storm without new evidence.
+## Exact 32-bit LDXR PC attribution — CLOSED
 
-## LDXR + STXR total cost — CLOSED
+`[X1-XEXCLPC]` runtime used:
 
-Prior exact runtime established:
-
-- LDXR `ReadAndMark` is about **47%** of measured exclusive read+write time;
-- combined selected-producer exclusive read+write aggregate CPU increased from roughly `3.458 ms/frame` to `4.571 ms/frame`, about **1.322x**;
-- this is aggregate producer CPU, not serial frame stall;
-- the principal amplification is operation-count growth, not a large single-operation latency spike;
-- roughly **94-96%** of measured exclusive time is 32-bit traffic;
-- representative slow windows place exclusive read+write around `10-12%` of selected-producer CPU wall.
-
-Thus total exclusive cost is material but is not the sole slowdown owner.
-
-## Exact 32-bit guest-PC runtime attribution — CLOSED
-
-The latest build adds `[X1-XEXCLPC]`:
-
-- selected Stage F producers only;
+- two selected Stage F producers only;
 - 32-bit LDXR only;
-- exact guest PC from `ImmCurrentLocationDescriptor()`;
+- exact guest PC from Dynarmic location descriptor;
 - 1/16 sampling;
-- fixed bounded table;
-- top 12 sites / 120-frame report;
-- existing exact `[X1-XEXCL]` totals unchanged.
+- bounded top-N report every 120 frames;
+- exact `[X1-XEXCL]` totals kept separate.
 
-## Dominant Nintendo SDK sites — EXACTLY IDENTIFIED
+### Dominant SDK sites
 
-The dominant sampled runtime addresses normalize to:
+Exact static identities:
 
-- `sdk+0x131754`
-- `sdk+0x13181c`
-
-Exact SDK dynamic-symbol reconstruction proves:
-
-- `sdk+0x131734` = `nn::os::detail::InternalCriticalSectionImplByHorizon::Enter()`
-- `sdk+0x131804` = `nn::os::detail::InternalCriticalSectionImplByHorizon::Leave()`
-
-Therefore:
-
-- `sdk+0x131754` is the `LDAXR` loop inside `Enter()`
-- `sdk+0x13181c` is the `LDAXR` loop inside `Leave()`
-
-Exact SDK exports:
-
+- `sdk+0x131754` = first `LDAXR` inside `nn::os::detail::InternalCriticalSectionImplByHorizon::Enter()`
+- `sdk+0x13181c` = `LDAXR` inside `nn::os::detail::InternalCriticalSectionImplByHorizon::Leave()`
 - `sdk+0x127e20` = `nn::os::LockMutex`
 - `sdk+0x127ee0` = `nn::os::UnlockMutex`
 
-The static path is therefore:
+Thus the largest shared 32-bit exclusive sites are real Nintendo SDK critical-section operations.
 
-`nn::os::LockMutex -> InternalCriticalSectionImplByHorizon::Enter -> sdk+0x131754`
+This proves synchronization-operation density growth, not lock-contention root causation.
 
-`nn::os::UnlockMutex -> InternalCriticalSectionImplByHorizon::Leave -> sdk+0x13181c`
+## gsys::SystemTask child-work synchronization — DIRECTLY CONNECTED
 
-Slow windows contain substantially more samples at these SDK sites. This proves increased synchronization-operation density, **not** lock-contention root causation.
-
-## gsys::SystemTask child-work synchronization — DIRECTLY CLOSED
-
-Two main-module LDXR sites rise sharply at the swap2 -> swap3 transition:
+Slow-emergent main-module LDXR sites:
 
 - `main+0x9715e0`
 - `main+0x98245c`
 
-Representative sample jump:
-
-frame 1800 / swap2:
-
-- `main+0x9715e0`: P0 `515`, P1 `353`
-- `main+0x98245c`: P0 `560`, P1 `370`
-
-frame 1920 / swap3:
-
-- `main+0x9715e0`: P0 `1994`, P1 `1825`
-- `main+0x98245c`: P0 `1948`, P1 `1784`
-
-SystemTask Stage K work ticks rise at the same transition:
-
-frame 1800 / swap2:
-
-- P0 `2,437,847`
-- P1 `2,550,047`
-
-frame 1920 / swap3:
-
-- P0 `4,371,820`
-- P1 `4,608,639`
-
-Exact main static call chain:
+Exact static chain:
 
 `gsys::SystemTask main+0x96e2a8`
 ` -> main+0x96e674`
 ` -> main+0x970160`
-` -> internal child-work processing`
+` -> child-work processing`
 
-`main+0x9715e0` is inside the SystemTask child-work branch reached through `main+0x9713d0`; it atomically updates a child-work `+0x58` 32-bit shared index/counter.
+- `main+0x9715e0` atomically updates child-work `+0x58` shared index/counter.
+- `main+0x98245c` atomically updates child-work `+0xb8` shared progress/index counter.
 
-`main+0x98245c` is inside the branch reached through `main+0x981248`; it atomically updates a child-work `+0xb8` 32-bit progress/index counter.
+These sites rise sharply at the same swap2 -> swap3 transition as SystemTask Stage K work ticks.
 
-Thus the slow-emergent main atomic sites are **statically proven SystemTask descendants**. SystemTask is no longer merely a high-level runtime owner label; a concrete child-work distribution/progress synchronization mechanism is identified.
+The same SystemTask subtree directly calls `nn::os::LockMutex/UnlockMutex`, so SystemTask definitely contributes to dominant SDK critical-section traffic.
 
-## SystemTask also reaches SDK LockMutex/UnlockMutex
+Do not claim it owns all SDK traffic until caller partition is observed.
 
-Within the same `main+0x970160` subtree:
+## Shared dependency dispatcher correction
 
-- `main+0x970e28` = BL LockMutex
-- `main+0x970e5c` = BL UnlockMutex
-- `main+0x970e9c` = BL LockMutex
-- `main+0x970ed0` = BL UnlockMutex
-- `main+0x9711a8` = BL LockMutex
-- `main+0x9711e8` = BL UnlockMutex
+Correct exact BL instruction addresses:
 
-Therefore SystemTask definitely contributes to the SDK critical-section traffic.
+- `main+0x86a52c` = LockMutex
+- `main+0x86a5ec` = UnlockMutex
+- `main+0x86a674` = LockMutex
+- `main+0x86a7c0` = UnlockMutex
 
-Still unresolved: what fraction of the total dominant SDK `Enter/Leave` traffic comes from SystemTask versus EventModuleSubWorker or other callers.
+Older `main+0x86a530` / `main+0x86a678` BL labels were off by four bytes.
 
-## Shared dependency dispatcher — exact LockMutex address correction
+Nearby local LDXR sites are comparatively flatter than dominant SDK Enter/Leave growth, so added SDK traffic is not all attributable to this shared dispatcher.
 
-Exact disassembly supersedes older off-by-four documentation.
+## Exclusive caller attribution — IMPLEMENTED / STATICALLY VALIDATED
 
-Correct BL instruction addresses:
+New runtime prefix:
+`[X1-XEXCLCALL]`
 
-- `main+0x86a52c` = `nn::os::LockMutex`
-- `main+0x86a5ec` = `nn::os::UnlockMutex`
-- `main+0x86a674` = `nn::os::LockMutex`
-- `main+0x86a7c0` = `nn::os::UnlockMutex`
+### Exact stack proof
 
-Older references to `main+0x86a530` and `main+0x86a678` as the BL sites are incorrect.
+For exact SDK build `B9046C31...`:
 
-Nearby shared-dispatcher LDXR PCs:
+- `nn::os::LockMutex` saves the higher-level external LR at `LockMutex-SP + 0x8`.
+- the path into `InternalCriticalSectionImplByHorizon::Enter()` preserves that LR.
+- `Enter()` lowers SP by `0x30` before the first LDAXR at `sdk+0x131754`.
 
-- `main+0x86a510`
-- `main+0x86a558`
-- `main+0x86a65c`
-- `main+0x86a698`
+Therefore, exactly at that target LDAXR:
 
-Their sampled counts remain comparatively flat across the cadence transition. Therefore the increase in dominant SDK critical-section traffic cannot be assigned entirely to this dispatcher.
+`guest SP + 0x38 = higher-level nn::os::LockMutex caller LR`
 
-## Other observed atomic sites
+### Guest-SP transport
 
-- `main+0x7d3648` = **ActorAIGroupMgr::Job downstream** atomic-counter path.
-- `main+0xddea3c` = secondary atomic site in `main+0xdde8e0`, direct caller `main+0x7837f0`; exact semantic owner still unresolved.
-- `main+0x22468ac` / `main+0x224697c` = generic/shared function region with many reconstructed function-pointer references; do not assign a unique owner without proof.
+No IR opcode or x64 backend modification was required.
 
-## Current causal frontier
+Exact dc95 ARM64 maintains guest SP in `A64JitState::sp`. The caller layer adds one diagnostic load of this field into callback argument X3 before the exclusive-read relocation. The existing ARM64 exclusive trampoline preserves the argument while replacing X0 with UserConfig and tail-branching to the callback function.
 
-The strongest currently proven chain is:
+### Sampling scope
 
-GPU command starvation
--> selected producer CPU growth
--> SystemTask + EventModuleSubWorker are the high-priority producer work owners
--> slow windows contain more 32-bit exclusive operations
--> dominant shared primitive is Nintendo SDK InternalCriticalSection Enter/Leave
--> SystemTask's own child-work progress/index atomics rise sharply at cadence slowdown
--> the same SystemTask subtree directly reaches SDK LockMutex/UnlockMutex
--> **remaining frontier: partition dominant SDK critical-section traffic by external higher-level caller/owner**.
+- existing two selected producers only;
+- only 32-bit exclusive read;
+- only exact target `sdk+0x131754`;
+- independent `1/64` sample;
+- only after target + sample gates, one guarded `Read64(SP+0x38)`;
+- stack range checked first;
+- 256 fixed caller slots / producer;
+- probe limit 8;
+- top 12 caller LRs / 120 frames;
+- invalid-stack and dropped-sample accounting;
+- runtime SDK range registered dynamically;
+- existing exact totals and 1/16 PC samples unchanged.
 
-Do not simplify this to “lock contention is the root cause.” STXR failure evidence argues against a retry storm. The proven effect is increased work/synchronization-operation density.
+### Exact-dc95 Ubuntu validation
+
+Temporary validator run history:
+
+- `33595304786`: fixture failed before caller transform because synthetic Stage F lacked the accessor normally inserted by Stage G.
+- `33595436819`: temporary workflow YAML parse failure; no job executed.
+- `33595564876`: **SUCCESS**.
+
+Successful validation confirmed unchanged `ReadAndMark` / `DoExclusiveOperation` shape, one guest-SP load, one target test, one guarded stack read path, one SDK range registration, Python syntax, and no behavior-changing scheduling/GPU/cadence tokens.
+
+Temporary validator workflow was deleted after success.
 
 ## Immediate next action
 
 Current ARM64 authorization:
 **NONE**
 
-Do offline design/static validation only.
+Stop here until a fresh explicit authorization is provided.
 
-Design the narrowest caller-attribution layer for dominant SDK `InternalCriticalSection::Enter` / `nn::os::LockMutex` traffic, limited to the two existing selected producers.
+If authorized, perform exactly one Windows ARM64 build/run attempt from:
 
-Target output should partition sampled SDK lock traffic into durable higher-level `module+offset` callers so a future single authorized runtime can distinguish:
+`exp/x1-arm64-exclusive-caller-attribution`
 
-- gsys::SystemTask contribution;
-- EventModuleSubWorker contribution;
-- ActorAIGroupMgr::Job contribution;
-- other callers.
+Expected runtime evidence:
 
-A promising exact-SDK stack-layout lead is that at the hot Enter LDAXR the external `nn::os::LockMutex` caller LR may be recoverable from guest Enter-SP + `0x38`. This must be statically proved before implementation; do not assume it from arithmetic alone.
+- `[X1-XEXCLCALL]`
+- `[X1-XEXCLPC]`
+- `[X1-XEXCL]`
+- `[X1-WAKERH]`
+- Stage K work records
+- cadence records from the same run
 
-Do not build ARM64 until fresh authorization is explicitly given.
+Use `analyze_x1_arm64_exclusive_caller_attribution.py` with explicit fast/slow frame lists from that run.
+
+Normalize dominant caller LRs to `module+offset`, statically map them with the exact main NSO, then partition SDK Enter/LockMutex traffic among:
+
+- gsys::SystemTask
+- EventModuleSubWorker
+- ActorAIGroupMgr::Job
+- other callers
+
+If one family dominates slow-added lock traffic, descend only into that family. If traffic is broad across unrelated owners, treat callback/global-monitor exclusive handling as a shared ARM64 amplification tax rather than inventing one game-side owner.
+
+Do not auto-build.
+Do not rerun on failure.
+Do not create Stage L.
+Do not implement behavior-changing optimization before this caller partition is known.
 
 ## Closed historical findings — do not reopen without new evidence
 
