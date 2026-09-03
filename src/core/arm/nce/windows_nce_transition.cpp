@@ -11,28 +11,16 @@
 
 namespace Core::NCE {
 
+static_assert(offsetof(GuestContext, cpu_registers) == 0x000);
+static_assert(offsetof(GuestContext, sp) == GuestContextSp);
+static_assert(offsetof(GuestContext, fpcr) == 0x108);
+static_assert(offsetof(GuestContext, fpsr) == 0x10C);
+static_assert(offsetof(GuestContext, vector_registers) == 0x110);
+static_assert(offsetof(GuestContext, pstate) == 0x310);
 static_assert(offsetof(GuestContext, host_ctx) == GuestContextHostContext);
 static_assert(offsetof(HostContext, host_saved_regs) == HostContextRegs);
 static_assert(offsetof(HostContext, host_saved_vregs) == HostContextVregs);
 static_assert(offsetof(HostContext, host_sp) == HostContextSpTpidrEl0);
-
-bool WindowsNceTransition::IsEntryBreakpoint(const EXCEPTION_POINTERS& exception) noexcept {
-    if (exception.ExceptionRecord == nullptr || exception.ContextRecord == nullptr) {
-        return false;
-    }
-    if (exception.ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT) {
-        return false;
-    }
-    return exception.ExceptionRecord->ExceptionAddress ==
-           reinterpret_cast<void*>(&WindowsNceEntryBreakpoint);
-}
-
-void WindowsNceTransition::PrepareGuestEntry(const GuestContext& guest,
-                                             ARM64_NT_CONTEXT& context) noexcept {
-    context.ContextFlags =
-        CONTEXT_ARM64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT;
-    WindowsExceptionContext::LoadGuestState(guest, context);
-}
 
 void WindowsNceTransition::RedirectToHost(ARM64_NT_CONTEXT& interrupted, GuestContext& guest,
                                           bool save_guest_state,
