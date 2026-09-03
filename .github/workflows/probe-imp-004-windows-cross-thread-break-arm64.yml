@@ -1,0 +1,44 @@
+name: Probe IMP-004 Windows Cross-Thread Break ARM64
+
+on:
+  push:
+    branches:
+      - exp/imp-004-windows-cross-thread-break
+    paths:
+      - src/core/arm/nce/windows_cross_thread_break.h
+      - .github/workflows/probe-imp-004-windows-cross-thread-break-arm64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-windows-cross-thread-break:
+    runs-on: windows-11-arm
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile actual Eden cross-thread break helper
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 10
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 11
+          call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          if errorlevel 1 exit /b 12
+          > imp004_probe.cpp echo #include "src/core/arm/nce/windows_cross_thread_break.h"
+          >> imp004_probe.cpp echo int main() {
+          >> imp004_probe.cpp echo     Core::NCE::WindowsCrossThreadBreak delivery;
+          >> imp004_probe.cpp echo     (void)delivery.IsBound();
+          >> imp004_probe.cpp echo     (void)delivery.BindCurrentThread();
+          >> imp004_probe.cpp echo     (void)delivery.QueueBreak(reinterpret_cast^<void*^>(0x1000));
+          >> imp004_probe.cpp echo     return 0;
+          >> imp004_probe.cpp echo }
+          cl /nologo /std:c++20 /W4 /permissive- /c imp004_probe.cpp /Fo:imp004_probe.obj
+          if errorlevel 1 exit /b 13
+          if not exist imp004_probe.obj exit /b 14
+          echo WINDOWS_CROSS_THREAD_BREAK_COMPILE=PASS
