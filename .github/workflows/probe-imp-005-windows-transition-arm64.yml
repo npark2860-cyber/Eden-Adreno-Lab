@@ -1,0 +1,48 @@
+name: Probe IMP-005 Windows NCE Transition ARM64
+
+on:
+  push:
+    branches:
+      - exp/imp-005-windows-generated-transition-abi
+    paths:
+      - src/core/arm/nce/windows_nce_transition.h
+      - src/core/arm/nce/windows_nce_transition.cpp
+      - src/core/arm/nce/windows_cross_thread_break.h
+      - .github/workflows/probe-imp-005-windows-transition-arm64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-windows-transition:
+    runs-on: windows-11-arm
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile actual Eden transition source
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 10
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 11
+          call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          if errorlevel 1 exit /b 12
+          cl /nologo /std:c++20 /O2 /GS- /W4 /permissive- /c /Isrc src\core\arm\nce\windows_nce_transition.cpp /Fo:windows_nce_transition.obj
+          if errorlevel 1 exit /b 13
+          if not exist windows_nce_transition.obj exit /b 14
+          echo WINDOWS_NCE_TRANSITION_COMPILE=PASS
+
+      - name: Print actual generated getter listing
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
+          call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          cl /nologo /std:c++20 /O2 /GS- /W4 /permissive- /c /Isrc /FAs /Fawindows_nce_transition.asm /Fo:windows_nce_transition_listing.obj src\core\arm\nce\windows_nce_transition.cpp
+          if errorlevel 1 exit /b 15
+          type windows_nce_transition.asm
