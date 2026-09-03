@@ -36,6 +36,12 @@ volatile LONG veh_seen{};
 volatile LONG veh_host_stack{};
 volatile LONG break_ok{};
 
+void Mark(const char* text) noexcept {
+    DWORD written{};
+    WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), text, static_cast<DWORD>(std::strlen(text)), &written,
+              nullptr);
+}
+
 bool StackIntact() {
     const auto* bytes = static_cast<const unsigned char*>(stack_mem);
     for (SIZE_T i = 0; i < StackSize; ++i) {
@@ -48,9 +54,16 @@ bool StackIntact() {
 
 LONG CALLBACK Veh(EXCEPTION_POINTERS* exception) {
     if (!WindowsNceTransition::IsEntryBreakpoint(*exception)) {
+        if (exception != nullptr && exception->ExceptionRecord != nullptr &&
+            exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT) {
+            Mark("VEH_BREAKPOINT_MISMATCH=YES\n");
+        } else {
+            Mark("VEH_OTHER_EXCEPTION=YES\n");
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    Mark("VEH_ENTRY_MATCH=YES\n");
     InterlockedExchange(&veh_seen, 1);
 
     std::uint64_t local{};
@@ -63,11 +76,14 @@ LONG CALLBACK Veh(EXCEPTION_POINTERS* exception) {
 
     WindowsNceTransition::PrepareGuestEntry(
         guest, *reinterpret_cast<ARM64_NT_CONTEXT*>(exception->ContextRecord));
+    Mark("VEH_GUEST_CONTEXT_READY=YES\n");
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 
 bool Transform(ARM64_NT_CONTEXT& context, void*) noexcept {
+    Mark("BREAK_TRANSFORM_ENTER=YES\n");
     WindowsNceTransition::RedirectToHost(context, guest, true, ReturnMarker);
+    Mark("BREAK_TRANSFORM_READY=YES\n");
     return true;
 }
 
@@ -75,13 +91,16 @@ DWORD WINAPI Helper(void*) {
     const ULONGLONG deadline = GetTickCount64() + 5000;
     while (InterlockedCompareExchange(&entered, 0, 0) == 0) {
         if (GetTickCount64() >= deadline) {
+            Mark("HELPER_GUEST_TIMEOUT=YES\n");
             return 2;
         }
         SwitchToThread();
     }
 
-    InterlockedExchange(&break_ok,
-                        breaker.SuspendTransformResume(&Transform, nullptr) ? 1 : -1);
+    Mark("HELPER_SAW_GUEST=YES\n");
+    const bool result = breaker.SuspendTransformResume(&Transform, nullptr);
+    InterlockedExchange(&break_ok, result ? 1 : -1);
+    Mark(result ? "HELPER_BREAK_COMPLETE=YES\n" : "HELPER_BREAK_COMPLETE=NO\n");
     return 0;
 }
 
@@ -89,6 +108,7 @@ DWORD WINAPI Helper(void*) {
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    Mark("SMOKE_START=YES\n");
 
     const auto teb = reinterpret_cast<std::uint64_t>(NtCurrentTeb());
     if (__getReg(18) != teb) {
@@ -100,6 +120,7 @@ int main() {
         std::printf("BIND_CURRENT_THREAD=FAIL\n");
         return 3;
     }
+    Mark("THREAD_BOUND=YES\n");
 
     stack_mem = VirtualAlloc(nullptr, StackSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (stack_mem == nullptr) {
@@ -129,6 +150,7 @@ int main() {
     if (veh == nullptr) {
         return 5;
     }
+    Mark("VEH_INSTALLED=YES\n");
 
     const auto host_x19 = __getReg(19);
     const auto host_d8 = std::bit_cast<std::uint64_t>(__getRegFp(8));
@@ -138,7 +160,9 @@ int main() {
         return 6;
     }
 
+    Mark("BEFORE_FIXED_ENTRY=YES\n");
     const auto result = WindowsNceEnterGuest(&guest);
+    Mark("AFTER_FIXED_ENTRY=YES\n");
     WaitForSingleObject(helper, 5000);
 
     std::uint64_t saved_v8[2]{};
