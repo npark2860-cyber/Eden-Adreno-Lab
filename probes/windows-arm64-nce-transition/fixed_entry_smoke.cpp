@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/arm/nce/current_nce_context.h"
 #include "core/arm/nce/windows_cross_thread_break.h"
 #include "core/arm/nce/windows_nce_transition.h"
 
@@ -19,6 +20,7 @@ extern "C" [[noreturn]] void Imp005GuestLoop(volatile LONG* entered);
 namespace {
 
 constexpr SIZE_T StackSize = 64 * 1024;
+constexpr SIZE_T GetterScratchSize = 0x20;
 constexpr unsigned char Canary = 0xA5;
 constexpr std::uint64_t GuestX16 = 0x16161616A5A5A5A5ull;
 constexpr std::uint64_t GuestX17 = 0x171717175A5A5A5Aull;
@@ -34,6 +36,8 @@ constexpr DWORD GuestNzcv = 0xA0000000u;
 GuestContext guest{};
 WindowsCrossThreadBreak breaker{};
 void* stack_mem{};
+std::uintptr_t guest_sp{};
+void* observed_current_context{};
 volatile LONG entered{};
 volatile LONG break_ok{};
 
@@ -43,9 +47,16 @@ void Mark(const char* text) noexcept {
               nullptr);
 }
 
-bool StackIntact() {
+bool StackOutsideGetterScratchIntact() {
     const auto* bytes = static_cast<const unsigned char*>(stack_mem);
+    const auto low = reinterpret_cast<std::uintptr_t>(stack_mem);
+    const auto scratch_low = guest_sp - GetterScratchSize;
+    const auto scratch_high = guest_sp;
     for (SIZE_T i = 0; i < StackSize; ++i) {
+        const auto address = low + i;
+        if (address >= scratch_low && address < scratch_high) {
+            continue;
+        }
         if (bytes[i] != Canary) {
             return false;
         }
@@ -100,9 +111,8 @@ int main() {
         return 4;
     }
     std::memset(stack_mem, Canary, StackSize);
-    const auto guest_sp =
-        (reinterpret_cast<std::uintptr_t>(stack_mem) + StackSize - 0x100) &
-        ~std::uintptr_t{0xF};
+    guest_sp = (reinterpret_cast<std::uintptr_t>(stack_mem) + StackSize - 0x100) &
+               ~std::uintptr_t{0xF};
 
     ARM64_NT_CONTEXT baseline{};
     RtlCaptureContext(reinterpret_cast<PCONTEXT>(&baseline));
@@ -110,6 +120,7 @@ int main() {
     guest.sp = guest_sp;
     guest.pc = reinterpret_cast<std::uintptr_t>(&Imp005GuestLoop);
     guest.cpu_registers[0] = reinterpret_cast<std::uintptr_t>(&entered);
+    guest.cpu_registers[2] = reinterpret_cast<std::uintptr_t>(&observed_current_context);
     guest.cpu_registers[16] = GuestX16;
     guest.cpu_registers[17] = GuestX17;
     guest.cpu_registers[18] = GuestX18;
@@ -121,18 +132,25 @@ int main() {
     guest.fpcr = baseline.Fpcr;
     guest.fpsr = baseline.Fpsr;
 
+    auto* expected_current_context =
+        reinterpret_cast<CurrentNceContext::Parameters*>(&guest);
+    CurrentNceContext::Install(expected_current_context);
+
     const auto host_x19 = __getReg(19);
     const auto host_d8 = std::bit_cast<std::uint64_t>(__getRegFp(8));
 
     HANDLE helper = CreateThread(nullptr, 0, &Helper, nullptr, 0, nullptr);
     if (helper == nullptr) {
+        CurrentNceContext::Clear();
         return 5;
     }
 
     Mark("BEFORE_FIXED_ENTRY=YES\n");
-    const auto result = WindowsNceEnterGuest(&guest, reinterpret_cast<const void*>(&Imp005EntryTrampoline));
+    const auto result =
+        WindowsNceEnterGuest(&guest, reinterpret_cast<const void*>(&Imp005EntryTrampoline));
     Mark("AFTER_FIXED_ENTRY=YES\n");
     WaitForSingleObject(helper, 5000);
+    CurrentNceContext::Clear();
 
     std::uint64_t saved_v8[2]{};
     std::memcpy(saved_v8, &guest.vector_registers[8], sizeof(saved_v8));
@@ -145,9 +163,10 @@ int main() {
     const bool guest_v8_ok = saved_v8[0] == V8Lo && saved_v8[1] == V8Hi;
     const bool guest_x18_virtual_ok = guest.cpu_registers[18] == GuestX18;
     const bool guest_nzcv_ok = (guest.pstate & NzcvMask) == GuestNzcv;
+    const bool getter_ok = observed_current_context == expected_current_context;
     const bool host_abi_ok = __getReg(18) == teb && __getReg(19) == host_x19 &&
                              std::bit_cast<std::uint64_t>(__getRegFp(8)) == host_d8;
-    const bool canary_ok = StackIntact();
+    const bool stack_bounded_ok = StackOutsideGetterScratchIntact();
 
     std::printf("BREAK_OK=%s\n", break_ok == 1 ? "YES" : "NO");
     std::printf("RETURN_MARKER_OK=%s\n", return_ok ? "YES" : "NO");
@@ -155,11 +174,13 @@ int main() {
     std::printf("GUEST_V8_OK=%s\n", guest_v8_ok ? "YES" : "NO");
     std::printf("GUEST_VIRTUAL_X18_OK=%s\n", guest_x18_virtual_ok ? "YES" : "NO");
     std::printf("GUEST_NZCV_OK=%s\n", guest_nzcv_ok ? "YES" : "NO");
+    std::printf("GENERATED_TLS_GETTER_OK=%s\n", getter_ok ? "YES" : "NO");
     std::printf("HOST_ABI_X18_OK=%s\n", host_abi_ok ? "YES" : "NO");
-    std::printf("GUEST_STACK_CANARY_INTACT=%s\n", canary_ok ? "YES" : "NO");
+    std::printf("GETTER_STACK_BOUNDED_32B=%s\n", stack_bounded_ok ? "YES" : "NO");
 
     const bool pass = break_ok == 1 && return_ok && guest_gpr_ok && guest_v8_ok &&
-                      guest_x18_virtual_ok && guest_nzcv_ok && host_abi_ok && canary_ok;
+                      guest_x18_virtual_ok && guest_nzcv_ok && getter_ok && host_abi_ok &&
+                      stack_bounded_ok;
     std::printf("WINDOWS_NCE_FIXED_ENTRY_SMOKE=%s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 20;
 }
