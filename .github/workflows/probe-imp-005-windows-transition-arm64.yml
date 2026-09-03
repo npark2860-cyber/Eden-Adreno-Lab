@@ -7,6 +7,7 @@ on:
     paths:
       - src/core/arm/nce/windows_nce_transition.h
       - src/core/arm/nce/windows_nce_transition.cpp
+      - src/core/arm/nce/windows_nce_entry.asm
       - src/core/arm/nce/windows_cross_thread_break.h
       - .github/workflows/probe-imp-005-windows-transition-arm64.yml
   workflow_dispatch:
@@ -15,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  compile-windows-transition:
+  fixed-entry-transition-smoke:
     runs-on: windows-11-arm
     timeout-minutes: 10
 
@@ -28,29 +29,78 @@ jobs:
         run: |
           C:\vcpkg\vcpkg.exe install fmt:arm64-windows boost-intrusive:arm64-windows
           if errorlevel 1 exit /b 10
-          if not exist C:\vcpkg\installed\arm64-windows\include\fmt\ranges.h exit /b 11
-          if not exist C:\vcpkg\installed\arm64-windows\include\boost\intrusive\rbtree.hpp exit /b 12
 
-      - name: Compile actual Eden transition source
+      - name: Build and run actual Eden transition smoke
         shell: cmd
         run: |
           set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-          if not exist "%VSWHERE%" exit /b 13
+          if not exist "%VSWHERE%" exit /b 11
           for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
-          if not defined VSROOT exit /b 14
+          if not defined VSROOT exit /b 12
           call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          if errorlevel 1 exit /b 13
+
+          armasm64 -nologo src\core\arm\nce\windows_nce_entry.asm windows_nce_entry.obj
+          if errorlevel 1 exit /b 14
+
+          > guest_loop.asm echo         AREA    ^|.text^|, CODE, READONLY
+          >>guest_loop.asm echo         EXPORT  Imp005GuestLoop
+          >>guest_loop.asm echo Imp005GuestLoop PROC
+          >>guest_loop.asm echo         mov     w1, #1
+          >>guest_loop.asm echo         str     w1, [x0]
+          >>guest_loop.asm echo guest_spin
+          >>guest_loop.asm echo         b       guest_spin
+          >>guest_loop.asm echo         ENDP
+          >>guest_loop.asm echo         END
+          armasm64 -nologo guest_loop.asm guest_loop.obj
           if errorlevel 1 exit /b 15
-          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /c /Isrc /IC:\vcpkg\installed\arm64-windows\include src\core\arm\nce\windows_nce_transition.cpp /Fo:windows_nce_transition.obj
-          if errorlevel 1 exit /b 16
-          if not exist windows_nce_transition.obj exit /b 17
-          echo WINDOWS_NCE_TRANSITION_COMPILE=PASS
 
-      - name: Print actual generated getter listing
+          > imp005_transition_smoke.cpp echo #define WIN32_LEAN_AND_MEAN
+          >>imp005_transition_smoke.cpp echo #include ^<windows.h^>
+          >>imp005_transition_smoke.cpp echo #include ^<intrin.h^>
+          >>imp005_transition_smoke.cpp echo #include ^<bit^>
+          >>imp005_transition_smoke.cpp echo #include ^<cstdint^>
+          >>imp005_transition_smoke.cpp echo #include ^<cstdio^>
+          >>imp005_transition_smoke.cpp echo #include ^<cstring^>
+          >>imp005_transition_smoke.cpp echo #include "core/arm/nce/windows_cross_thread_break.h"
+          >>imp005_transition_smoke.cpp echo #include "core/arm/nce/windows_nce_transition.h"
+          >>imp005_transition_smoke.cpp echo using namespace Core;
+          >>imp005_transition_smoke.cpp echo using namespace Core::NCE;
+          >>imp005_transition_smoke.cpp echo extern "C" [[noreturn]] void Imp005GuestLoop(volatile LONG* entered);
+          >>imp005_transition_smoke.cpp echo namespace {
+          >>imp005_transition_smoke.cpp echo constexpr SIZE_T StackSize = 64 * 1024;
+          >>imp005_transition_smoke.cpp echo constexpr unsigned char Canary = 0xA5;
+          >>imp005_transition_smoke.cpp echo constexpr std::uint64_t GuestX19 = 0x19191919A5A5A5A5ull;
+          >>imp005_transition_smoke.cpp echo constexpr std::uint64_t GuestX30 = 0x303030305A5A5A5Aull;
+          >>imp005_transition_smoke.cpp echo constexpr std::uint64_t ReturnMarker = 0x494D503030354F4Bull;
+          >>imp005_transition_smoke.cpp echo constexpr std::uint64_t V8Lo = 0x8877665544332211ull;
+          >>imp005_transition_smoke.cpp echo constexpr std::uint64_t V8Hi = 0x1122334455667788ull;
+          >>imp005_transition_smoke.cpp echo constexpr DWORD Nzcv = 0xA0000000u;
+          >>imp005_transition_smoke.cpp echo GuestContext guest{};
+          >>imp005_transition_smoke.cpp echo WindowsCrossThreadBreak breaker{};
+          >>imp005_transition_smoke.cpp echo void* stack_mem{};
+          >>imp005_transition_smoke.cpp echo volatile LONG entered{};
+          >>imp005_transition_smoke.cpp echo volatile LONG veh_seen{};
+          >>imp005_transition_smoke.cpp echo volatile LONG veh_host_stack{};
+          >>imp005_transition_smoke.cpp echo volatile LONG break_ok{};
+          >>imp005_transition_smoke.cpp echo bool StackIntact() { const auto* p = static_cast^<const unsigned char*^>(stack_mem); for (SIZE_T i=0;i^<StackSize;++i) if (p[i] != Canary) return false; return true; }
+          >>imp005_transition_smoke.cpp echo LONG CALLBACK Veh(EXCEPTION_POINTERS* e) { if (!WindowsNceTransition::IsEntryBreakpoint(*e)) return EXCEPTION_CONTINUE_SEARCH; InterlockedExchange(&veh_seen,1); std::uint64_t local{}; const auto a=reinterpret_cast^<std::uintptr_t^>(&local); const auto* tib=reinterpret_cast^<const NT_TIB*^>(NtCurrentTeb()); const auto lo=reinterpret_cast^<std::uintptr_t^>(tib-^>StackLimit); const auto hi=reinterpret_cast^<std::uintptr_t^>(tib-^>StackBase); InterlockedExchange(&veh_host_stack,(a^>=lo ^&^& a^<hi)?1:-1); WindowsNceTransition::PrepareGuestEntry(guest,*reinterpret_cast^<ARM64_NT_CONTEXT*^>(e-^>ContextRecord)); return EXCEPTION_CONTINUE_EXECUTION; }
+          >>imp005_transition_smoke.cpp echo bool Transform(ARM64_NT_CONTEXT& c, void*) noexcept { WindowsNceTransition::RedirectToHost(c,guest,true,ReturnMarker); return true; }
+          >>imp005_transition_smoke.cpp echo DWORD WINAPI Helper(void*) { const ULONGLONG end=GetTickCount64()+5000; while (InterlockedCompareExchange(&entered,0,0)==0) { if (GetTickCount64()^>=end) return 2; SwitchToThread(); } InterlockedExchange(&break_ok, breaker.SuspendTransformResume(&Transform,nullptr)?1:-1); return 0; }
+          >>imp005_transition_smoke.cpp echo }
+          >>imp005_transition_smoke.cpp echo int main() { std::setvbuf(stdout,nullptr,_IONBF,0); const auto teb=reinterpret_cast^<std::uint64_t^>(NtCurrentTeb()); if (__getReg(18)!=teb) return 2; if (!breaker.BindCurrentThread()) return 3; stack_mem=VirtualAlloc(nullptr,StackSize,MEM_RESERVE^|MEM_COMMIT,PAGE_READWRITE); if (!stack_mem) return 4; std::memset(stack_mem,Canary,StackSize); const auto top=(reinterpret_cast^<std::uintptr_t^>(stack_mem)+StackSize-0x100) ^& ~std::uintptr_t{0xF}; guest.sp=top; guest.pc=reinterpret_cast^<u64^>(&Imp005GuestLoop); guest.cpu_registers[0]=reinterpret_cast^<u64^>(&entered); guest.cpu_registers[18]=0x1818181818181818ull; guest.cpu_registers[19]=GuestX19; guest.cpu_registers[30]=GuestX30; std::uint64_t v8[2]{V8Lo,V8Hi}; std::memcpy(&guest.vector_registers[8],v8,sizeof(v8)); guest.pstate=Nzcv; PVOID vh=AddVectoredExceptionHandler(1,&Veh); if (!vh) return 5; const auto host_x19=__getReg(19); const auto host_d8=std::bit_cast^<std::uint64_t^>(__getRegFp(8)); HANDLE helper=CreateThread(nullptr,0,&Helper,nullptr,0,nullptr); if (!helper) return 6; const auto result=WindowsNceEnterGuest(&guest); WaitForSingleObject(helper,5000); const bool result_ok=result==ReturnMarker; const bool guest_ok=guest.cpu_registers[19]==GuestX19 ^&^& guest.cpu_registers[30]==GuestX30 ^&^& guest.sp==top; std::uint64_t saved_v8[2]{}; std::memcpy(saved_v8,&guest.vector_registers[8],sizeof(saved_v8)); const bool vec_ok=saved_v8[0]==V8Lo ^&^& saved_v8[1]==V8Hi; const bool host_ok=__getReg(18)==teb ^&^& __getReg(19)==host_x19 ^&^& std::bit_cast^<std::uint64_t^>(__getRegFp(8))==host_d8; const bool canary=StackIntact(); std::printf("VEH_SEEN=%s\n",veh_seen==1?"YES":"NO"); std::printf("VEH_HOST_STACK=%s\n",veh_host_stack==1?"YES":"NO"); std::printf("BREAK_OK=%s\n",break_ok==1?"YES":"NO"); std::printf("RETURN_MARKER_OK=%s\n",result_ok?"YES":"NO"); std::printf("GUEST_STATE_OK=%s\n",guest_ok?"YES":"NO"); std::printf("GUEST_V8_OK=%s\n",vec_ok?"YES":"NO"); std::printf("HOST_ABI_X18_OK=%s\n",host_ok?"YES":"NO"); std::printf("GUEST_STACK_CANARY_INTACT=%s\n",canary?"YES":"NO"); const bool pass=veh_seen==1 ^&^& veh_host_stack==1 ^&^& break_ok==1 ^&^& result_ok ^&^& guest_ok ^&^& vec_ok ^&^& host_ok ^&^& canary; std::printf("WINDOWS_NCE_FIXED_ENTRY_SMOKE=%s\n",pass?"PASS":"FAIL"); return pass?0:20; }
+
+          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /Isrc /IC:\vcpkg\installed\arm64-windows\include imp005_transition_smoke.cpp src\core\arm\nce\windows_nce_transition.cpp windows_nce_entry.obj guest_loop.obj /Fe:imp005_transition_smoke.exe
+          if errorlevel 1 exit /b 16
+          imp005_transition_smoke.exe
+          if errorlevel 1 exit /b 17
+
+      - name: Print generated TLS getter listing
         shell: cmd
         run: |
           set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
           for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
           call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
-          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /c /Isrc /IC:\vcpkg\installed\arm64-windows\include /FAs /Fawindows_nce_transition.asm /Fo:windows_nce_transition_listing.obj src\core\arm\nce\windows_nce_transition.cpp
+          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /c /Isrc /IC:\vcpkg\installed\arm64-windows\include /FAs /Fawindows_nce_transition_listing.asm /Fo:windows_nce_transition_listing.obj src\core\arm\nce\windows_nce_transition.cpp
           if errorlevel 1 exit /b 18
-          type windows_nce_transition.asm
+          findstr /C:"GetCurrentNceContextForGeneratedCode" /C:"_tls" /C:"__tls" windows_nce_transition_listing.asm
