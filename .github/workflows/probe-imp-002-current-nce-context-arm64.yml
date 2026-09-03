@@ -1,13 +1,6 @@
 name: Probe IMP-002 CurrentNceContext ARM64
 
 on:
-  push:
-    branches:
-      - exp/imp-002-current-nce-context
-    paths:
-      - src/core/arm/nce/current_nce_context.h
-      - src/core/arm/nce/arm_nce.cpp
-      - .github/workflows/probe-imp-002-current-nce-context-arm64.yml
   workflow_dispatch:
 
 permissions:
