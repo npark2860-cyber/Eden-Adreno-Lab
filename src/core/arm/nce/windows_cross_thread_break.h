@@ -5,6 +5,7 @@
 
 #ifdef _WIN32
 
+#include <cstdint>
 #include <windows.h>
 
 namespace Core::NCE {
@@ -23,15 +24,22 @@ public:
     WindowsCrossThreadBreak& operator=(const WindowsCrossThreadBreak&) = delete;
 
     WindowsCrossThreadBreak(WindowsCrossThreadBreak&& other) noexcept
-        : m_thread{other.m_thread} {
+        : m_thread{other.m_thread}, m_host_stack_low{other.m_host_stack_low},
+          m_host_stack_high{other.m_host_stack_high} {
         other.m_thread = nullptr;
+        other.m_host_stack_low = 0;
+        other.m_host_stack_high = 0;
     }
 
     WindowsCrossThreadBreak& operator=(WindowsCrossThreadBreak&& other) noexcept {
         if (this != &other) {
             Reset();
             m_thread = other.m_thread;
+            m_host_stack_low = other.m_host_stack_low;
+            m_host_stack_high = other.m_host_stack_high;
             other.m_thread = nullptr;
+            other.m_host_stack_low = 0;
+            other.m_host_stack_high = 0;
         }
         return *this;
     }
@@ -48,6 +56,9 @@ public:
             return false;
         }
 
+        const auto* const tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+        m_host_stack_low = reinterpret_cast<std::uintptr_t>(tib->StackLimit);
+        m_host_stack_high = reinterpret_cast<std::uintptr_t>(tib->StackBase);
         m_thread = duplicate;
         return true;
     }
@@ -74,12 +85,8 @@ public:
 
         bool success =
             GetThreadContext(m_thread, reinterpret_cast<PCONTEXT>(&context)) != FALSE;
-        bool apply_context = false;
-        if (success) {
-            apply_context = transform(context, opaque);
-            if (apply_context) {
-                success = SetThreadContext(m_thread, reinterpret_cast<PCONTEXT>(&context)) != FALSE;
-            }
+        if (success && transform(context, opaque)) {
+            success = SetThreadContext(m_thread, reinterpret_cast<PCONTEXT>(&context)) != FALSE;
         }
 
         const DWORD resume_count = ResumeThread(m_thread);
@@ -88,6 +95,11 @@ public:
         }
 
         return success;
+    }
+
+    [[nodiscard]] bool IsHostStackPointer(DWORD64 sp) const noexcept {
+        const auto value = static_cast<std::uintptr_t>(sp);
+        return m_host_stack_low != 0 && value >= m_host_stack_low && value < m_host_stack_high;
     }
 
     [[nodiscard]] bool IsBound() const noexcept {
@@ -100,9 +112,13 @@ private:
             CloseHandle(m_thread);
             m_thread = nullptr;
         }
+        m_host_stack_low = 0;
+        m_host_stack_high = 0;
     }
 
     HANDLE m_thread{};
+    std::uintptr_t m_host_stack_low{};
+    std::uintptr_t m_host_stack_high{};
 };
 
 } // namespace Core::NCE
