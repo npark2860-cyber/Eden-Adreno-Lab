@@ -3,6 +3,7 @@
 
 #pragma once
 
+#if !defined(_WIN32)
 #define __ASSEMBLY__
 
 #include <asm-generic/signal.h>
@@ -12,6 +13,7 @@
 #define BreakFromRunCodeSignal SIGURG
 #define GuestAccessFaultSignal SIGSEGV
 #define GuestAlignmentFaultSignal SIGBUS
+#endif
 
 #define GuestContextSp 0xF8
 #define GuestContextHostContext 0x320
