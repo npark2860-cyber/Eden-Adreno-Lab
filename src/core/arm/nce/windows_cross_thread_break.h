@@ -11,6 +11,8 @@ namespace Core::NCE {
 
 class WindowsCrossThreadBreak {
 public:
+    using ContextTransform = bool (*)(ARM64_NT_CONTEXT& context, void* opaque) noexcept;
+
     WindowsCrossThreadBreak() = default;
 
     ~WindowsCrossThreadBreak() {
@@ -34,14 +36,15 @@ public:
         return *this;
     }
 
-    // Must be called by the target NCE host thread before another thread can queue a break.
+    // Must be called by the target NCE host thread before another thread can request a break.
     [[nodiscard]] bool BindCurrentThread() noexcept {
         Reset();
 
         HANDLE duplicate{};
         const HANDLE process = GetCurrentProcess();
-        if (!DuplicateHandle(process, GetCurrentThread(), process, &duplicate, THREAD_SET_CONTEXT,
-                             FALSE, 0)) {
+        constexpr DWORD rights =
+            THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT;
+        if (!DuplicateHandle(process, GetCurrentThread(), process, &duplicate, rights, FALSE, 0)) {
             return false;
         }
 
@@ -49,18 +52,42 @@ public:
         return true;
     }
 
-    // The supplied return target is an IMP-005-owned Windows ARM64 guest->host return stub.
-    [[nodiscard]] bool QueueBreak(void* return_target) const noexcept {
-        if (m_thread == nullptr || return_target == nullptr) {
+    // Suspend the target without executing any callback on its user stack, capture its native ARM64
+    // state, allow the caller to classify/mutate that state, and resume it. Returning false from the
+    // transform leaves the captured state unchanged and merely resumes the target. This is only the
+    // Windows delivery primitive; deciding whether the captured PC is guest code or an IMP-005
+    // transition window belongs to the transition owner.
+    [[nodiscard]] bool SuspendTransformResume(ContextTransform transform,
+                                              void* opaque = nullptr) const noexcept {
+        if (m_thread == nullptr || transform == nullptr) {
             return false;
         }
 
-        constexpr auto flags = static_cast<QUEUE_USER_APC_FLAGS>(
-            static_cast<unsigned>(QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC) |
-            static_cast<unsigned>(QUEUE_USER_APC_CALLBACK_DATA_CONTEXT));
+        const DWORD previous_suspend_count = SuspendThread(m_thread);
+        if (previous_suspend_count == static_cast<DWORD>(-1)) {
+            return false;
+        }
 
-        return QueueUserAPC2(&BreakCallback, m_thread, reinterpret_cast<ULONG_PTR>(return_target),
-                             flags) != FALSE;
+        ARM64_NT_CONTEXT context{};
+        context.ContextFlags =
+            CONTEXT_ARM64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT;
+
+        bool success =
+            GetThreadContext(m_thread, reinterpret_cast<PCONTEXT>(&context)) != FALSE;
+        bool apply_context = false;
+        if (success) {
+            apply_context = transform(context, opaque);
+            if (apply_context) {
+                success = SetThreadContext(m_thread, reinterpret_cast<PCONTEXT>(&context)) != FALSE;
+            }
+        }
+
+        const DWORD resume_count = ResumeThread(m_thread);
+        if (resume_count == static_cast<DWORD>(-1)) {
+            return false;
+        }
+
+        return success;
     }
 
     [[nodiscard]] bool IsBound() const noexcept {
@@ -68,19 +95,6 @@ public:
     }
 
 private:
-    static VOID CALLBACK BreakCallback(ULONG_PTR raw_callback_data) noexcept {
-        auto* const callback_data = reinterpret_cast<PAPC_CALLBACK_DATA>(raw_callback_data);
-        if (callback_data == nullptr || callback_data->ContextRecord == nullptr ||
-            callback_data->Parameter == 0) {
-            return;
-        }
-
-        // Keep the asynchronous APC path deliberately minimal: only redirect the interrupted PC.
-        // Guest-state saving, BreakLoop consumption and NativeExecutionParameters unlock belong to
-        // the Windows transition stub implemented by IMP-005.
-        callback_data->ContextRecord->Pc = static_cast<DWORD64>(callback_data->Parameter);
-    }
-
     void Reset() noexcept {
         if (m_thread != nullptr) {
             CloseHandle(m_thread);
