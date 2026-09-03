@@ -7,7 +7,6 @@
 #error windows_nce_transition.h is only available on Windows.
 #endif
 
-#include <atomic>
 #include <cstdint>
 #include <windows.h>
 
@@ -15,55 +14,31 @@
 
 namespace Core::NCE {
 
-// Host-side Windows ARM64 transition state. The target host thread captures a resumable Windows
-// CONTEXT before native guest entry. Guest entry itself uses NtContinue, while cross-thread breaks
-// may replace an interrupted CONTEXT with this captured host continuation.
+// Fixed Windows ARM64 entry gate. The assembly function saves the host ABI nonvolatile state and
+// host SP into GuestContext::host_ctx, then executes the exported breakpoint while SP is still the
+// Windows host stack. A VEH owner can atomically overlay the full guest-visible ARM64 CONTEXT and
+// continue at GuestContext::pc without borrowing physical x18 or TPIDR_EL0.
+extern "C" std::uint64_t WindowsNceEnterGuest(GuestContext* guest) noexcept;
+extern "C" void WindowsNceEntryBreakpoint() noexcept;
+
 class WindowsNceTransition {
 public:
-    using NtContinueFn = LONG(NTAPI*)(PCONTEXT context, BOOLEAN test_alert);
+    [[nodiscard]] static bool IsEntryBreakpoint(const EXCEPTION_POINTERS& exception) noexcept;
 
-    WindowsNceTransition() = default;
+    // Convert the host-stack breakpoint CONTEXT into guest state. WindowsExceptionContext excludes
+    // physical x18, so the live Windows TEB register remains Windows-owned.
+    static void PrepareGuestEntry(const GuestContext& guest, ARM64_NT_CONTEXT& context) noexcept;
 
-    [[nodiscard]] bool Initialize() noexcept;
-    [[nodiscard]] bool IsInitialized() const noexcept {
-        return m_nt_continue != nullptr;
-    }
-
-    // Returns false on the initial host pass. When a Windows break or synchronous generated helper
-    // restores the captured host CONTEXT, execution resumes immediately after RtlCaptureContext and
-    // this method returns true instead.
-    [[nodiscard]] bool CaptureHostContext() noexcept;
-
-    // Start from the captured host CONTEXT so Windows-owned state, especially physical x18/TEB, is
-    // never populated from GuestContext. The Windows exception adapter then overlays guest-visible
-    // architectural state, explicitly excluding x18.
-    void PrepareGuestContext(const GuestContext& guest, ARM64_NT_CONTEXT& context) const noexcept;
-
-    // Convert an externally suspended target back to the captured host continuation. If the target
-    // was already executing native guest code, save that guest state first. If it was still in the
-    // host-stack entry window, GuestContext already contains the authoritative pre-entry state and
-    // must not be overwritten with host transition registers.
-    void RedirectToHost(ARM64_NT_CONTEXT& interrupted, GuestContext& guest,
-                        bool save_guest_state) noexcept;
-
-    // Mark the captured continuation as a host resume and invoke NtContinue. Successful NtContinue
-    // does not return to the caller; instead CaptureHostContext resumes and reports true.
-    [[nodiscard]] LONG ContinueGuest(ARM64_NT_CONTEXT& guest_context) const noexcept;
-    [[nodiscard]] LONG ContinueHost() noexcept;
-
-    [[nodiscard]] DWORD64 HostStackPointer() const noexcept {
-        return m_host_context.Sp;
-    }
-
-private:
-    ARM64_NT_CONTEXT m_host_context{};
-    std::atomic<bool> m_resume_pending{};
-    NtContinueFn m_nt_continue{};
+    // Convert an externally suspended target back to the saved host ABI continuation. If the
+    // interrupted PC/SP is known to be native guest execution, save that guest state first. For a
+    // host-stack transition window pass save_guest_state=false so pre-entry GuestContext remains
+    // authoritative. return_value becomes the x0 result of WindowsNceEnterGuest.
+    static void RedirectToHost(ARM64_NT_CONTEXT& interrupted, GuestContext& guest,
+                               bool save_guest_state, std::uint64_t return_value) noexcept;
 };
 
-// Stable C-linkage metadata locator for generated Windows NCE helpers. The MSVC ARM64 lowering of
-// this fixed getter is verified separately to be leaf and stackless; generated code must preserve
-// the getter's observed volatile clobbers rather than embedding compiler TLS offsets itself.
+// Stable C-linkage metadata locator for generated Windows NCE helpers. Generated code must call
+// this fixed getter rather than embedding compiler/TEB TLS offsets.
 extern "C" void* GetCurrentNceContextForGeneratedCode() noexcept;
 
 } // namespace Core::NCE
