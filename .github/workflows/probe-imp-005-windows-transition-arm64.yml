@@ -23,25 +23,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install MSVC fmt headers
+      - name: Install MSVC probe headers
         shell: cmd
         run: |
-          C:\vcpkg\vcpkg.exe install fmt:arm64-windows
+          C:\vcpkg\vcpkg.exe install fmt:arm64-windows boost-intrusive:arm64-windows
           if errorlevel 1 exit /b 10
           if not exist C:\vcpkg\installed\arm64-windows\include\fmt\ranges.h exit /b 11
+          if not exist C:\vcpkg\installed\arm64-windows\include\boost\intrusive\rbtree.hpp exit /b 12
 
       - name: Compile actual Eden transition source
         shell: cmd
         run: |
           set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-          if not exist "%VSWHERE%" exit /b 12
+          if not exist "%VSWHERE%" exit /b 13
           for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
-          if not defined VSROOT exit /b 13
+          if not defined VSROOT exit /b 14
           call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
-          if errorlevel 1 exit /b 14
-          cl /nologo /std:c++20 /O2 /GS- /EHsc /W4 /permissive- /c /Isrc /IC:\vcpkg\installed\arm64-windows\include src\core\arm\nce\windows_nce_transition.cpp /Fo:windows_nce_transition.obj
           if errorlevel 1 exit /b 15
-          if not exist windows_nce_transition.obj exit /b 16
+          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /c /Isrc /IC:\vcpkg\installed\arm64-windows\include src\core\arm\nce\windows_nce_transition.cpp /Fo:windows_nce_transition.obj
+          if errorlevel 1 exit /b 16
+          if not exist windows_nce_transition.obj exit /b 17
           echo WINDOWS_NCE_TRANSITION_COMPILE=PASS
 
       - name: Print actual generated getter listing
@@ -50,6 +51,6 @@ jobs:
           set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
           for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
           call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
-          cl /nologo /std:c++20 /O2 /GS- /EHsc /W4 /permissive- /c /Isrc /IC:\vcpkg\installed\arm64-windows\include /FAs /Fawindows_nce_transition.asm /Fo:windows_nce_transition_listing.obj src\core\arm\nce\windows_nce_transition.cpp
-          if errorlevel 1 exit /b 17
+          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /c /Isrc /IC:\vcpkg\installed\arm64-windows\include /FAs /Fawindows_nce_transition.asm /Fo:windows_nce_transition_listing.obj src\core\arm\nce\windows_nce_transition.cpp
+          if errorlevel 1 exit /b 18
           type windows_nce_transition.asm
