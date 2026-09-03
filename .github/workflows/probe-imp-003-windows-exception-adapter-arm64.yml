@@ -6,6 +6,7 @@ on:
       - exp/imp-003-windows-exception-adapter
     paths:
       - src/core/arm/nce/windows_exception_context.h
+      - src/core/arm/nce/arm_nce_asm_definitions.h
       - .github/workflows/probe-imp-003-windows-exception-adapter-arm64.yml
   workflow_dispatch:
 
