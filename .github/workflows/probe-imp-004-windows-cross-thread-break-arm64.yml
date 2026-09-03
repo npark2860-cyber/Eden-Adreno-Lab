@@ -25,11 +25,15 @@ jobs:
           call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
           if errorlevel 1 exit /b 12
           > imp004_probe.cpp echo #include "src/core/arm/nce/windows_cross_thread_break.h"
+          >> imp004_probe.cpp echo static bool Transform(ARM64_NT_CONTEXT^& context, void*) noexcept {
+          >> imp004_probe.cpp echo     context.Pc = context.Pc;
+          >> imp004_probe.cpp echo     return false;
+          >> imp004_probe.cpp echo }
           >> imp004_probe.cpp echo int main() {
           >> imp004_probe.cpp echo     Core::NCE::WindowsCrossThreadBreak delivery;
           >> imp004_probe.cpp echo     (void)delivery.IsBound();
           >> imp004_probe.cpp echo     (void)delivery.BindCurrentThread();
-          >> imp004_probe.cpp echo     (void)delivery.QueueBreak(reinterpret_cast^<void*^>(0x1000));
+          >> imp004_probe.cpp echo     (void)delivery.SuspendTransformResume(^&Transform, nullptr);
           >> imp004_probe.cpp echo     return 0;
           >> imp004_probe.cpp echo }
           cl /nologo /std:c++20 /W4 /permissive- /c imp004_probe.cpp /Fo:imp004_probe.obj
