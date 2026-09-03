@@ -1,0 +1,67 @@
+name: Probe IMP-003 Windows Exception Adapter ARM64
+
+on:
+  push:
+    branches:
+      - exp/imp-003-windows-exception-adapter
+    paths:
+      - src/core/arm/nce/windows_exception_context.h
+      - .github/workflows/probe-imp-003-windows-exception-adapter-arm64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-windows-exception-adapter:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up CLANGARM64 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            clang:p boost:p fmt:p unordered_dense:p
+
+      - name: Compile actual Eden Windows exception adapter
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cat > imp003_probe.cpp <<'EOF'
+          #include "core/arm/nce/windows_exception_context.h"
+
+          int main() {
+              using Adapter = Core::NCE::WindowsExceptionContext;
+              Core::GuestContext guest{};
+              ARM64_NT_CONTEXT context{};
+              EXCEPTION_RECORD record{};
+
+              record.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
+              record.NumberParameters = 2;
+              record.ExceptionInformation[0] = 8;
+              record.ExceptionInformation[1] = 0x1234;
+
+              Adapter::SaveGuestState(guest, context);
+              Adapter::LoadGuestState(guest, context);
+              if (!Adapter::IsAccessViolation(record)) return 1;
+              if (Adapter::GetAccessType(record) != Adapter::AccessType::Execute) return 2;
+              if (Adapter::GetFaultAddress(record) != reinterpret_cast<void*>(0x1234)) return 3;
+              (void)Adapter::CurrentGuestContext();
+              return 0;
+          }
+          EOF
+          clang++ \
+            -std=c++20 \
+            -Wall -Wextra \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 \
+            -Isrc \
+            -c imp003_probe.cpp \
+            -o imp003_probe.o
+          test -s imp003_probe.o
+          echo "WINDOWS_EXCEPTION_ADAPTER_COMPILE=PASS"
