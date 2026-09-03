@@ -1,12 +1,6 @@
 name: Probe IMP-004 Windows Cross-Thread Break ARM64
 
 on:
-  push:
-    branches:
-      - exp/imp-004-windows-cross-thread-break
-    paths:
-      - src/core/arm/nce/windows_cross_thread_break.h
-      - .github/workflows/probe-imp-004-windows-cross-thread-break-arm64.yml
   workflow_dispatch:
 
 permissions:
