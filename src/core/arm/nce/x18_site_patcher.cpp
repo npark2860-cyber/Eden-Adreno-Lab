@@ -52,7 +52,7 @@ void X18SitePatcher::Apply(Common::ProcessAddress load_base,
         }
 
         words[site.text_word_index] = BreakpointInstruction;
-        const u64 runtime_pc = GetInteger(load_base) + code.addr +
+        const u64 runtime_pc = GetInteger(load_base) + GetInteger(code.addr) +
                                static_cast<u64>(site.text_word_index) * sizeof(u32);
         out_sites.insert_or_assign(runtime_pc, site.instruction);
     }
