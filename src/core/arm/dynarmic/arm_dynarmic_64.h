@@ -67,8 +67,6 @@ public:
 
     Dynarmic::CodePage cached_code_page;
     u64 last_code_addr = u64(-1);
-    std::optional<u64> single_instruction_override_pc{};
-    u32 single_instruction_override{};
     ArmDynarmic64& m_parent;
     Core::Memory::Memory& m_memory;
     u64 m_tpidrro_el0{};
