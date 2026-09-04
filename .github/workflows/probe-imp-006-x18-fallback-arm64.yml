@@ -10,6 +10,8 @@ on:
       - src/core/arm/nce/x18_classifier.cpp
       - src/core/arm/nce/x18_site_patcher.h
       - src/core/arm/nce/x18_site_patcher.cpp
+      - src/core/arm/nce/windows_x18_fallback_trap.h
+      - src/core/arm/nce/windows_x18_fallback_trap.cpp
       - src/core/arm/dynarmic/arm_dynarmic_64.h
       - probes/windows-arm64-x18-classifier/**
       - .github/workflows/probe-imp-006-x18-fallback-arm64.yml
@@ -35,7 +37,7 @@ jobs:
           pacboy: >-
             clang:p boost:p fmt:p unordered_dense:p
 
-      - name: Compile actual Eden x18 classifier and fallback bridge
+      - name: Compile actual Eden x18 fallback substrate
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -54,12 +56,17 @@ jobs:
           clang++ "${COMMON_FLAGS[@]}" \
             -c src/core/arm/nce/x18_site_patcher.cpp \
             -o x18_site_patcher.o
+          clang++ "${COMMON_FLAGS[@]}" \
+            -c src/core/arm/nce/windows_x18_fallback_trap.cpp \
+            -o windows_x18_fallback_trap.o
           test -s x18_classifier.o
           test -s x18_fallback.o
           test -s x18_site_patcher.o
+          test -s windows_x18_fallback_trap.o
           echo "X18_CLASSIFIER_COMPILE=PASS"
           echo "X18_FALLBACK_COMPILE=PASS"
           echo "X18_SITE_PATCHER_COMPILE=PASS"
+          echo "WINDOWS_X18_TRAP_COMPILE=PASS"
 
       - name: Build and run representative x18 classifier smoke
         shell: msys2 {0}
