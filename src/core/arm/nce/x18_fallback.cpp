@@ -8,6 +8,29 @@
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/nce/guest_context.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/memory.h"
+
+namespace Core {
+
+void ArmDynarmic64::SetSingleInstructionCodeOverride(u64 pc, u32 instruction) {
+    const u64 page_mask = Dynarmic::CODE_PAGE_SIZE - 1;
+    const u64 aligned_pc = pc & ~page_mask;
+
+    if (m_cb->last_code_addr != aligned_pc) {
+        m_cb->m_memory.ReadBlock(aligned_pc, &m_cb->cached_code_page,
+                                 sizeof(m_cb->cached_code_page));
+        m_cb->last_code_addr = aligned_pc;
+    }
+
+    m_cb->cached_code_page.inst[(pc & page_mask) / sizeof(u32)] = instruction;
+    m_jit->InvalidateCacheRange(pc, sizeof(u32));
+}
+
+void ArmDynarmic64::ClearSingleInstructionCodeOverride() {
+    m_cb->last_code_addr = u64(-1);
+}
+
+} // namespace Core
 
 namespace Core::NCE {
 
@@ -49,14 +72,16 @@ void CopyThreadContextToGuest(const Kernel::Svc::ThreadContext& context, GuestCo
 } // namespace
 
 X18FallbackStepResult X18Fallback::Step(ArmDynarmic64& backend, Kernel::KThread* thread,
-                                        GuestContext& guest) {
+                                        GuestContext& guest, u32 instruction) {
     Kernel::Svc::ThreadContext context{};
     CopyGuestToThreadContext(guest, context);
 
     backend.SetContext(context);
     backend.SetTpidrroEl0(guest.tpidrro_el0);
+    backend.SetSingleInstructionCodeOverride(guest.pc, instruction);
 
     const HaltReason step_reason = backend.StepThread(thread);
+    backend.ClearSingleInstructionCodeOverride();
 
     backend.GetContext(context);
     CopyThreadContextToGuest(context, guest);
