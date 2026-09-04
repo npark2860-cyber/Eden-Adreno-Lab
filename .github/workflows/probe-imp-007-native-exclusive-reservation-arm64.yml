@@ -40,10 +40,10 @@ jobs:
           call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
           if errorlevel 1 exit /b 13
 
-          armasm64 -nologo probes\windows-arm64-x18-exclusive-reservation\exclusive_probe.asm exclusive_probe.obj
+          armasm64 -nologo probes\windows-arm64-x18-exclusive-reservation\exclusive_probe.asm imp007_exclusive_asm.obj
           if errorlevel 1 exit /b 14
 
-          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /Isrc /IC:\vcpkg\installed\arm64-windows\include probes\windows-arm64-x18-exclusive-reservation\exclusive_probe.cpp src\core\arm\nce\windows_nce_transition.cpp exclusive_probe.obj /Fe:imp007_native_exclusive_reservation.exe
+          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /Isrc /IC:\vcpkg\installed\arm64-windows\include probes\windows-arm64-x18-exclusive-reservation\exclusive_probe.cpp src\core\arm\nce\windows_nce_transition.cpp imp007_exclusive_asm.obj /Fe:imp007_native_exclusive_reservation.exe
           if errorlevel 1 exit /b 15
 
           imp007_native_exclusive_reservation.exe
