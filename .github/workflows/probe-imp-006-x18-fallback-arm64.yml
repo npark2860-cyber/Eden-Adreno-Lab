@@ -58,11 +58,24 @@ jobs:
         run: |
           set -euo pipefail
           DYN=src/dynarmic/src/dynarmic
+          cat > classifier_link_stubs.cpp <<'EOF'
+          #include <cstdlib>
+          #include "common/logging.h"
+
+          void AssertFailSoftImpl() {}
+          [[noreturn]] void AssertFatalImpl() { std::abort(); }
+
+          namespace Common::Log {
+          void FmtLogMessageImpl(Class, Level, const char*, unsigned int, const char*,
+                                 fmt::string_view, const fmt::format_args&) {}
+          } // namespace Common::Log
+          EOF
           clang++ \
             -std=c++20 -O2 -ffunction-sections -fdata-sections \
             -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -DNDEBUG \
             -Isrc -Isrc/dynarmic/src \
             probes/windows-arm64-x18-classifier/classifier_smoke.cpp \
+            classifier_link_stubs.cpp \
             src/core/arm/nce/x18_classifier.cpp \
             $DYN/frontend/A64/translate/a64_translate.cpp \
             $DYN/frontend/A64/a64_location_descriptor.cpp \
