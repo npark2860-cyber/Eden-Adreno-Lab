@@ -1,13 +1,6 @@
 name: Probe IMP-006 X18 Runner ARM64
 
 on:
-  push:
-    branches:
-      - exp/imp-006-windows-nonexclusive-x18-fallback
-    paths:
-      - src/core/arm/nce/windows_x18_fallback_runner.h
-      - src/core/arm/nce/windows_x18_fallback_runner.cpp
-      - .github/workflows/probe-imp-006-x18-runner-arm64.yml
   workflow_dispatch:
 
 permissions:
