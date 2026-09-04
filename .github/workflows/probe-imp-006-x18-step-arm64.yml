@@ -1,0 +1,47 @@
+name: Probe IMP-006 X18 Dynarmic Step ARM64
+
+on:
+  push:
+    branches:
+      - exp/imp-006-windows-nonexclusive-x18-fallback
+    paths:
+      - probes/windows-arm64-x18-step/**
+      - .github/workflows/probe-imp-006-x18-step-arm64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  x18-step-smoke:
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up CLANGARM64 build dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            cmake:p ninja:p clang:p boost:p fmt:p unordered_dense:p
+
+      - name: Configure standalone vendored Dynarmic probe
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cmake \
+            -S probes/windows-arm64-x18-step \
+            -B build/imp006-x18-step \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build and run representative one-step smoke
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cmake --build build/imp006-x18-step --target imp006_x18_step
+          ./build/imp006-x18-step/imp006_x18_step.exe
