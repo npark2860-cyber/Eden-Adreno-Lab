@@ -36,7 +36,15 @@ public:
 
     [[nodiscard]] static X18InstructionClass ClassifyInstruction(u32 instruction);
 
-    [[nodiscard]] static X18FallbackStepResult DecodeStepReason(HaltReason step_reason) noexcept;
+    [[nodiscard]] static constexpr X18FallbackStepResult DecodeStepReason(
+        HaltReason step_reason) noexcept {
+        const u64 raw_reason = static_cast<u64>(step_reason);
+        const u64 step_mask = static_cast<u64>(HaltReason::StepThread);
+        return {
+            .completed = (raw_reason & step_mask) != 0,
+            .halt_reason = static_cast<HaltReason>(raw_reason & ~step_mask),
+        };
+    }
 
     [[nodiscard]] static X18FallbackStepResult Step(ArmDynarmic64& backend,
                                                     Kernel::KThread* thread,
