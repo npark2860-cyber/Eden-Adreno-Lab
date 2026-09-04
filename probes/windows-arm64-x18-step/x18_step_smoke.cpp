@@ -35,8 +35,11 @@ constexpr std::uint32_t AddWriteX18 = 0x8B010012u;      // ADD X18, X0, X1
 constexpr std::uint32_t AddsReadX18 = 0xAB010240u;      // ADDS X0, X18, X1
 constexpr std::uint32_t BrX18 = 0xD61F0240u;            // BR X18
 constexpr std::uint32_t MrsX18Tpidr = 0xD53BD052u;      // MRS X18, TPIDR_EL0
-constexpr std::uint32_t LdrX0FromX18 = 0xF9400240u;      // LDR X0, [X18]
-constexpr std::uint32_t LdarX0FromX18 = 0xC8DFFE40u;     // LDAR X0, [X18]
+constexpr std::uint32_t MrsX18Tpidrro = 0xD53BD072u;    // MRS X18, TPIDRRO_EL0
+constexpr std::uint32_t LdrX0FromX18 = 0xF9400240u;     // LDR X0, [X18]
+constexpr std::uint32_t LdrX18FromX0 = 0xF9400012u;     // LDR X18, [X0]
+constexpr std::uint32_t StrX18ToX0 = 0xF9000012u;       // STR X18, [X0]
+constexpr std::uint32_t LdarX0FromX18 = 0xC8DFFE40u;    // LDAR X0, [X18]
 
 class Callbacks final : public Dynarmic::A64::UserCallbacks {
 public:
@@ -179,6 +182,12 @@ int main() {
                    probe.Step(MrsX18Tpidr) &&
                        probe.jit.GetRegister(18) == probe.callbacks.tpidr);
 
+    probe.callbacks.tpidrro = 0x8877665544332211ull;
+    probe.jit.SetRegister(18, 0);
+    pass &= Report("STEP_MRS_X18_TPIDRRO",
+                   probe.Step(MrsX18Tpidrro) &&
+                       probe.jit.GetRegister(18) == probe.callbacks.tpidrro);
+
     probe.jit.SetRegister(18, ~std::uint64_t{0});
     probe.jit.SetRegister(1, 1);
     probe.jit.SetPstate(0);
@@ -192,6 +201,19 @@ int main() {
     probe.jit.SetRegister(0, 0);
     pass &= Report("STEP_LDR_X18_BASE",
                    probe.Step(LdrX0FromX18) && probe.jit.GetRegister(0) == LoadValue);
+
+    probe.jit.SetRegister(0, DataAddress);
+    probe.jit.SetRegister(18, 0);
+    pass &= Report("STEP_LDR_RESULT_X18",
+                   probe.Step(LdrX18FromX0) && probe.jit.GetRegister(18) == LoadValue);
+
+    constexpr std::uint64_t StoreAddress = DataAddress + 0x20;
+    constexpr std::uint64_t StoreValue = 0x0102030405060718ull;
+    probe.jit.SetRegister(0, StoreAddress);
+    probe.jit.SetRegister(18, StoreValue);
+    pass &= Report("STEP_STR_DATA_X18",
+                   probe.Step(StrX18ToX0) &&
+                       probe.callbacks.Read<std::uint64_t>(StoreAddress) == StoreValue);
 
     probe.jit.SetRegister(18, DataAddress);
     probe.jit.SetRegister(0, 0);
