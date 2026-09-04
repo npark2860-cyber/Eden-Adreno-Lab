@@ -8,6 +8,7 @@ on:
       - src/core/arm/nce/x18_fallback.h
       - src/core/arm/nce/x18_fallback.cpp
       - src/core/arm/nce/x18_classifier.cpp
+      - probes/windows-arm64-x18-classifier/**
       - .github/workflows/probe-imp-006-x18-fallback-arm64.yml
   workflow_dispatch:
 
@@ -51,3 +52,29 @@ jobs:
           test -s x18_fallback.o
           echo "X18_CLASSIFIER_COMPILE=PASS"
           echo "X18_FALLBACK_COMPILE=PASS"
+
+      - name: Build and run representative x18 classifier smoke
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          DYN=src/dynarmic/src/dynarmic
+          clang++ \
+            -std=c++20 -O2 -ffunction-sections -fdata-sections \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -DNDEBUG \
+            -Isrc -Isrc/dynarmic/src \
+            probes/windows-arm64-x18-classifier/classifier_smoke.cpp \
+            src/core/arm/nce/x18_classifier.cpp \
+            $DYN/frontend/A64/translate/a64_translate.cpp \
+            $DYN/frontend/A64/a64_location_descriptor.cpp \
+            $DYN/frontend/A64/a64_types.cpp \
+            $DYN/frontend/A32/a32_types.cpp \
+            $DYN/frontend/imm.cpp \
+            $DYN/ir/basic_block.cpp \
+            $DYN/ir/location_descriptor.cpp \
+            $DYN/ir/microinstruction.cpp \
+            $DYN/ir/opcodes.cpp \
+            $DYN/ir/type.cpp \
+            $DYN/ir/value.cpp \
+            -Wl,--gc-sections -lfmt \
+            -o x18_classifier_smoke.exe
+          ./x18_classifier_smoke.exe
