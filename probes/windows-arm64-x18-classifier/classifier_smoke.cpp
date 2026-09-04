@@ -93,6 +93,24 @@ bool RunSitePatcherSmoke() {
     return collected && patched && mapped && untagged_absent;
 }
 
+bool RunHaltReasonSmoke() {
+    const auto normal = X18Fallback::DecodeStepReason(Core::HaltReason::StepThread);
+
+    const u64 meaningful_bits = static_cast<u64>(Core::HaltReason::SupervisorCall) |
+                                static_cast<u64>(Core::HaltReason::BreakLoop);
+    const auto combined = X18Fallback::DecodeStepReason(static_cast<Core::HaltReason>(
+        static_cast<u64>(Core::HaltReason::StepThread) | meaningful_bits));
+
+    const bool normal_ok = normal.completed && static_cast<u64>(normal.halt_reason) == 0;
+    const bool meaningful_ok = combined.completed &&
+                               static_cast<u64>(combined.halt_reason) == meaningful_bits;
+
+    std::printf("X18_STEP_NORMAL_COMPLETION=%s\n", normal_ok ? "PASS" : "FAIL");
+    std::printf("X18_STEP_MEANINGFUL_HALT_PROPAGATION=%s\n",
+                meaningful_ok ? "PASS" : "FAIL");
+    return normal_ok && meaningful_ok;
+}
+
 } // namespace
 
 int main() {
@@ -106,6 +124,7 @@ int main() {
     }
 
     pass &= RunSitePatcherSmoke();
+    pass &= RunHaltReasonSmoke();
 
     std::printf("X18_CLASSIFIER_SMOKE=%s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
