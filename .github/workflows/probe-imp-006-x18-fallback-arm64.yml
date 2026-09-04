@@ -8,6 +8,9 @@ on:
       - src/core/arm/nce/x18_fallback.h
       - src/core/arm/nce/x18_fallback.cpp
       - src/core/arm/nce/x18_classifier.cpp
+      - src/core/arm/nce/x18_site_patcher.h
+      - src/core/arm/nce/x18_site_patcher.cpp
+      - src/core/arm/dynarmic/arm_dynarmic_64.h
       - probes/windows-arm64-x18-classifier/**
       - .github/workflows/probe-imp-006-x18-fallback-arm64.yml
   workflow_dispatch:
@@ -48,10 +51,15 @@ jobs:
           clang++ "${COMMON_FLAGS[@]}" \
             -c src/core/arm/nce/x18_fallback.cpp \
             -o x18_fallback.o
+          clang++ "${COMMON_FLAGS[@]}" \
+            -c src/core/arm/nce/x18_site_patcher.cpp \
+            -o x18_site_patcher.o
           test -s x18_classifier.o
           test -s x18_fallback.o
+          test -s x18_site_patcher.o
           echo "X18_CLASSIFIER_COMPILE=PASS"
           echo "X18_FALLBACK_COMPILE=PASS"
+          echo "X18_SITE_PATCHER_COMPILE=PASS"
 
       - name: Build and run representative x18 classifier smoke
         shell: msys2 {0}
@@ -77,6 +85,7 @@ jobs:
             probes/windows-arm64-x18-classifier/classifier_smoke.cpp \
             classifier_link_stubs.cpp \
             src/core/arm/nce/x18_classifier.cpp \
+            src/core/arm/nce/x18_site_patcher.cpp \
             $DYN/frontend/A64/translate/a64_translate.cpp \
             $DYN/frontend/A64/a64_location_descriptor.cpp \
             $DYN/frontend/A64/a64_types.cpp \
