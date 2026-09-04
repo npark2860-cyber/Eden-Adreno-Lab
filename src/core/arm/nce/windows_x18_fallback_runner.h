@@ -34,12 +34,15 @@ struct WindowsX18FallbackDispatchResult {
     X18FallbackStepResult step{};
 };
 
-// Windows-only owner for the selective Dynarmic backend used by IMP-006. The integrated ArmNce
-// loop remains an IMP-008 concern; this class owns only the ordinary guest-x18 fallback seam.
+// Windows-only owner for the selective Dynarmic backend used by IMP-006. The private exclusive
+// monitor exists only because ArmDynarmic64 requires one; IMP-006 never routes exclusive/LSE
+// instructions here, so native NCE reservation state is not shared or transferred.
+//
+// The integrated ArmNce loop remains an IMP-008 concern. This class owns only the ordinary
+// guest-x18 fallback seam and can later be embedded by the Windows ArmNce implementation.
 class WindowsX18FallbackRunner {
 public:
     WindowsX18FallbackRunner(System& system, bool uses_wall_clock, Kernel::KProcess* process,
-                             DynarmicExclusiveMonitor& exclusive_monitor,
                              std::size_t core_index);
     ~WindowsX18FallbackRunner();
 
@@ -51,6 +54,7 @@ public:
         const X18FallbackMetadata& metadata);
 
 private:
+    std::unique_ptr<DynarmicExclusiveMonitor> m_exclusive_monitor;
     std::unique_ptr<ArmDynarmic64> m_backend;
 };
 
