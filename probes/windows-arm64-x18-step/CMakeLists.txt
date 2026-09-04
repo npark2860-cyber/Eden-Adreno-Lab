@@ -26,7 +26,10 @@ FetchContent_Declare(
     URL https://github.com/eden-emulator/oaknut/archive/refs/tags/v2.0.3.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(oaknut)
-set(oaknut_DIR "${oaknut_BINARY_DIR}" CACHE PATH "" FORCE)
+# The exact Oaknut target is already available above. Dynarmic's non-required find_package(oaknut)
+# must not try to consume the FetchContent build-tree package config, which has no installed
+# oaknutTargets.cmake file.
+set(CMAKE_DISABLE_FIND_PACKAGE_oaknut TRUE)
 
 add_library(common INTERFACE)
 target_include_directories(common INTERFACE "${EDEN_ROOT}/src")
