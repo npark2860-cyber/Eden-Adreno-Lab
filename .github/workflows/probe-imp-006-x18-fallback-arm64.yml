@@ -1,20 +1,6 @@
 name: Probe IMP-006 X18 Fallback ARM64
 
 on:
-  push:
-    branches:
-      - exp/imp-006-windows-nonexclusive-x18-fallback
-    paths:
-      - src/core/arm/nce/x18_fallback.h
-      - src/core/arm/nce/x18_fallback.cpp
-      - src/core/arm/nce/x18_classifier.cpp
-      - src/core/arm/nce/x18_site_patcher.h
-      - src/core/arm/nce/x18_site_patcher.cpp
-      - src/core/arm/nce/windows_x18_fallback_trap.h
-      - src/core/arm/nce/windows_x18_fallback_trap.cpp
-      - src/core/arm/dynarmic/arm_dynarmic_64.h
-      - probes/windows-arm64-x18-classifier/**
-      - .github/workflows/probe-imp-006-x18-fallback-arm64.yml
   workflow_dispatch:
 
 permissions:
