@@ -21,6 +21,7 @@ enum class X18InstructionClass : u8 {
     NoX18,
     SupportedOrdinary,
     ExcludedExclusive,
+    ExcludedUnsupportedAtomic,
     Unsupported,
 };
 
