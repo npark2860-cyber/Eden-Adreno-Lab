@@ -41,7 +41,7 @@ void X18SitePatcher::Apply(Common::ProcessAddress load_base,
                            const Kernel::CodeSet::Segment& code,
                            std::vector<u8>& program_image,
                            std::span<const X18FallbackSite> sites,
-                           X18FallbackSiteMap& out_sites) {
+                           X18FallbackMetadata& metadata) {
 #if defined(_WIN32)
     auto text = std::span{program_image}.subspan(code.offset, code.size);
     auto words = std::span<u32>{reinterpret_cast<u32*>(text.data()), text.size() / sizeof(u32)};
@@ -54,14 +54,14 @@ void X18SitePatcher::Apply(Common::ProcessAddress load_base,
         words[site.text_word_index] = BreakpointInstruction;
         const u64 runtime_pc = GetInteger(load_base) + GetInteger(code.addr) +
                                static_cast<u64>(site.text_word_index) * sizeof(u32);
-        out_sites.insert_or_assign(runtime_pc, site.instruction);
+        metadata.insert_or_assign(MetadataKey(runtime_pc), MetadataValue(site.instruction));
     }
 #else
     (void)load_base;
     (void)code;
     (void)program_image;
     (void)sites;
-    (void)out_sites;
+    (void)metadata;
 #endif
 }
 
