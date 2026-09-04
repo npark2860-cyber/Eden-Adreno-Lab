@@ -376,7 +376,7 @@ ResultStatus AppLoader_NRO::ReadProgramId(u64& out_program_id) {
         return ResultStatus::ErrorNoControl;
     }
 
-    out_program_id = nacp->GetTitleId();
+    *out_program_id = nacp->GetTitleId();
     return ResultStatus::Success;
 }
 
@@ -403,11 +403,11 @@ ResultStatus AppLoader_NRO::ReadControlData(FileSys::NACP& control) {
         return ResultStatus::ErrorNoControl;
     }
 
-    control = nacp ? *nacp : FileSys::NACP{};
+    control = *nacp;
     return ResultStatus::Success;
 }
 
-bool AppLoader_NRO::IsRomFSUpdatable() {
+bool AppLoader_NRO::IsRomFSUpdatable() const {
     return false;
 }
 
