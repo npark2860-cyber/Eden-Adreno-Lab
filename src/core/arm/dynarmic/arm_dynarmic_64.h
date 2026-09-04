@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <ankerl/unordered_dense.h>
 
 #include <dynarmic/interface/A64/a64.h>
@@ -66,6 +67,8 @@ public:
 
     Dynarmic::CodePage cached_code_page;
     u64 last_code_addr = u64(-1);
+    std::optional<u64> single_instruction_override_pc{};
+    u32 single_instruction_override{};
     ArmDynarmic64& m_parent;
     Core::Memory::Memory& m_memory;
     u64 m_tpidrro_el0{};
@@ -100,6 +103,11 @@ public:
     void SignalInterrupt(Kernel::KThread* thread) override;
     void ClearInstructionCache() override;
     void InvalidateCacheRange(u64 addr, std::size_t size) override;
+
+    // IMP-006 selective fallback only: override the code word fetched at one guest PC without
+    // changing the process mapping. The JIT entry for that PC is invalidated before use.
+    void SetSingleInstructionCodeOverride(u64 pc, u32 instruction);
+    void ClearSingleInstructionCodeOverride();
 
 protected:
     const Kernel::DebugWatchpoint* HaltedWatchpoint() const override;
