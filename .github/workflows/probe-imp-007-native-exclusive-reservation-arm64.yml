@@ -1,15 +1,6 @@
 name: Probe IMP-007 Native Exclusive Reservation ARM64
 
 on:
-  push:
-    branches:
-      - exp/imp-007-windows-x18-exclusive-lse
-    paths:
-      - probes/windows-arm64-x18-exclusive-reservation/**
-      - src/core/arm/nce/current_nce_context.h
-      - src/core/arm/nce/windows_nce_transition.h
-      - src/core/arm/nce/windows_nce_transition.cpp
-      - .github/workflows/probe-imp-007-native-exclusive-reservation-arm64.yml
   workflow_dispatch:
 
 permissions:
