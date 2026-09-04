@@ -1,0 +1,50 @@
+name: Probe IMP-007 Native Exclusive Reservation ARM64
+
+on:
+  push:
+    branches:
+      - exp/imp-007-windows-x18-exclusive-lse
+    paths:
+      - probes/windows-arm64-x18-exclusive-reservation/**
+      - src/core/arm/nce/current_nce_context.h
+      - src/core/arm/nce/windows_nce_transition.h
+      - src/core/arm/nce/windows_nce_transition.cpp
+      - .github/workflows/probe-imp-007-native-exclusive-reservation-arm64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-exclusive-reservation:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MSVC probe headers
+        shell: cmd
+        run: |
+          C:\vcpkg\vcpkg.exe install fmt:arm64-windows boost-intrusive:arm64-windows unordered-dense:arm64-windows
+          if errorlevel 1 exit /b 10
+
+      - name: Build and run exact getter reservation-window smoke
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 11
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 12
+          call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          if errorlevel 1 exit /b 13
+
+          armasm64 -nologo probes\windows-arm64-x18-exclusive-reservation\exclusive_probe.asm exclusive_probe.obj
+          if errorlevel 1 exit /b 14
+
+          cl /nologo /std:c++20 /utf-8 /O2 /GS- /EHsc /W4 /permissive- /Isrc /IC:\vcpkg\installed\arm64-windows\include probes\windows-arm64-x18-exclusive-reservation\exclusive_probe.cpp src\core\arm\nce\windows_nce_transition.cpp exclusive_probe.obj /Fe:imp007_native_exclusive_reservation.exe
+          if errorlevel 1 exit /b 15
+
+          imp007_native_exclusive_reservation.exe
+          if errorlevel 1 exit /b 16
