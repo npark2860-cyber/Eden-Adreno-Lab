@@ -1,0 +1,47 @@
+name: Probe IMP-006 X18 Runner ARM64
+
+on:
+  push:
+    branches:
+      - exp/imp-006-windows-nonexclusive-x18-fallback
+    paths:
+      - src/core/arm/nce/windows_x18_fallback_runner.h
+      - src/core/arm/nce/windows_x18_fallback_runner.cpp
+      - .github/workflows/probe-imp-006-x18-runner-arm64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-x18-runner:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up CLANGARM64 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            clang:p boost:p fmt:p unordered_dense:p
+
+      - name: Compile actual Eden Windows x18 fallback runner
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          clang++ \
+            -std=c++20 \
+            -Wall -Wextra \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 \
+            -Isrc \
+            -Isrc/dynarmic/src \
+            -Isrc/dynarmic/externals/mcl/include \
+            -c src/core/arm/nce/windows_x18_fallback_runner.cpp \
+            -o windows_x18_fallback_runner.o
+          test -s windows_x18_fallback_runner.o
+          echo "WINDOWS_X18_FALLBACK_RUNNER_COMPILE=PASS"
