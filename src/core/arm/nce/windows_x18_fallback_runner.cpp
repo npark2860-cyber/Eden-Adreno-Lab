@@ -4,18 +4,22 @@
 #include "core/arm/nce/windows_x18_fallback_runner.h"
 
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
+#include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/arm/nce/guest_context.h"
 #include "core/arm/nce/windows_x18_fallback_trap.h"
+#include "core/core.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
 
 namespace Core::NCE {
 
-WindowsX18FallbackRunner::WindowsX18FallbackRunner(
-    System& system, bool uses_wall_clock, Kernel::KProcess* process,
-    DynarmicExclusiveMonitor& exclusive_monitor, std::size_t core_index)
-    : m_backend{std::make_unique<ArmDynarmic64>(system, uses_wall_clock, process,
-                                                exclusive_monitor, core_index)} {}
+WindowsX18FallbackRunner::WindowsX18FallbackRunner(System& system, bool uses_wall_clock,
+                                                   Kernel::KProcess* process,
+                                                   std::size_t core_index)
+    : m_exclusive_monitor{std::make_unique<DynarmicExclusiveMonitor>(
+          process->GetMemory(), Core::Hardware::NUM_CPU_CORES)},
+      m_backend{std::make_unique<ArmDynarmic64>(system, uses_wall_clock, process,
+                                                *m_exclusive_monitor, core_index)} {}
 
 WindowsX18FallbackRunner::~WindowsX18FallbackRunner() = default;
 
