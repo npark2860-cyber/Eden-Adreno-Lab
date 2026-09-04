@@ -8,7 +8,7 @@
 #include "core/arm/nce/x18_site_patcher.h"
 
 using Core::NCE::X18Fallback;
-using Core::NCE::X18FallbackSiteMap;
+using Core::NCE::X18FallbackMetadata;
 using Core::NCE::X18InstructionClass;
 using Core::NCE::X18SitePatcher;
 
@@ -71,21 +71,26 @@ bool RunSitePatcherSmoke() {
     code.size = static_cast<u32>(image.size());
 
     const auto sites = X18SitePatcher::Collect(image, code);
-    X18FallbackSiteMap runtime_sites;
-    X18SitePatcher::Apply(Common::ProcessAddress{LoadBase}, code, image, sites, runtime_sites);
+    X18FallbackMetadata metadata;
+    X18SitePatcher::Apply(Common::ProcessAddress{LoadBase}, code, image, sites, metadata);
 
     const u64 expected_pc = LoadBase + CodeAddress + X18Word * sizeof(u32);
     const bool collected = sites.size() == 1 && sites[0].text_word_index == X18Word &&
                            sites[0].instruction == AddReadX18;
     const bool patched = words[X18Word] == X18SitePatcher::BreakpointInstruction &&
                          words[PlainWord] == AddNoX18;
-    const auto found = runtime_sites.find(expected_pc);
-    const bool mapped = found != runtime_sites.end() && found->second == AddReadX18;
+    const auto found = metadata.find(X18SitePatcher::MetadataKey(expected_pc));
+    const bool mapped = found != metadata.end() &&
+                        static_cast<u32>(found->second >> 32) == X18SitePatcher::MetadataMagic &&
+                        static_cast<u32>(found->second) == AddReadX18;
+    const bool untagged_absent = metadata.find(expected_pc) == metadata.end();
 
     std::printf("X18_SITE_COLLECT=%s\n", collected ? "PASS" : "FAIL");
     std::printf("X18_SITE_BRK_PATCH=%s\n", patched ? "PASS" : "FAIL");
-    std::printf("X18_SITE_RUNTIME_MAP=%s\n", mapped ? "PASS" : "FAIL");
-    return collected && patched && mapped;
+    std::printf("X18_SITE_TAGGED_METADATA=%s\n", mapped ? "PASS" : "FAIL");
+    std::printf("X18_SITE_UNTAGGED_NAMESPACE_CLEAR=%s\n",
+                untagged_absent ? "PASS" : "FAIL");
+    return collected && patched && mapped && untagged_absent;
 }
 
 } // namespace
