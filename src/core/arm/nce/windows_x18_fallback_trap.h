@@ -25,10 +25,10 @@ public:
     static constexpr u64 ReturnMarker = 0x5846313846414C4Cull; // "XF18FALL"
 
     [[nodiscard]] static bool TryRedirect(PEXCEPTION_POINTERS exception, GuestContext& guest,
-                                          const X18FallbackSiteMap& sites) noexcept;
+                                          const X18FallbackMetadata& metadata) noexcept;
 
     [[nodiscard]] static std::optional<u32> FindOriginalInstruction(
-        u64 pc, const X18FallbackSiteMap& sites) noexcept;
+        u64 pc, const X18FallbackMetadata& metadata) noexcept;
 };
 
 } // namespace NCE
