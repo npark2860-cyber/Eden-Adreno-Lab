@@ -26,6 +26,7 @@
 
 #ifdef HAS_NCE
 #include "core/arm/nce/patcher.h"
+#include "core/arm/nce/x18_site_patcher.h"
 #endif
 
 namespace Loader {
@@ -162,10 +163,18 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             patch->SetModuleID(nso_header.build_id);  // In case the patcher is changed for big modules, the new patcher should also have the build_id
         }
     } else if (patch) {
+#if defined(_WIN32)
+        // Collect before ordinary NCE relocation rewrites operand-specific system-register sites.
+        // The IMP-006 fallback owns only decoder-supported ordinary instructions touching guest x18.
+        const auto x18_sites = Core::NCE::X18SitePatcher::Collect(codeset.memory, code);
+#endif
+
         // Relocate code patch and copy to the program image.
         // Save size before RelocateAndCopy (which may resize)
         const size_t size_before_relocate = codeset.memory.size();
-        if (patch->RelocateAndCopy(load_base, code, codeset.memory, &process.GetPostHandlers())) {
+        const bool relocated =
+            patch->RelocateAndCopy(load_base, code, codeset.memory, &process.GetPostHandlers());
+        if (relocated) {
             // Update patch section.
             auto& patch_segment = codeset.PatchSegment();
             auto& post_patch_segment = codeset.PostPatchSegment();
@@ -184,6 +193,13 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                 patch_segment.size = static_cast<u32>(patch->GetSectionSize());
             }
         }
+
+#if defined(_WIN32)
+        // Apply after the regular NCE relocations so x18-sensitive sites are guaranteed to reach
+        // the Windows fallback trap rather than a generated helper that assumes physical x18.
+        Core::NCE::X18SitePatcher::Apply(Common::ProcessAddress{load_base}, code, codeset.memory,
+                                         x18_sites, process.GetPostHandlers());
+#endif
 
         // Refresh image_size to take account the patch section if it was added by RelocateAndCopy
         image_size = static_cast<u32>(codeset.memory.size());
