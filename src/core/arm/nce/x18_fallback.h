@@ -38,7 +38,8 @@ public:
 
     [[nodiscard]] static X18FallbackStepResult Step(ArmDynarmic64& backend,
                                                     Kernel::KThread* thread,
-                                                    GuestContext& guest);
+                                                    GuestContext& guest,
+                                                    u32 instruction);
 };
 
 } // namespace NCE
