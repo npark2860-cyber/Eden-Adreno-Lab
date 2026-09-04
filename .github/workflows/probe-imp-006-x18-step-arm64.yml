@@ -1,12 +1,6 @@
 name: Probe IMP-006 X18 Dynarmic Step ARM64
 
 on:
-  push:
-    branches:
-      - exp/imp-006-windows-nonexclusive-x18-fallback
-    paths:
-      - probes/windows-arm64-x18-step/**
-      - .github/workflows/probe-imp-006-x18-step-arm64.yml
   workflow_dispatch:
 
 permissions:
