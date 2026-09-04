@@ -97,10 +97,6 @@ X18InstructionClass X18Fallback::ClassifyInstruction(u32 instruction) {
         return X18InstructionClass::ExcludedUnsupportedAtomic;
     }
 
-    if (Exclusive{instruction}.Verify()) {
-        return X18InstructionClass::ExcludedExclusive;
-    }
-
     const Dynarmic::A64::LocationDescriptor descriptor{0, Dynarmic::FP::FPCR{0}, true};
     Dynarmic::IR::Block block{static_cast<Dynarmic::IR::LocationDescriptor>(descriptor)};
 
@@ -108,13 +104,20 @@ X18InstructionClass X18Fallback::ClassifyInstruction(u32 instruction) {
         return X18InstructionClass::Unsupported;
     }
 
+    bool touches_x18 = false;
     for (const auto& inst : block.Instructions()) {
-        if (IsX18RegisterReference(inst)) {
-            return X18InstructionClass::SupportedOrdinary;
-        }
+        touches_x18 |= IsX18RegisterReference(inst);
     }
 
-    return X18InstructionClass::NoX18;
+    if (!touches_x18) {
+        return X18InstructionClass::NoX18;
+    }
+
+    if (Exclusive{instruction}.Verify()) {
+        return X18InstructionClass::ExcludedExclusive;
+    }
+
+    return X18InstructionClass::SupportedOrdinary;
 }
 
 } // namespace Core::NCE
