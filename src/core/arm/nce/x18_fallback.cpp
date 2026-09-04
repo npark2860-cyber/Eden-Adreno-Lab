@@ -71,6 +71,16 @@ void CopyThreadContextToGuest(const Kernel::Svc::ThreadContext& context, GuestCo
 
 } // namespace
 
+X18FallbackStepResult X18Fallback::DecodeStepReason(HaltReason step_reason) noexcept {
+    const u64 raw_reason = static_cast<u64>(step_reason);
+    const u64 step_mask = static_cast<u64>(HaltReason::StepThread);
+
+    return {
+        .completed = (raw_reason & step_mask) != 0,
+        .halt_reason = static_cast<HaltReason>(raw_reason & ~step_mask),
+    };
+}
+
 X18FallbackStepResult X18Fallback::Step(ArmDynarmic64& backend, Kernel::KThread* thread,
                                         GuestContext& guest, u32 instruction) {
     Kernel::Svc::ThreadContext context{};
@@ -86,13 +96,7 @@ X18FallbackStepResult X18Fallback::Step(ArmDynarmic64& backend, Kernel::KThread*
     backend.GetContext(context);
     CopyThreadContextToGuest(context, guest);
 
-    const u64 raw_reason = static_cast<u64>(step_reason);
-    const u64 step_mask = static_cast<u64>(HaltReason::StepThread);
-
-    return {
-        .completed = (raw_reason & step_mask) != 0,
-        .halt_reason = static_cast<HaltReason>(raw_reason & ~step_mask),
-    };
+    return DecodeStepReason(step_reason);
 }
 
 } // namespace Core::NCE
