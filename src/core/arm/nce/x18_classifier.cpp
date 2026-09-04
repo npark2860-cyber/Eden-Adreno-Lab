@@ -100,24 +100,30 @@ X18InstructionClass X18Fallback::ClassifyInstruction(u32 instruction) {
     const Dynarmic::A64::LocationDescriptor descriptor{0, Dynarmic::FP::FPCR{0}, true};
     Dynarmic::IR::Block block{static_cast<Dynarmic::IR::LocationDescriptor>(descriptor)};
 
-    if (!Dynarmic::A64::TranslateSingleInstruction(block, descriptor, instruction)) {
-        return X18InstructionClass::Unsupported;
-    }
+    // TranslateSingleInstruction returns the translator's should_continue result, not a pure
+    // decode-success flag. Valid terminal instructions such as BR therefore return false while
+    // still emitting IR. Inspect the emitted IR before using that boolean as a conservative
+    // unsupported signal.
+    const bool should_continue =
+        Dynarmic::A64::TranslateSingleInstruction(block, descriptor, instruction);
 
     bool touches_x18 = false;
     for (const auto& inst : block.Instructions()) {
         touches_x18 |= IsX18RegisterReference(inst);
     }
 
-    if (!touches_x18) {
-        return X18InstructionClass::NoX18;
+    if (touches_x18) {
+        if (Exclusive{instruction}.Verify()) {
+            return X18InstructionClass::ExcludedExclusive;
+        }
+        return X18InstructionClass::SupportedOrdinary;
     }
 
-    if (Exclusive{instruction}.Verify()) {
-        return X18InstructionClass::ExcludedExclusive;
+    if (!should_continue) {
+        return X18InstructionClass::Unsupported;
     }
 
-    return X18InstructionClass::SupportedOrdinary;
+    return X18InstructionClass::NoX18;
 }
 
 } // namespace Core::NCE
