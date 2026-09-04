@@ -36,6 +36,8 @@ public:
 
     [[nodiscard]] static X18InstructionClass ClassifyInstruction(u32 instruction);
 
+    [[nodiscard]] static X18FallbackStepResult DecodeStepReason(HaltReason step_reason) noexcept;
+
     [[nodiscard]] static X18FallbackStepResult Step(ArmDynarmic64& backend,
                                                     Kernel::KThread* thread,
                                                     GuestContext& guest,
