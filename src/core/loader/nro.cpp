@@ -33,7 +33,6 @@
 
 #ifdef HAS_NCE
 #include "core/arm/nce/patcher.h"
-#include "core/arm/nce/x18_site_patcher.h"
 #endif
 
 namespace Loader {
@@ -290,16 +289,8 @@ static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
     // This needs to be after LoadFromMetadata so we can use the process entry point.
 #ifdef HAS_NCE
     if (Settings::IsNceEnabled()) {
-#if defined(_WIN32)
-        // Preserve original ordinary guest-x18 words before generated NCE relocation rewrites.
-        const auto x18_sites = Core::NCE::X18SitePatcher::Collect(program_image, code);
-#endif
         patch.RelocateAndCopy(process.GetEntryPoint(), code, program_image,
                               &process.GetPostHandlers());
-#if defined(_WIN32)
-        Core::NCE::X18SitePatcher::Apply(process.GetEntryPoint(), code, program_image, x18_sites,
-                                         process.GetPostHandlers());
-#endif
     }
 #endif
 
@@ -376,7 +367,7 @@ ResultStatus AppLoader_NRO::ReadProgramId(u64& out_program_id) {
         return ResultStatus::ErrorNoControl;
     }
 
-    *out_program_id = nacp->GetTitleId();
+    out_program_id = nacp->GetTitleId();
     return ResultStatus::Success;
 }
 
