@@ -45,7 +45,9 @@ jobs:
               DEPENDS "${ENTRY_SOURCE}"
               VERBATIM)
           set_source_files_properties("${ENTRY_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
-          add_library(imp008_entry STATIC "${ENTRY_OBJECT}")
+
+          file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/dummy.cpp" "int imp008_dummy() { return 0; }\n")
+          add_library(imp008_entry STATIC "${CMAKE_CURRENT_BINARY_DIR}/dummy.cpp" "${ENTRY_OBJECT}")
           '@ | Set-Content -Encoding utf8 cmake-armasm-probe/CMakeLists.txt
 
           cmake -S cmake-armasm-probe -B cmake-armasm-build -G "Visual Studio 17 2022" -A ARM64
