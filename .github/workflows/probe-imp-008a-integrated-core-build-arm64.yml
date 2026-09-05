@@ -2,16 +2,6 @@ name: Probe IMP-008A Integrated Windows ARM64 Core Build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008-windows-nce-integration
-    paths:
-      - CMakeLists.txt
-      - src/core/CMakeLists.txt
-      - src/core/arm/nce/**
-      - src/core/loader/nro.cpp
-      - src/core/loader/nso.cpp
-      - .github/workflows/probe-imp-008a-integrated-core-build-arm64.yml
 
 permissions:
   contents: read
