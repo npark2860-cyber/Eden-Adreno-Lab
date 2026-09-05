@@ -1,7 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -189,6 +188,14 @@ int main() {
         return 1;
     }
 
+    Allocation guest_stack;
+    guest_stack.base = static_cast<std::uint8_t*>(
+        VirtualAlloc(nullptr, GuestStackSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if (guest_stack.base == nullptr) {
+        Report("IMP008B_GUEST_STACK_ALLOCATION", false);
+        return 1;
+    }
+
     const bool relocate_ok = patcher.RelocateAndCopy(
         Common::ProcessAddress{reinterpret_cast<std::uintptr_t>(allocation.base)}, code, image,
         &process->GetPostHandlers());
@@ -210,9 +217,8 @@ int main() {
         reinterpret_cast<std::uintptr_t>(allocation.base) + BreakLoopOffset;
     const bool post_handler_ok = process->GetPostHandlers().contains(second_svc_pc);
 
-    std::array<std::uint8_t, GuestStackSize> guest_stack{};
-    const auto guest_stack_top = reinterpret_cast<std::uintptr_t>(guest_stack.data() + guest_stack.size()) &
-                                 ~std::uintptr_t{0xF};
+    const auto guest_stack_top =
+        reinterpret_cast<std::uintptr_t>(guest_stack.base + GuestStackSize) & ~std::uintptr_t{0xF};
 
     interface->Initialize();
 
@@ -325,6 +331,7 @@ int main() {
     const bool x18_after_control = ReadPhysicalX18() == teb;
 
     Report("IMP008B_REAL_KERNEL_PROCESS_THREAD", true);
+    Report("IMP008B_GUEST_STACK_ALLOCATION", true);
     Report("IMP008B_PATCH_MODE", mode_ok);
     Report("IMP008B_PATCH_RELOCATE", relocate_ok);
     Report("IMP008B_PROCESS_POST_HANDLER_MAP", post_handler_ok);
