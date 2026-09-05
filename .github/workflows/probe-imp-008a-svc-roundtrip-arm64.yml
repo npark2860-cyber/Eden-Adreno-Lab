@@ -2,17 +2,6 @@ name: Probe IMP-008A Windows SVC Roundtrip ARM64
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008-windows-nce-integration
-    paths:
-      - src/core/arm/nce/patcher.cpp
-      - src/core/arm/nce/windows_generated_context.h
-      - src/core/arm/nce/windows_nce_transition.cpp
-      - src/core/arm/nce/windows_nce_transition.h
-      - src/core/arm/nce/windows_nce_entry.asm
-      - probes/windows-arm64-nce-svc-roundtrip/**
-      - .github/workflows/probe-imp-008a-svc-roundtrip-arm64.yml
 
 permissions:
   contents: read
