@@ -1,0 +1,168 @@
+name: Probe IMP-008A IMP-006/007 Regression ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - .github/workflows/probe-imp-008a-imp006-007-regression-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: windows-11-arm
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout current IMP-008 implementation
+        uses: actions/checkout@v4
+        with:
+          path: eden
+
+      - name: Checkout fixed Oaknut dependency
+        uses: actions/checkout@v4
+        with:
+          repository: eden-emulator/oaknut
+          ref: v2.0.3
+          path: oaknut
+
+      - name: Set up CLANGARM64 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            cmake:p ninja:p clang:p boost:p fmt:p unordered_dense:p
+
+      - name: Regress IMP-006 classifier fallback and trap substrate
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          COMMON_FLAGS=(
+            -std=c++20
+            -Wall -Wextra
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE
+            -Isrc -Isrc/dynarmic/src
+          )
+          clang++ "${COMMON_FLAGS[@]}" -c src/core/arm/nce/x18_classifier.cpp -o x18_classifier.o
+          clang++ "${COMMON_FLAGS[@]}" -c src/core/arm/nce/x18_fallback.cpp -o x18_fallback.o
+          clang++ "${COMMON_FLAGS[@]}" -c src/core/arm/nce/x18_site_patcher.cpp -o x18_site_patcher.o
+          clang++ "${COMMON_FLAGS[@]}" -c src/core/arm/nce/windows_x18_fallback_trap.cpp -o windows_x18_fallback_trap.o
+          test -s x18_classifier.o
+          test -s x18_fallback.o
+          test -s x18_site_patcher.o
+          test -s windows_x18_fallback_trap.o
+
+          DYN=src/dynarmic/src/dynarmic
+          cat > classifier_link_stubs.cpp <<'EOF'
+          #include <cstdlib>
+          #include "common/logging.h"
+          void AssertFailSoftImpl() {}
+          [[noreturn]] void AssertFatalImpl() { std::abort(); }
+          namespace Common::Log {
+          void FmtLogMessageImpl(Class, Level, const char*, unsigned int, const char*,
+                                 fmt::string_view, const fmt::format_args&) {}
+          }
+          EOF
+          clang++ \
+            -std=c++20 -O2 -ffunction-sections -fdata-sections \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -DNDEBUG \
+            -Isrc -Isrc/dynarmic/src \
+            probes/windows-arm64-x18-classifier/classifier_smoke.cpp \
+            classifier_link_stubs.cpp \
+            src/core/arm/nce/x18_classifier.cpp \
+            src/core/arm/nce/x18_site_patcher.cpp \
+            $DYN/frontend/A64/translate/a64_translate.cpp \
+            $DYN/frontend/A64/a64_location_descriptor.cpp \
+            $DYN/frontend/A64/a64_types.cpp \
+            $DYN/frontend/A32/a32_types.cpp \
+            $DYN/frontend/imm.cpp \
+            $DYN/ir/basic_block.cpp \
+            $DYN/ir/location_descriptor.cpp \
+            $DYN/ir/microinstruction.cpp \
+            $DYN/ir/opcodes.cpp \
+            $DYN/ir/type.cpp \
+            $DYN/ir/value.cpp \
+            -Wl,--gc-sections -lfmt \
+            -o x18_classifier_smoke.exe
+          ./x18_classifier_smoke.exe
+          echo 'IMP008A_REGRESSION_IMP006_CLASSIFIER_FALLBACK=PASS'
+
+      - name: Regress IMP-006 Windows fallback runner compile
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          clang++ \
+            -std=c++20 -Wall -Wextra \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 \
+            -Isrc -Isrc/dynarmic/src -Isrc/dynarmic/externals/mcl/include \
+            -c src/core/arm/nce/windows_x18_fallback_runner.cpp \
+            -o windows_x18_fallback_runner.o
+          test -s windows_x18_fallback_runner.o
+          echo 'IMP008A_REGRESSION_IMP006_RUNNER=PASS'
+
+      - name: Regress IMP-006 actual Dynarmic one-step smoke
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake \
+            -S probes/windows-arm64-x18-step \
+            -B build/imp008a-x18-step \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/imp008a-x18-step --target imp006_x18_step
+          ./build/imp008a-x18-step/imp006_x18_step.exe
+          echo 'IMP008A_REGRESSION_IMP006_DYNARMIC_STEP=PASS'
+
+      - name: Regress IMP-007 production classic-exclusive path
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cat > production_link_stubs.cpp <<'EOF'
+          #include <cstdlib>
+          #include "common/cpu_features.h"
+          #include "common/logging.h"
+          void AssertFailSoftImpl() {}
+          [[noreturn]] void AssertFatalImpl() { std::abort(); }
+          namespace Common { WallClock::WallClock(bool, u64) noexcept {} }
+          namespace Common::Log {
+          void FmtLogMessageImpl(Class, Level, const char*, unsigned int, const char*,
+                                 fmt::string_view, const fmt::format_args&) {}
+          }
+          EOF
+          clang++ \
+            -std=c++20 -O2 -ffunction-sections -fdata-sections \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -DNDEBUG \
+            -Isrc -I../oaknut/include \
+            probes/windows-arm64-x18-exclusive-production/production_probe.cpp \
+            production_link_stubs.cpp \
+            src/core/arm/nce/patcher.cpp \
+            -Wl,--gc-sections -lfmt \
+            -o imp008a_regression_classic_exclusive.exe
+          ./imp008a_regression_classic_exclusive.exe
+          echo 'IMP008A_REGRESSION_IMP007_CLASSIC_EXCLUSIVE=PASS'
+
+      - name: Regress IMP-007 production LSE path
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          clang++ \
+            -std=c++20 -O2 -ffunction-sections -fdata-sections \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -DNDEBUG \
+            -Isrc -I../oaknut/include \
+            probes/windows-arm64-x18-lse-production/production_probe.cpp \
+            production_link_stubs.cpp \
+            src/core/arm/nce/patcher.cpp \
+            -Wl,--gc-sections -lfmt \
+            -o imp008a_regression_lse.exe
+          ./imp008a_regression_lse.exe
+          echo 'IMP008A_REGRESSION_IMP007_LSE=PASS'
+          echo 'IMP008A_IMP006_007_REGRESSION=PASS'
