@@ -19,6 +19,7 @@
 #include "core/arm/nce/windows_cross_thread_break.h"
 #include "core/arm/nce/windows_exception_context.h"
 #include "core/arm/nce/windows_nce_transition.h"
+#include "core/arm/nce/windows_patch_code_metadata.h"
 #include "core/arm/nce/windows_x18_fallback_runner.h"
 #include "core/arm/nce/windows_x18_fallback_trap.h"
 #include "core/core.h"
@@ -43,6 +44,7 @@ struct BreakTransformState {
     ArmNce* nce{};
     bool transformed{};
     bool host_window{};
+    bool patch_window{};
 };
 
 bool WindowsBreakTransform(ARM64_NT_CONTEXT& context, void* opaque) noexcept {
@@ -61,6 +63,15 @@ bool WindowsBreakTransform(ARM64_NT_CONTEXT& context, void* opaque) noexcept {
     }
 
     state->host_window = false;
+    auto* const thread = state->nce->m_running_thread;
+    auto* const process = thread != nullptr ? thread->GetOwnerProcess() : nullptr;
+    if (process != nullptr && NCE::WindowsPatchCodeMetadata::Contains(
+                                  context.Pc, process->GetPostHandlers())) {
+        state->patch_window = true;
+        return false;
+    }
+
+    state->patch_window = false;
     auto& guest = state->nce->m_guest_ctx;
     const auto reason = guest.esr_el1.exchange(0, std::memory_order_acq_rel);
     NCE::WindowsNceTransition::RedirectToHost(context, guest, true, reason);
@@ -350,6 +361,21 @@ void ArmNce::SignalInterrupt(Kernel::KThread* thread) {
             // The target returns through RunThread and PhysicalCore::ExitContext owns the matching
             // UnlockThread call, exactly as on the existing Linux NCE break path.
             return;
+        }
+        if (state.patch_window) {
+            // Unlike the host-stack RtlRestoreContext window, generated patch code may itself need
+            // to acquire NativeExecutionParameters::lock (notably the SVC lock prelude). Retaining
+            // the sender-owned lock here can deadlock the target. Resume unchanged, release the
+            // lock long enough for the generated helper to retire, then reacquire and retry.
+            UnlockThreadParameters(params);
+            std::this_thread::yield();
+            LockThreadParameters(params);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (!params->is_running) {
+                UnlockThreadParameters(params);
+                return;
+            }
+            continue;
         }
         if (!state.host_window) {
             UnlockThreadParameters(params);

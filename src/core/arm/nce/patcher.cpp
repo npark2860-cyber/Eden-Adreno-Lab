@@ -13,6 +13,7 @@
 #if defined(_WIN32)
 #include "core/arm/nce/windows_generated_context.h"
 #include "core/arm/nce/windows_nce_transition.h"
+#include "core/arm/nce/windows_patch_code_metadata.h"
 #include "core/arm/nce/windows_x18_exclusive.h"
 #include "core/arm/nce/windows_x18_lse.h"
 #endif
@@ -546,6 +547,21 @@ bool Patcher::RelocateAndCopy(Common::ProcessAddress load_base, const Kernel::Co
             out_trampolines->insert({RebasePc(rel.module_offset), RebasePatch(rel.patch_offset)});
         }
     }
+
+#if defined(_WIN32)
+    // Cross-thread breaks may arrive while generated patch helpers temporarily own guest-stack
+    // scratch frames/registers. Record the complete generated-code regions as tagged process
+    // metadata so the Windows host can defer architectural capture until execution returns to a
+    // real guest instruction. Tagged keys cannot collide with ordinary post-handler lookups.
+    if (mode == PatchMode::Split) {
+        WindowsPatchCodeMetadata::RegisterRange(*out_trampolines, GetInteger(load_base),
+                                                pre_patch_size);
+        WindowsPatchCodeMetadata::RegisterRange(
+            *out_trampolines, GetInteger(load_base) + pre_patch_size + image_size, patch_size);
+    } else {
+        WindowsPatchCodeMetadata::RegisterRange(*out_trampolines, RebasePatch(0), patch_size);
+    }
+#endif
 
     // Cortex-A57 seems to treat all exclusives as ordered, but newer processors do not.
     // Convert to ordered to preserve this assumption.

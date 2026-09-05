@@ -1282,6 +1282,7 @@ if (HAS_NCE)
             arm/nce/windows_nce_entry.asm
             arm/nce/windows_nce_transition.cpp
             arm/nce/windows_nce_transition.h
+            arm/nce/windows_patch_code_metadata.h
             arm/nce/windows_x18_exclusive.h
             arm/nce/windows_x18_fallback_runner.cpp
             arm/nce/windows_x18_fallback_runner.h
