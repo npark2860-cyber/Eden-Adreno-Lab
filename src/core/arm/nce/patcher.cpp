@@ -11,6 +11,7 @@
 #include "core/arm/nce/instructions.h"
 #include "core/arm/nce/patcher.h"
 #if defined(_WIN32)
+#include "core/arm/nce/windows_generated_context.h"
 #include "core/arm/nce/windows_nce_transition.h"
 #include "core/arm/nce/windows_x18_exclusive.h"
 #include "core/arm/nce/windows_x18_lse.h"
@@ -596,7 +597,11 @@ void Patcher::WriteLoadContext(oaknut::VectorCodeGenerator& cg) {
     // SP contains the guest X30, so save our return X30 to SP + 8, since we have allocated 16 bytes
     // of stack.
     cg.STR(X30, SP, 8);
+#if defined(_WIN32)
+    WriteWindowsCurrentNceParametersLookup(cg, X30);
+#else
     cg.MRS(X30, oaknut::SystemReg::TPIDR_EL0);
+#endif
     cg.LDR(X30, X30, offsetof(NativeExecutionParameters, native_context));
 
     // Load system registers.
@@ -613,10 +618,21 @@ void Patcher::WriteLoadContext(oaknut::VectorCodeGenerator& cg) {
         cg.LDP(oaknut::QReg{i}, oaknut::QReg{i + 1}, X30, VEC_OFF + 16 * i);
     }
 
+#if defined(_WIN32)
+    // Restore guest GPRs without assigning architectural x18 to the Windows TEB register.
+    for (int i = 0; i <= 16; i += 2) {
+        cg.LDP(oaknut::XReg{i}, oaknut::XReg{i + 1}, X30, 8 * i);
+    }
+    for (int i = 19; i <= 27; i += 2) {
+        cg.LDP(oaknut::XReg{i}, oaknut::XReg{i + 1}, X30, 8 * i);
+    }
+    cg.LDR(X29, X30, 8 * 29);
+#else
     // Load all general-purpose registers except X30.
     for (int i = 0; i <= 28; i += 2) {
         cg.LDP(oaknut::XReg{i}, oaknut::XReg{i + 1}, X30, 8 * i);
     }
+#endif
 
     // Reload our return X30 from the stack and return.
     // The patch code will reload the guest X30 for us.
@@ -629,13 +645,28 @@ void Patcher::WriteSaveContext(oaknut::VectorCodeGenerator& cg) {
     // SP contains the guest X30, so save our X30 to SP + 8, since we have allocated 16 bytes of
     // stack.
     cg.STR(X30, SP, 8);
+#if defined(_WIN32)
+    WriteWindowsCurrentNceParametersLookup(cg, X30);
+#else
     cg.MRS(X30, oaknut::SystemReg::TPIDR_EL0);
+#endif
     cg.LDR(X30, X30, offsetof(NativeExecutionParameters, native_context));
 
+#if defined(_WIN32)
+    // Save guest GPRs without copying the physical Windows x18/TEB value into virtual guest x18.
+    for (int i = 0; i <= 16; i += 2) {
+        cg.STP(oaknut::XReg{i}, oaknut::XReg{i + 1}, X30, 8 * i);
+    }
+    for (int i = 19; i <= 27; i += 2) {
+        cg.STP(oaknut::XReg{i}, oaknut::XReg{i + 1}, X30, 8 * i);
+    }
+    cg.STR(X29, X30, 8 * 29);
+#else
     // Store all general-purpose registers except X30.
     for (int i = 0; i <= 28; i += 2) {
         cg.STP(oaknut::XReg{i}, oaknut::XReg{i + 1}, X30, 8 * i);
     }
+#endif
 
     // Store all vector registers.
     static constexpr size_t VEC_OFF = offsetof(GuestContext, vector_registers);
@@ -772,6 +803,28 @@ void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id, oaknut
 
 void Patcher::WriteMrsHandler(ModuleDestLabel module_dest, oaknut::XReg dest_reg,
                               oaknut::SystemReg src_reg, oaknut::VectorCodeGenerator& cg) {
+#if defined(_WIN32)
+    if (dest_reg.index() == GuestX18Register) {
+        // Architectural x18 is virtual state on Windows. Never write the TEB platform register.
+        cg.STP(X0, X1, SP, PRE_INDEXED, -16);
+        WriteWindowsCurrentNceParametersLookup(cg, X0);
+        if (src_reg == oaknut::SystemReg::TPIDRRO_EL0) {
+            cg.LDR(X1, X0, offsetof(NativeExecutionParameters, tpidrro_el0));
+        } else {
+            cg.LDR(X1, X0, offsetof(NativeExecutionParameters, tpidr_el0));
+        }
+        cg.LDR(X0, X0, offsetof(NativeExecutionParameters, native_context));
+        cg.STR(X1, X0, offsetof(GuestContext, cpu_registers) + sizeof(u64) * GuestX18Register);
+        cg.LDP(X0, X1, SP, POST_INDEXED, 16);
+    } else if (dest_reg.index() != 31) {
+        WriteWindowsCurrentNceParametersLookup(cg, dest_reg);
+        if (src_reg == oaknut::SystemReg::TPIDRRO_EL0) {
+            cg.LDR(dest_reg, dest_reg, offsetof(NativeExecutionParameters, tpidrro_el0));
+        } else {
+            cg.LDR(dest_reg, dest_reg, offsetof(NativeExecutionParameters, tpidr_el0));
+        }
+    }
+#else
     // Retrieve emulated TLS register from GuestContext.
     cg.MRS(dest_reg, oaknut::SystemReg::TPIDR_EL0);
     if (src_reg == oaknut::SystemReg::TPIDRRO_EL0) {
@@ -779,6 +832,7 @@ void Patcher::WriteMrsHandler(ModuleDestLabel module_dest, oaknut::XReg dest_reg
     } else {
         cg.LDR(dest_reg, dest_reg, offsetof(NativeExecutionParameters, tpidr_el0));
     }
+#endif
 
     // Jump back to the instruction after the emulated MRS.
     if (&cg == &c_pre)
@@ -791,9 +845,25 @@ void Patcher::WriteMsrHandler(ModuleDestLabel module_dest, oaknut::XReg src_reg,
     const auto scratch_reg = src_reg.index() == 0 ? X1 : X0;
     cg.STR(scratch_reg, SP, PRE_INDEXED, -16);
 
+#if defined(_WIN32)
+    WriteWindowsCurrentNceParametersLookup(cg, scratch_reg);
+    if (src_reg.index() == GuestX18Register) {
+        // Source x18 is the virtual guest value, never the live physical Windows TEB register.
+        const auto value_reg = scratch_reg.index() == 0 ? X1 : X0;
+        cg.STR(value_reg, SP, PRE_INDEXED, -16);
+        cg.LDR(value_reg, scratch_reg, offsetof(NativeExecutionParameters, native_context));
+        cg.LDR(value_reg, value_reg,
+               offsetof(GuestContext, cpu_registers) + sizeof(u64) * GuestX18Register);
+        cg.STR(value_reg, scratch_reg, offsetof(NativeExecutionParameters, tpidr_el0));
+        cg.LDR(value_reg, SP, POST_INDEXED, 16);
+    } else {
+        cg.STR(src_reg, scratch_reg, offsetof(NativeExecutionParameters, tpidr_el0));
+    }
+#else
     // Save guest value to NativeExecutionParameters::tpidr_el0.
     cg.MRS(scratch_reg, oaknut::SystemReg::TPIDR_EL0);
     cg.STR(src_reg, scratch_reg, offsetof(NativeExecutionParameters, tpidr_el0));
+#endif
 
     // Restore scratch register.
     cg.LDR(scratch_reg, SP, POST_INDEXED, 16);
@@ -872,7 +942,11 @@ void Patcher::LockContext(oaknut::VectorCodeGenerator& cg) {
     // Reload lock pointer.
     cg.l(retry);
     cg.CLREX();
+#if defined(_WIN32)
+    WriteWindowsCurrentNceParametersLookup(cg, X0);
+#else
     cg.MRS(X0, oaknut::SystemReg::TPIDR_EL0);
+#endif
     cg.ADD(X0, X0, offsetof(NativeExecutionParameters, lock));
 
     static_assert(SpinLockLocked == 0);
@@ -898,7 +972,11 @@ void Patcher::UnlockContext(oaknut::VectorCodeGenerator& cg) {
     cg.STP(X0, X1, SP, PRE_INDEXED, -16);
 
     // Load lock pointer.
+#if defined(_WIN32)
+    WriteWindowsCurrentNceParametersLookup(cg, X0);
+#else
     cg.MRS(X0, oaknut::SystemReg::TPIDR_EL0);
+#endif
     cg.ADD(X0, X0, offsetof(NativeExecutionParameters, lock));
 
     // Load SpinLockUnlocked.
@@ -910,5 +988,4 @@ void Patcher::UnlockContext(oaknut::VectorCodeGenerator& cg) {
     // Load scratches.
     cg.LDP(X0, X1, SP, POST_INDEXED, 16);
 }
-
 } // namespace Core::NCE
