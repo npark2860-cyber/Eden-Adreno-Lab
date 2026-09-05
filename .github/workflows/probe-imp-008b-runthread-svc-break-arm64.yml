@@ -2,6 +2,11 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - .github/workflows/probe-imp-008b-runthread-svc-break-arm64.yml
 
 permissions:
   contents: read
@@ -57,7 +62,19 @@ jobs:
           grep -Fq 'interface->SignalInterrupt(thread)' "$probe"
           grep -Fq '&process->GetPostHandlers()' "$probe"
           grep -Fq 'VirtualAlloc(nullptr, GuestStackSize' "$probe"
+          grep -Fq 'HasNceLockSignature' "$probe"
+          grep -Fq 'HasDynarmicNoopLockSignature' "$probe"
+          if grep -Fq 'dynamic_cast<' "$probe"; then
+            echo 'IMP-008B probe must remain compatible with product -fno-rtti' >&2
+            exit 41
+          fi
+          grep -Fq 'void LockThread(Kernel::KThread* thread) override;' src/core/arm/nce/arm_nce.h
+          if grep -Fq 'LockThread(Kernel::KThread' src/core/arm/dynarmic/arm_dynarmic_64.h; then
+            echo 'Dynarmic64 unexpectedly overrides the lock-signature control' >&2
+            exit 42
+          fi
           echo 'IMP008B_REAL_OWNER_SOURCE_GUARD=PASS'
+          echo 'IMP008B_BACKEND_LOCK_SIGNATURE_SOURCE=PASS'
 
       - name: Add probe target to checkout only
         shell: bash
@@ -105,8 +122,10 @@ jobs:
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
           grep -Fq 'windows-arm64-nce-runthread/production_probe.cpp' build/compile_commands.json
+          grep -Fq -- '-fno-rtti' build/compile_commands.json
           grep -R -Fq 'windows_nce_entry.obj' build
           echo 'IMP008B_NORMAL_CONFIGURE=PASS'
+          echo 'IMP008B_PRODUCT_NO_RTTI_PROBE_COMPILE=PASS'
 
       - name: Build real core-linked IMP-008B smoke
         shell: msys2 {0}
