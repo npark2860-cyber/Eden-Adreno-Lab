@@ -2,12 +2,6 @@ name: Probe IMP-008B E1 Real Owner Selection
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008b-clean-recovery
-    paths:
-      - probes/windows-arm64-nce-runthread-e1/real_owner_selection.cpp
-      - .github/workflows/probe-imp-008b-e1-real-owner-arm64.yml
 
 permissions:
   contents: read
