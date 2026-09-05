@@ -1,0 +1,62 @@
+name: Probe IMP-008A Windows Patch Window ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - src/core/arm/nce/windows_patch_code_metadata.h
+      - src/core/arm/nce/patcher.cpp
+      - src/core/arm/nce/arm_nce_windows.cpp
+      - probes/windows-arm64-nce-patch-window/**
+      - .github/workflows/probe-imp-008a-patch-window-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  patch-window-metadata-smoke:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify production ownership wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq '#include "core/arm/nce/windows_patch_code_metadata.h"' src/core/arm/nce/patcher.cpp
+          grep -Fq 'WindowsPatchCodeMetadata::RegisterRange' src/core/arm/nce/patcher.cpp
+          grep -Fq '#include "core/arm/nce/windows_patch_code_metadata.h"' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'WindowsPatchCodeMetadata::Contains' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'if (state.patch_window)' src/core/arm/nce/arm_nce_windows.cpp
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('src/core/arm/nce/arm_nce_windows.cpp').read_text(encoding='utf-8')
+          start = text.index('if (state.patch_window)')
+          end = text.index('if (!state.host_window)', start)
+          block = text[start:end]
+          assert 'UnlockThreadParameters(params);' in block
+          assert 'std::this_thread::yield();' in block
+          assert 'LockThreadParameters(params);' in block
+          assert 'if (!params->is_running)' in block
+          print('IMP008A_PATCH_WINDOW_LOCK_HANDOFF_SOURCE=PASS')
+          PY
+          echo 'IMP008A_PATCH_WINDOW_PRODUCTION_WIRING=PASS'
+
+      - name: Build and run patch metadata smoke
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 10
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 11
+          call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          if errorlevel 1 exit /b 12
+          cl /nologo /std:c++20 /utf-8 /O2 /EHsc /W4 /permissive- /Isrc probes\windows-arm64-nce-patch-window\production_probe.cpp /Fe:imp008a_patch_window_probe.exe
+          if errorlevel 1 exit /b 13
+          imp008a_patch_window_probe.exe
+          if errorlevel 1 exit /b 14
