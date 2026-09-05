@@ -2,13 +2,6 @@ name: Apply IMP-008A Windows Patch Window Fix
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008-windows-nce-integration
-    paths:
-      - tools/imp008_patch_windows_patch_window.py
-      - src/core/arm/nce/windows_patch_code_metadata.h
-      - .github/workflows/imp-008a-apply-generated-helper-patch.yml
 
 permissions:
   contents: write
