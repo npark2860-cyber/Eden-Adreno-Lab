@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <memory>
 #include <mutex>
 
 #include "core/arm/arm_interface.h"
@@ -11,6 +12,13 @@
 namespace Core::Memory {
 class Memory;
 }
+
+namespace Core::NCE {
+#if defined(_WIN32)
+class WindowsCrossThreadBreak;
+class WindowsX18FallbackRunner;
+#endif
+} // namespace Core::NCE
 
 namespace Core {
 
@@ -53,7 +61,8 @@ protected:
     void RewindBreakpointInstruction() override {}
 
 private:
-    // Assembly definitions.
+#if !defined(_WIN32)
+    // Linux/Android assembly and signal definitions.
     static HaltReason ReturnToRunCodeByTrampoline(void* tpidr, GuestContext* ctx,
                                                   u64 trampoline_addr);
     static HaltReason ReturnToRunCodeByExceptionLevelChange(int tid, void* tpidr);
@@ -64,11 +73,7 @@ private:
     static void GuestAlignmentFaultSignalHandler(int sig, void* info, void* raw_context);
     static void GuestAccessFaultSignalHandler(int sig, void* info, void* raw_context);
 
-    static void LockThreadParameters(void* tpidr);
-    static void UnlockThreadParameters(void* tpidr);
-
-private:
-    // C++ implementation functions for assembly definitions.
+    // C++ implementation functions for Linux/Android assembly definitions.
     static void* RestoreGuestContext(void* raw_context);
     static void SaveGuestContext(GuestContext* ctx, void* raw_context);
     static bool HandleFailedGuestFault(GuestContext* ctx, void* info, void* raw_context);
@@ -76,20 +81,34 @@ private:
     static bool HandleGuestAccessFault(GuestContext* ctx, void* info, void* raw_context);
     static void HandleHostAlignmentFault(int sig, void* info, void* raw_context);
     static void HandleHostAccessFault(int sig, void* info, void* raw_context);
+#endif
+
+    // NativeExecutionParameters synchronization exists on both host platforms. Linux/Android use
+    // the existing AArch64 assembly implementation; Windows provides the equivalent C++ atomic
+    // implementation in arm_nce_windows.cpp.
+    static void LockThreadParameters(void* tpidr);
+    static void UnlockThreadParameters(void* tpidr);
 
 public:
     Core::System& m_system;
 
     // Members set on initialization.
     std::size_t m_core_index{};
+#if defined(_WIN32)
+    std::unique_ptr<NCE::WindowsCrossThreadBreak> m_windows_break{};
+    std::unique_ptr<NCE::WindowsX18FallbackRunner> m_windows_x18_runner{};
+#else
     pid_t m_thread_id{-1};
+#endif
 
     // Core context.
     GuestContext m_guest_ctx{};
     Kernel::KThread* m_running_thread{};
 
-    // Stack for signal processing.
+#if !defined(_WIN32)
+    // Stack for POSIX signal processing.
     std::unique_ptr<u8[]> m_stack{};
+#endif
 };
 
 } // namespace Core
