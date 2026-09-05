@@ -2,9 +2,6 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008-windows-nce-integration
 
 permissions:
   contents: read
