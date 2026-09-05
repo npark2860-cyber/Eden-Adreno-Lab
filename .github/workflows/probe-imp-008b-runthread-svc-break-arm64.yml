@@ -2,6 +2,11 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - .github/workflows/probe-imp-008b-runthread-svc-break-arm64.yml
 
 permissions:
   contents: read
@@ -59,6 +64,8 @@ jobs:
           grep -Fq 'VirtualAlloc(nullptr, GuestStackSize' "$probe"
           grep -Fq 'HasNceLockSignature' "$probe"
           grep -Fq 'HasDynarmicNoopLockSignature' "$probe"
+          grep -Fq 'InterlockedCompareExchange(&guest_entered' "$probe"
+          grep -Fq 'IMP008B_GUEST_LOOP_ENTERED' "$probe"
           if grep -Fq 'dynamic_cast<' "$probe"; then
             echo 'IMP-008B probe must remain compatible with product -fno-rtti' >&2
             exit 41
@@ -70,6 +77,7 @@ jobs:
           fi
           echo 'IMP008B_REAL_OWNER_SOURCE_GUARD=PASS'
           echo 'IMP008B_BACKEND_LOCK_SIGNATURE_SOURCE=PASS'
+          echo 'IMP008B_GUEST_ENTERED_HANDSHAKE_SOURCE=PASS'
 
       - name: Add probe target to checkout only
         shell: bash
@@ -142,6 +150,7 @@ jobs:
           grep -Fq 'IMP008B_GUEST_STACK_ALLOCATION=PASS' imp008b-run.log
           grep -Fq 'IMP008B_FIRST_RUNTHREAD_SVC_RETURN=PASS' imp008b-run.log
           grep -Fq 'IMP008B_SECOND_RUNTHREAD_SVC_RETURN=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_GUEST_LOOP_ENTERED=PASS' imp008b-run.log
           grep -Fq 'IMP008B_BREAKLOOP_RETURN=PASS' imp008b-run.log
           grep -Fq 'IMP008B_BREAK_LOCK_LIFECYCLE=PASS' imp008b-run.log
           grep -Fq 'IMP008B_DYNARMIC_CONTROL_SELECTED=PASS' imp008b-run.log
