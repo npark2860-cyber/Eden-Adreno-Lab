@@ -1241,17 +1241,28 @@ if (HAS_NCE)
     if (WIN32)
         # Windows ARM64 keeps x18/TEB and host TPIDR platform-owned. Use the verified
         # Windows transition/runtime owners and assemble the entry shim with MSVC armasm64.
-        get_filename_component(NCE_MSVC_ARM64_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
-        set(NCE_ARMASM64 "${NCE_MSVC_ARM64_BIN}/armasm64.exe")
+        get_filename_component(NCE_WINDOWS_COMPILER_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        set(NCE_ARMASM64 "${NCE_WINDOWS_COMPILER_BIN}/armasm64.exe")
+        if (NOT EXISTS "${NCE_ARMASM64}")
+            # Eden's normal Windows ARM64 build uses MSYS2 CLANGARM64, while the verified
+            # Windows entry shim is assembled by the Visual Studio ARM64 assembler already
+            # present on supported Windows build hosts. Do not add a second assembler.
+            file(GLOB NCE_ARMASM64_CANDIDATES
+                "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostarm64/arm64/armasm64.exe")
+            if (NCE_ARMASM64_CANDIDATES)
+                list(SORT NCE_ARMASM64_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
+                list(GET NCE_ARMASM64_CANDIDATES 0 NCE_ARMASM64)
+            endif()
+        endif()
         if (NOT EXISTS "${NCE_ARMASM64}")
             message(FATAL_ERROR
-                "Windows ARM64 NCE requires armasm64.exe next to the selected ARM64 compiler: ${NCE_ARMASM64}")
+                "Windows ARM64 NCE requires the Visual Studio ARM64 armasm64.exe tool")
         endif()
 
         set(NCE_WINDOWS_ENTRY_SOURCE
             "${CMAKE_CURRENT_SOURCE_DIR}/arm/nce/windows_nce_entry.asm")
         set(NCE_WINDOWS_ENTRY_OBJECT
-            "${CMAKE_CURRENT_BINARY_DIR}/arm/nce/windows_nce_entry.obj")
+            "${CMAKE_CURRENT_BINARY_DIR}/windows_nce_entry.obj")
         add_custom_command(
             OUTPUT "${NCE_WINDOWS_ENTRY_OBJECT}"
             COMMAND "${NCE_ARMASM64}" -nologo

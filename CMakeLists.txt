@@ -296,7 +296,7 @@ if(EXISTS ${PROJECT_SOURCE_DIR}/hooks/pre-commit AND NOT EXISTS ${PROJECT_SOURCE
     endif()
 endif()
 
-if (ARCHITECTURE_arm64 AND (ANDROID OR LINUX OR (WIN32 AND MSVC)))
+if (ARCHITECTURE_arm64 AND (ANDROID OR LINUX OR WIN32))
     set(HAS_NCE 1)
     add_compile_definitions(HAS_NCE=1)
 endif()
