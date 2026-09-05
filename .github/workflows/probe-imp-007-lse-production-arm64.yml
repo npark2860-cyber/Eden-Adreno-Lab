@@ -2,14 +2,6 @@ name: Probe IMP-007 LSE Production ARM64
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-007-windows-x18-exclusive-lse
-    paths:
-      - src/core/arm/nce/patcher.cpp
-      - src/core/arm/nce/windows_x18_lse.h
-      - probes/windows-arm64-x18-lse-production/**
-      - .github/workflows/probe-imp-007-lse-production-arm64.yml
 
 permissions:
   contents: read
