@@ -1,12 +1,6 @@
 name: Apply IMP-008A Windows SVC Patch
 
 on:
-  push:
-    branches:
-      - exp/imp-008-windows-nce-integration
-    paths:
-      - tools/imp008_patch_windows_svc.py
-      - .github/workflows/imp-008a-apply-generated-helper-patch.yml
   workflow_dispatch:
 
 permissions:
@@ -32,7 +26,6 @@ jobs:
           git diff --check
           changed="$(git diff --name-only)"
           test "$changed" = "src/core/arm/nce/patcher.cpp"
-          grep -q 'WindowsNceEnterGuest' src/core/arm/nce/patcher.cpp || true
           grep -q 'WriteWindowsCurrentNceParametersLookup(cg, X1)' src/core/arm/nce/patcher.cpp
           grep -q 'cg.LDR(X16, X17' src/core/arm/nce/patcher.cpp
           grep -q 'this->UnlockContext(cg)' src/core/arm/nce/patcher.cpp
