@@ -29,12 +29,27 @@ jobs:
           New-Item -ItemType Directory -Force cmake-armasm-probe | Out-Null
           @'
           cmake_minimum_required(VERSION 3.24)
-          project(Imp008ArmAsm LANGUAGES CXX ASM_MASM)
-          add_library(imp008_entry OBJECT "${CMAKE_CURRENT_LIST_DIR}/../eden/src/core/arm/nce/windows_nce_entry.asm")
+          project(Imp008ArmAsm LANGUAGES CXX)
+
+          get_filename_component(MSVC_ARM64_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+          set(ARMASM64 "${MSVC_ARM64_BIN}/armasm64.exe")
+          if(NOT EXISTS "${ARMASM64}")
+              message(FATAL_ERROR "armasm64 not found next to selected ARM64 cl.exe: ${ARMASM64}")
+          endif()
+
+          set(ENTRY_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../eden/src/core/arm/nce/windows_nce_entry.asm")
+          set(ENTRY_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/windows_nce_entry.obj")
+          add_custom_command(
+              OUTPUT "${ENTRY_OBJECT}"
+              COMMAND "${ARMASM64}" -nologo "${ENTRY_SOURCE}" "${ENTRY_OBJECT}"
+              DEPENDS "${ENTRY_SOURCE}"
+              VERBATIM)
+          set_source_files_properties("${ENTRY_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+          add_library(imp008_entry STATIC "${ENTRY_OBJECT}")
           '@ | Set-Content -Encoding utf8 cmake-armasm-probe/CMakeLists.txt
 
           cmake -S cmake-armasm-probe -B cmake-armasm-build -G "Visual Studio 17 2022" -A ARM64
           if ($LASTEXITCODE -ne 0) { exit 20 }
           cmake --build cmake-armasm-build --config Release --target imp008_entry
           if ($LASTEXITCODE -ne 0) { exit 21 }
-          Write-Output 'IMP008A_CMAKE_ARMASM64_PRODUCTION_ENTRY=PASS'
+          Write-Output 'IMP008A_CMAKE_ARMASM64_CUSTOM_OBJECT=PASS'
