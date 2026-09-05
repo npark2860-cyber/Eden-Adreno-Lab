@@ -10,7 +10,6 @@
 #include <cstddef>
 
 #include "common/common_types.h"
-#include "core/arm/nce/x18_site_patcher.h"
 
 namespace Core::NCE {
 
@@ -31,8 +30,8 @@ public:
         return (static_cast<u64>(MetadataMagic) << 32) | size;
     }
 
-    static void RegisterRange(X18FallbackMetadata& metadata, u64 runtime_start,
-                              std::size_t size) noexcept {
+    template <typename Metadata>
+    static void RegisterRange(Metadata& metadata, u64 runtime_start, std::size_t size) noexcept {
         if (size == 0) {
             return;
         }
@@ -42,7 +41,8 @@ public:
         metadata[MetadataKey(runtime_start)] = MetadataValue(static_cast<u32>(size));
     }
 
-    [[nodiscard]] static bool Contains(u64 pc, const X18FallbackMetadata& metadata) noexcept {
+    template <typename Metadata>
+    [[nodiscard]] static bool Contains(u64 pc, const Metadata& metadata) noexcept {
         for (const auto& [key, value] : metadata) {
             if ((key & MetadataKeyBit) == 0 || static_cast<u32>(value >> 32) != MetadataMagic) {
                 continue;
@@ -58,6 +58,7 @@ public:
     }
 };
 
-static_assert(WindowsPatchCodeMetadata::MetadataMagic != X18SitePatcher::MetadataMagic);
+// IMP-006 x18 fallback uses the same tagged-key bit with value magic "X186" (0x58313836).
+static_assert(WindowsPatchCodeMetadata::MetadataMagic != 0x58313836u);
 
 } // namespace Core::NCE
