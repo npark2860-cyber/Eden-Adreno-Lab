@@ -1,7 +1,13 @@
-name: Apply IMP-008A Windows SVC Patch
+name: Apply IMP-008A Windows CMake Wiring
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - tools/imp008_patch_cmake_wiring.py
+      - .github/workflows/imp-008a-apply-generated-helper-patch.yml
 
 permissions:
   contents: write
@@ -16,26 +22,32 @@ jobs:
           ref: exp/imp-008-windows-nce-integration
           fetch-depth: 0
 
-      - name: Apply bounded SVC patch
-        run: python3 tools/imp008_patch_windows_svc.py
+      - name: Apply bounded Windows NCE CMake wiring
+        run: python3 tools/imp008_patch_cmake_wiring.py
 
       - name: Verify diff scope
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
-          changed="$(git diff --name-only)"
-          test "$changed" = "src/core/arm/nce/patcher.cpp"
-          grep -q 'WriteWindowsCurrentNceParametersLookup(cg, X1)' src/core/arm/nce/patcher.cpp
-          grep -q 'cg.LDR(X16, X17' src/core/arm/nce/patcher.cpp
-          grep -q 'this->UnlockContext(cg)' src/core/arm/nce/patcher.cpp
+          changed="$(git diff --name-only | sort)"
+          expected=$'CMakeLists.txt\nsrc/core/CMakeLists.txt'
+          test "$changed" = "$expected"
+          grep -Fq 'ARCHITECTURE_arm64 AND (ANDROID OR LINUX OR (WIN32 AND MSVC))' CMakeLists.txt
+          grep -Fq 'arm/nce/arm_nce_windows.cpp' src/core/CMakeLists.txt
+          grep -Fq 'NCE_ARMASM64' src/core/CMakeLists.txt
+          grep -Fq 'arm/nce/x18_site_patcher.cpp' src/core/CMakeLists.txt
+          if awk '/if \(WIN32\)/,/else\(\)/' src/core/CMakeLists.txt | grep -Fq 'arm/nce/arm_nce.s'; then
+            echo 'Linux arm_nce.s leaked into Windows NCE source branch' >&2
+            exit 31
+          fi
 
-      - name: Commit Windows SVC integration
+      - name: Commit Windows NCE build selection
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/core/arm/nce/patcher.cpp
-          git commit -m "nce: add Windows-safe SVC trampoline path"
+          git add CMakeLists.txt src/core/CMakeLists.txt
+          git commit -m "nce: wire Windows ARM64 product build selection"
           git push origin HEAD:exp/imp-008-windows-nce-integration
