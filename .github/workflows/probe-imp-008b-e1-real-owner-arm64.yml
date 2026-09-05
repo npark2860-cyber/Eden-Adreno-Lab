@@ -1,0 +1,139 @@
+name: Probe IMP-008B E1 Real Owner Selection
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008b-clean-recovery
+    paths:
+      - probes/windows-arm64-nce-runthread-e1/real_owner_selection.cpp
+      - .github/workflows/probe-imp-008b-e1-real-owner-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  e1-real-owner-selection:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout clean IMP-008B recovery branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify E1 scope contract
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          probe='probes/windows-arm64-nce-runthread-e1/real_owner_selection.cpp'
+          grep -Fq 'KProcess::Create(kernel)' "$probe"
+          grep -Fq 'LoadFromMetadata(kernel, metadata' "$probe"
+          grep -Fq 'KThread::InitializeDummyThread(system, thread, process)' "$probe"
+          grep -Fq 'process->GetArmInterface(0)' "$probe"
+          grep -Fq 'interface->LockThread(thread)' "$probe"
+          grep -Fq 'interface->UnlockThread(thread)' "$probe"
+          if grep -Fq 'RunThread(' "$probe"; then
+            echo 'E1 must stop before guest execution' >&2
+            exit 41
+          fi
+          if grep -Fq 'dynamic_cast<' "$probe"; then
+            echo 'E1 must not depend on RTTI' >&2
+            exit 42
+          fi
+          grep -Fq 'target_link_libraries(yuzu-cmd PRIVATE common core input_common frontend_common video_core)' src/yuzu_cmd/CMakeLists.txt
+          grep -Fq 'target_link_libraries(yuzu-cmd PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)' src/yuzu_cmd/CMakeLists.txt
+          echo 'IMP008B_E1_SCOPE_SOURCE=PASS'
+
+      - name: Add E1 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          # IMP-008B E1 CI-only executable. Reuse the normal Eden CLI executable dependency contract.
+          add_executable(imp008b_e1_real_owner
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread-e1/real_owner_selection.cpp)
+          target_include_directories(imp008b_e1_real_owner PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008b_e1_real_owner PRIVATE
+              common core input_common frontend_common video_core)
+          target_link_libraries(imp008b_e1_real_owner PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+          CMAKE
+          echo 'IMP008B_E1_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-runthread-e1/real_owner_selection.cpp' build/compile_commands.json
+          grep -R -Fq 'windows_nce_entry.obj' build
+          echo 'IMP008B_E1_NORMAL_CONFIGURE=PASS'
+
+      - name: Build E1 product-linked executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e1_real_owner --parallel
+          exe="$(find build -type f -name 'imp008b_e1_real_owner.exe' -print -quit)"
+          test -n "$exe"
+          echo "IMP008B_E1_EXECUTABLE=$exe"
+          "$exe" | tee imp008b-e1.log
+          grep -Fq 'IMP008B_E1_REAL_PROCESS=PASS' imp008b-e1.log
+          grep -Fq 'IMP008B_E1_REAL_KTHREAD=PASS' imp008b-e1.log
+          grep -Fq 'IMP008B_E1_NCE_SELECTED=PASS' imp008b-e1.log
+          grep -Fq 'IMP008B_E1_PRODUCT_LINK_RUN=PASS' imp008b-e1.log
+          echo 'IMP008B_E1_GATE=PASS'
