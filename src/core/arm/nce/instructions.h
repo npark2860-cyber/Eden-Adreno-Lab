@@ -120,21 +120,96 @@ static_assert(MSR(0xD51BD040).GetRt() == 0x0);
 union Exclusive {
     constexpr explicit Exclusive(u32 raw_) : raw{raw_} {}
 
-    constexpr bool Verify() {
+    constexpr bool Verify() const {
         return this->GetSig() == 0x10;
     }
 
-    constexpr u32 GetSig() {
+    constexpr u32 GetRt() const {
+        return decltype(rt)::ExtractValue(raw);
+    }
+
+    constexpr u32 GetRn() const {
+        return decltype(rn)::ExtractValue(raw);
+    }
+
+    constexpr u32 GetRt2() const {
+        return decltype(rt2)::ExtractValue(raw);
+    }
+
+    constexpr u32 GetRs() const {
+        return decltype(rs)::ExtractValue(raw);
+    }
+
+    constexpr u32 GetOperation() const {
+        return decltype(l)::ExtractValue(raw);
+    }
+
+    constexpr u32 GetSig() const {
         return decltype(sig)::ExtractValue(raw);
     }
 
-    constexpr u32 AsOrdered() {
+    constexpr bool IsLoad() const {
+        return (GetOperation() & 0b10U) != 0;
+    }
+
+    constexpr bool IsPair() const {
+        return (GetOperation() & 0b01U) != 0;
+    }
+
+    constexpr bool HasRegisterInput(u32 reg) const {
+        if (GetRn() == reg) {
+            return true;
+        }
+        if (IsLoad()) {
+            return false;
+        }
+        return GetRt() == reg || (IsPair() && GetRt2() == reg);
+    }
+
+    constexpr bool HasRegisterOutput(u32 reg) const {
+        if (IsLoad()) {
+            return GetRt() == reg || (IsPair() && GetRt2() == reg);
+        }
+        return GetRs() == reg;
+    }
+
+    constexpr bool TouchesRegister(u32 reg) const {
+        return HasRegisterInput(reg) || HasRegisterOutput(reg);
+    }
+
+    constexpr u32 AsOrdered() const {
         return raw | decltype(o0)::FormatValue(1);
+    }
+
+    // Rewrite only architecturally active register operands. This is used by the Windows x18
+    // exclusive trampoline so physical x18 remains the platform TEB while the guest's virtual
+    // x18 value is carried in a non-conflicting scratch register.
+    constexpr u32 RewriteRegister(u32 from, u32 to) const {
+        u32 rewritten = AsOrdered();
+        if (GetRn() == from) {
+            rewritten = ReplaceRegisterField(rewritten, 5, to);
+        }
+        if (GetRt() == from) {
+            rewritten = ReplaceRegisterField(rewritten, 0, to);
+        }
+        if (IsPair() && GetRt2() == from) {
+            rewritten = ReplaceRegisterField(rewritten, 10, to);
+        }
+        if (!IsLoad() && GetRs() == from) {
+            rewritten = ReplaceRegisterField(rewritten, 16, to);
+        }
+        return rewritten;
     }
 
     u32 raw;
 
 private:
+    static constexpr u32 ReplaceRegisterField(u32 value, u32 shift, u32 reg) {
+        constexpr u32 RegisterMask = 0x1FU;
+        const u32 mask = RegisterMask << shift;
+        return (value & ~mask) | ((reg & RegisterMask) << shift);
+    }
+
     BitField<0, 5, u32> rt;    // memory operand
     BitField<5, 5, u32> rn;    // register operand 1
     BitField<10, 5, u32> rt2;  // register operand 2
@@ -148,5 +223,9 @@ static_assert(Exclusive(0xC85FFC00).Verify());
 static_assert(Exclusive(0xC85FFC00).AsOrdered() == 0xC85FFC00);
 static_assert(Exclusive(0xC85F7C00).AsOrdered() == 0xC85FFC00);
 static_assert(Exclusive(0xC8200440).AsOrdered() == 0xC8208440);
+static_assert(Exclusive(0xC85F7E40).HasRegisterInput(18));
+static_assert(Exclusive(0xC85F7C12).HasRegisterOutput(18));
+static_assert(Exclusive(0xC85F7E40).RewriteRegister(18, 19) == 0xC85FFE60);
+static_assert(Exclusive(0xC8200452).HasRegisterInput(18));
 
 } // namespace Core::NCE
