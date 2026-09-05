@@ -10,6 +10,10 @@
 #include "core/arm/nce/guest_context.h"
 #include "core/arm/nce/instructions.h"
 #include "core/arm/nce/patcher.h"
+#if defined(_WIN32)
+#include "core/arm/nce/windows_nce_transition.h"
+#include "core/arm/nce/windows_x18_exclusive.h"
+#endif
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/svc.h"
@@ -80,6 +84,88 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
     const auto text = std::span{program_image}.subspan(code.offset, code.size);
     const auto text_words =
         std::span<const u32>{reinterpret_cast<const u32*>(text.data()), text.size() / sizeof(u32)};
+
+#if defined(_WIN32)
+    const auto WriteWindowsX18ExclusiveTrampoline =
+        [&](ModuleDestLabel module_dest, const WindowsX18ExclusivePlan& plan,
+            oaknut::VectorCodeGenerator& cg) {
+            constexpr u32 FullSaveFrameSize = 0x130;
+            constexpr u32 VolatileVectorOffset = 0x90;
+            constexpr u32 ScratchPairOffset = 0x110;
+            constexpr u32 LinkRegisterOffset = 0x120;
+            constexpr u32 BlrBase = 0xD63F0000U;
+            constexpr size_t GuestX18Offset =
+                offsetof(GuestContext, cpu_registers) + sizeof(u64) * GuestX18Register;
+
+            const oaknut::XReg value_reg{static_cast<int>(plan.value_scratch)};
+            const oaknut::XReg context_reg{static_cast<int>(plan.context_scratch)};
+            oaknut::Label getter_address;
+
+            // Preserve the production-like footprint already proven to coexist with a live native
+            // reservation on Windows ARM64. The selected nonvolatile scratches are saved because
+            // they temporarily carry virtual guest x18 and the GuestContext pointer.
+            cg.SUB(SP, SP, FullSaveFrameSize);
+            for (int i = 0; i <= 16; i += 2) {
+                cg.STP(oaknut::XReg{i}, oaknut::XReg{i + 1}, SP, 8 * i);
+            }
+            for (int i = 0; i <= 6; i += 2) {
+                cg.STP(oaknut::QReg{i}, oaknut::QReg{i + 1}, SP,
+                       VolatileVectorOffset + 16 * i);
+            }
+            cg.STP(value_reg, context_reg, SP, ScratchPairOffset);
+            cg.STR(X30, SP, LinkRegisterOffset);
+
+            // Generated Windows code must use the stable C-linkage getter. Never repurpose
+            // physical x18 or TPIDR_EL0 as guest metadata.
+            cg.LDR(context_reg, getter_address);
+            cg.dw(BlrBase | (plan.context_scratch << 5));
+            cg.MOV(context_reg, X0);
+            cg.LDR(context_reg, context_reg,
+                   offsetof(NativeExecutionParameters, native_context));
+            if (plan.reads_x18) {
+                cg.LDR(value_reg, context_reg, GuestX18Offset);
+            }
+
+            // Restore every unrelated guest volatile register before the actual memory operation.
+            // The two selected nonvolatile scratches intentionally remain live until the rewritten
+            // exclusive completes.
+            cg.LDR(X30, SP, LinkRegisterOffset);
+            for (int i = 6; i >= 0; i -= 2) {
+                cg.LDP(oaknut::QReg{i}, oaknut::QReg{i + 1}, SP,
+                       VolatileVectorOffset + 16 * i);
+            }
+            for (int i = 16; i >= 0; i -= 2) {
+                cg.LDP(oaknut::XReg{i}, oaknut::XReg{i + 1}, SP, 8 * i);
+            }
+            cg.ADD(SP, SP, FullSaveFrameSize);
+
+            // Keep the real LDXR/STXR-family instruction in the physical ARM reservation domain.
+            // Only architectural x18 operand fields have been rewritten to value_reg.
+            cg.dw(plan.rewritten_instruction);
+
+            if (plan.writes_x18) {
+                cg.STR(value_reg, context_reg, GuestX18Offset);
+            }
+
+            // Restore the two guest nonvolatile registers used as scratches without perturbing a
+            // possible x18 output already committed to virtual GuestContext state.
+            cg.SUB(SP, SP, FullSaveFrameSize);
+            cg.LDP(value_reg, context_reg, SP, ScratchPairOffset);
+            cg.ADD(SP, SP, FullSaveFrameSize);
+
+            if (&cg == &c_pre) {
+                this->BranchToModulePre(module_dest);
+            } else {
+                this->BranchToModule(module_dest);
+            }
+
+            // The branch above skips this literal at runtime. LDR-literal resolves it while the
+            // patch is generated, avoiding any compiler/TEB TLS-offset dependency.
+            cg.l(getter_address);
+            cg.dx(static_cast<u64>(reinterpret_cast<uintptr_t>(
+                &GetCurrentNceContextForGeneratedCode)));
+        };
+#endif
 
     // Loop through instructions, patching as needed.
     for (u32 i = ModuleCodeIndex; i < static_cast<u32>(text_words.size()); i++) {
@@ -168,6 +254,18 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
         }
 
         if (auto exclusive = Exclusive{inst}; exclusive.Verify()) {
+#if defined(_WIN32)
+            if (const auto plan = BuildWindowsX18ExclusivePlan(exclusive)) {
+                bool pre_buffer = false;
+                const auto ret = AddRelocations(pre_buffer);
+                if (pre_buffer) {
+                    WriteWindowsX18ExclusiveTrampoline(ret, *plan, c_pre);
+                } else {
+                    WriteWindowsX18ExclusiveTrampoline(ret, *plan, c);
+                }
+                continue;
+            }
+#endif
             curr_patch->m_exclusives.push_back(i);
         }
     }
