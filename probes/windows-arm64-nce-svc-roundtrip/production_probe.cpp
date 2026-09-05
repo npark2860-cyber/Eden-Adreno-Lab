@@ -33,6 +33,8 @@ constexpr std::size_t GuestStackSize = 0x10000;
 constexpr std::uint32_t Svc6 = 0xD40000C1u;
 constexpr std::uint32_t Svc7 = 0xD40000E1u;
 constexpr std::uint32_t Brk = 0xD4200000u;
+constexpr std::uint32_t LockLocked = 0;
+constexpr std::uint32_t LockUnlocked = 1;
 
 static_assert(SVC{Svc6}.Verify() && SVC{Svc6}.GetValue() == 6);
 static_assert(SVC{Svc7}.Verify() && SVC{Svc7}.GetValue() == 7);
@@ -152,6 +154,7 @@ int main() {
 
     CurrentNceContext::Parameters params{};
     params.native_context = &guest;
+    params.lock.store(LockUnlocked, std::memory_order_release);
     CurrentNceContext::Install(&params);
 
     const auto first_result = Core::NCE::WindowsNceEnterGuest(
@@ -168,13 +171,13 @@ int main() {
     const auto trampoline_it = trampolines.find(second_svc_pc);
     const bool trampoline_ok = trampoline_it != trampolines.end();
     if (!trampoline_ok) {
-        params.lock.unlock();
+        params.lock.store(LockUnlocked, std::memory_order_release);
         Report("IMP008A_POST_SVC_TRAMPOLINE_MAP", false);
         return 1;
     }
 
     // Simulate PhysicalCore::ExitContext after the first RunThread return.
-    params.lock.unlock();
+    params.lock.store(LockUnlocked, std::memory_order_release);
 
     // Simulate host-side SVC handling changing guest architectural state before the next entry.
     guest.cpu_registers[0] = ResumeX0;
@@ -184,7 +187,7 @@ int main() {
 
     // Simulate PhysicalCore::EnterContext before the next RunThread call. The generated post-SVC
     // trampoline must release this lock before the second SVC can reacquire it.
-    params.lock.lock();
+    params.lock.store(LockLocked, std::memory_order_release);
     CurrentNceContext::Install(&params);
     const auto second_result = Core::NCE::WindowsNceEnterGuest(
         &guest, reinterpret_cast<const void*>(trampoline_it->second));
@@ -198,7 +201,7 @@ int main() {
     const bool resumed_x18_ok = guest.cpu_registers[18] == ResumeX18;
 
     // Simulate the second PhysicalCore::ExitContext for clean shutdown.
-    params.lock.unlock();
+    params.lock.store(LockUnlocked, std::memory_order_release);
 
     const bool x18_after = ReadPhysicalX18() == teb;
 
