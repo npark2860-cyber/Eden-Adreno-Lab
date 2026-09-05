@@ -42,6 +42,16 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     context.ContextFlags =
         CONTEXT_ARM64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT;
 
+    // Match the existing Linux NCE ownership handoff: PhysicalCore enters RunThread with the
+    // NativeExecutionParameters lock held, but native guest code owns an unlocked interval so SVC,
+    // fault and cross-thread-break paths can acquire it. This is the last host-side state mutation
+    // before RtlRestoreContext transfers control to guest SP/PC.
+    auto* const parameters = CurrentNceContext::Get();
+    if (parameters == nullptr || parameters->native_context != guest) {
+        std::abort();
+    }
+    parameters->lock.store(SpinLockUnlocked, std::memory_order_release);
+
     RtlRestoreContext(reinterpret_cast<PCONTEXT>(&context), nullptr);
     std::abort();
 }
