@@ -1,0 +1,55 @@
+name: Probe IMP-007 Classic Exclusive Production ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-007-windows-x18-exclusive-lse
+    paths:
+      - src/core/arm/nce/patcher.cpp
+      - src/core/arm/nce/windows_x18_exclusive.h
+      - src/core/arm/nce/instructions.h
+      - probes/windows-arm64-x18-exclusive-production/**
+      - .github/workflows/probe-imp-007-classic-exclusive-production-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  production-exclusive:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Eden implementation
+        uses: actions/checkout@v4
+        with:
+          path: eden
+
+      - name: Checkout fixed Oaknut dependency
+        uses: actions/checkout@v4
+        with:
+          repository: eden-emulator/oaknut
+          ref: v2.0.3
+          path: oaknut
+
+      - name: Set up CLANGARM64 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            clang:p boost:p fmt:p unordered_dense:p
+
+      - name: Compile actual Eden production patcher
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          clang++ \
+            -std=c++20 -Wall -Wextra \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE \
+            -Ieden/src -Ioaknut/include \
+            -c eden/src/core/arm/nce/patcher.cpp \
+            -o imp007_patcher.o
+          test -s imp007_patcher.o
+          echo "IMP007_PRODUCTION_PATCHER_COMPILE=PASS"
