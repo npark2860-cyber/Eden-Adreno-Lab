@@ -2,6 +2,11 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - .github/workflows/probe-imp-008b-runthread-svc-break-arm64.yml
 
 permissions:
   contents: read
@@ -74,11 +79,13 @@ jobs:
           grep -Fq 'target_link_libraries(yuzu-cmd PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)' src/yuzu_cmd/CMakeLists.txt
           grep -Fq 'set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} winmm iphlpapi ws2_32 wlanapi)' CMakeLists.txt
           grep -Fq '#include "core/arm/nce/patcher.h"' "$probe"
+          grep -Fq '#include <vk_mem_alloc.h>' src/video_core/vulkan_common/vma.h
           echo 'IMP008B_REAL_OWNER_SOURCE_GUARD=PASS'
           echo 'IMP008B_BACKEND_LOCK_SIGNATURE_SOURCE=PASS'
           echo 'IMP008B_GUEST_ENTERED_HANDSHAKE_SOURCE=PASS'
           echo 'IMP008B_STANDARD_EXECUTABLE_LINK_CONTRACT_SOURCE=PASS'
           echo 'IMP008B_OAKNUT_DIRECT_HEADER_SOURCE=PASS'
+          echo 'IMP008B_VMA_HEADER_CONTRACT_SOURCE=PASS'
 
       - name: Add probe target to checkout only
         shell: bash
@@ -91,10 +98,16 @@ jobs:
           # dependency contract aligned with the normal Eden CLI executable rather than trying to
           # link the large static core archive in isolation. The probe directly includes patcher.h,
           # so retain Oaknut's interface include path explicitly for this probe-only executable.
+          # VMA 3.3 is an INTERFACE/STB-style dependency: video_core references its API, while the
+          # probe needs exactly one implementation TU to satisfy those unrelated final-link symbols.
+          file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/imp008b_vma_impl.cpp
+              "#define VMA_IMPLEMENTATION\n#include <vk_mem_alloc.h>\n")
           add_executable(imp008b_runthread_smoke
-              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread/production_probe.cpp)
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread/production_probe.cpp
+              ${CMAKE_CURRENT_BINARY_DIR}/imp008b_vma_impl.cpp)
           target_include_directories(imp008b_runthread_smoke PRIVATE ${CMAKE_SOURCE_DIR}/src)
-          target_compile_definitions(imp008b_runthread_smoke PRIVATE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+          target_compile_definitions(imp008b_runthread_smoke PRIVATE
+              _WIN32_WINNT=0x0A00 WINVER=0x0A00 VK_USE_PLATFORM_WIN32_KHR)
           target_link_libraries(imp008b_runthread_smoke PRIVATE
               common core input_common frontend_common video_core merry::oaknut
               ${PLATFORM_LIBRARIES} Threads::Threads)
@@ -102,6 +115,7 @@ jobs:
           echo 'IMP008B_CI_ONLY_TARGET_WIRING=PASS'
           echo 'IMP008B_STANDARD_EXECUTABLE_LINK_CONTRACT=PASS'
           echo 'IMP008B_OAKNUT_PROBE_INTERFACE=PASS'
+          echo 'IMP008B_PROBE_LOCAL_VMA_IMPLEMENTATION=PASS'
 
       - name: Set up normal Eden CLANGARM64 toolchain
         id: msys2
@@ -133,10 +147,12 @@ jobs:
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
           grep -Fq 'windows-arm64-nce-runthread/production_probe.cpp' build/compile_commands.json
+          grep -Fq 'imp008b_vma_impl.cpp' build/compile_commands.json
           grep -Fq -- '-fno-rtti' build/compile_commands.json
           grep -R -Fq 'windows_nce_entry.obj' build
           echo 'IMP008B_NORMAL_CONFIGURE=PASS'
           echo 'IMP008B_PRODUCT_NO_RTTI_PROBE_COMPILE=PASS'
+          echo 'IMP008B_VMA_IMPLEMENTATION_COMPILE_SELECTION=PASS'
 
       - name: Build real core-linked IMP-008B smoke
         shell: msys2 {0}
