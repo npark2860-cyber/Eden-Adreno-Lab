@@ -1,7 +1,14 @@
-name: Apply IMP-008A Windows CMake Wiring
+name: Apply IMP-008A Windows Patch Window Fix
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - tools/imp008_patch_windows_patch_window.py
+      - src/core/arm/nce/windows_patch_code_metadata.h
+      - .github/workflows/imp-008a-apply-generated-helper-patch.yml
 
 permissions:
   contents: write
@@ -16,8 +23,8 @@ jobs:
           ref: exp/imp-008-windows-nce-integration
           fetch-depth: 0
 
-      - name: Apply bounded Windows NCE CMake wiring
-        run: python3 tools/imp008_patch_cmake_wiring.py
+      - name: Apply bounded Windows generated-patch window fix
+        run: python3 tools/imp008_patch_windows_patch_window.py
 
       - name: Verify diff scope
         shell: bash
@@ -25,23 +32,20 @@ jobs:
           set -euo pipefail
           git diff --check
           changed="$(git diff --name-only | sort)"
-          expected=$'CMakeLists.txt\nsrc/core/CMakeLists.txt'
+          expected=$'src/core/CMakeLists.txt\nsrc/core/arm/nce/arm_nce_windows.cpp\nsrc/core/arm/nce/patcher.cpp'
           test "$changed" = "$expected"
-          grep -Fq 'ARCHITECTURE_arm64 AND (ANDROID OR LINUX OR WIN32)' CMakeLists.txt
-          grep -Fq 'arm/nce/arm_nce_windows.cpp' src/core/CMakeLists.txt
-          grep -Fq 'NCE_ARMASM64_CANDIDATES' src/core/CMakeLists.txt
-          grep -Fq 'arm/nce/x18_site_patcher.cpp' src/core/CMakeLists.txt
-          if awk '/if \(WIN32\)/,/else\(\)/' src/core/CMakeLists.txt | grep -Fq 'arm/nce/arm_nce.s'; then
-            echo 'Linux arm_nce.s leaked into Windows NCE source branch' >&2
-            exit 31
-          fi
+          grep -Fq 'WindowsPatchCodeMetadata::RegisterRange' src/core/arm/nce/patcher.cpp
+          grep -Fq 'WindowsPatchCodeMetadata::Contains' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'state.patch_window' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'UnlockThreadParameters(params)' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'arm/nce/windows_patch_code_metadata.h' src/core/CMakeLists.txt
 
-      - name: Commit Windows NCE build selection
+      - name: Commit patch-window ownership fix
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CMakeLists.txt src/core/CMakeLists.txt
-          git commit -m "nce: align Windows ARM64 NCE with normal CLANGARM64 build"
+          git add src/core/CMakeLists.txt src/core/arm/nce/arm_nce_windows.cpp src/core/arm/nce/patcher.cpp
+          git commit -m "nce: defer Windows breaks inside generated patch code"
           git push origin HEAD:exp/imp-008-windows-nce-integration
