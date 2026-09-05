@@ -53,3 +53,37 @@ jobs:
             -o imp007_patcher.o
           test -s imp007_patcher.o
           echo "IMP007_PRODUCTION_PATCHER_COMPILE=PASS"
+
+      - name: Build and run scalar production classic-exclusive smoke
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cat > production_link_stubs.cpp <<'EOF'
+          #include <cstdlib>
+          #include "common/cpu_features.h"
+          #include "common/logging.h"
+
+          void AssertFailSoftImpl() {}
+          [[noreturn]] void AssertFatalImpl() { std::abort(); }
+
+          namespace Common {
+          WallClock::WallClock(bool, u64) noexcept {}
+          }
+
+          namespace Common::Log {
+          void FmtLogMessageImpl(Class, Level, const char*, unsigned int, const char*,
+                                 fmt::string_view, const fmt::format_args&) {}
+          } // namespace Common::Log
+          EOF
+
+          clang++ \
+            -std=c++20 -O2 -ffunction-sections -fdata-sections \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -DNDEBUG \
+            -Ieden/src -Ioaknut/include \
+            eden/probes/windows-arm64-x18-exclusive-production/production_probe.cpp \
+            production_link_stubs.cpp \
+            eden/src/core/arm/nce/patcher.cpp \
+            -Wl,--gc-sections -lfmt \
+            -o imp007_production_scalar_smoke.exe
+
+          ./imp007_production_scalar_smoke.exe
