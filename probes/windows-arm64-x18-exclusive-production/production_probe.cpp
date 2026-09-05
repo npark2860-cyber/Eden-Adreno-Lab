@@ -25,6 +25,7 @@ namespace {
 constexpr std::size_t EntryOffset = 0x24;
 constexpr std::size_t ImageSize = 0x100;
 constexpr std::uint64_t InitialValue = 0x1122334455667788ull;
+constexpr std::uint64_t SecondValue = 0x2233445566778899ull;
 constexpr std::uint64_t StoreValue = 0x8877665544332211ull;
 constexpr unsigned Attempts = 4096;
 
@@ -36,6 +37,23 @@ constexpr std::uint32_t StxrW2X18ToX0 = 0xC8027C12u;
 constexpr std::uint32_t StxrW18X1ToX0 = 0xC8127C01u;
 constexpr std::uint32_t AddX1X1One = 0x91000421u;
 constexpr std::uint32_t MovW0W2 = 0x2A0203E0u;
+
+constexpr std::uint32_t LdxpX0X1FromX18 = 0xC87F0640u;
+constexpr std::uint32_t StxpW3X0X1ToX18 = 0xC8230640u;
+constexpr std::uint32_t LdxpX18X1FromX0 = 0xC87F0412u;
+constexpr std::uint32_t LdxpX2X3FromX0 = 0xC87F0C02u;
+constexpr std::uint32_t StxpW4X18X3ToX0 = 0xC8240C12u;
+constexpr std::uint32_t StxpW18X2X3ToX0 = 0xC8320C02u;
+constexpr std::uint32_t MovW0W3 = 0x2A0303E0u;
+constexpr std::uint32_t MovW0W4 = 0x2A0403E0u;
+
+constexpr std::uint32_t LdaxrX1FromX18 = 0xC85FFE41u;
+constexpr std::uint32_t StlxrW2X1ToX18 = 0xC802FE41u;
+
+struct PairValue {
+    std::uint64_t first;
+    std::uint64_t second;
+};
 
 struct ExecutableImage {
     void* base{};
@@ -187,6 +205,93 @@ bool ProbeStatusRole(GuestContext& guest) {
     return false;
 }
 
+bool ProbePairBaseRole(GuestContext& guest) {
+    auto image = BuildPatched({LdxpX0X1FromX18, StxpW3X0X1ToX18, MovW0W3, Ret});
+    if (!image) {
+        return false;
+    }
+
+    alignas(16) PairValue target{};
+    guest.cpu_registers[18] = reinterpret_cast<std::uint64_t>(&target);
+    const auto entry = image.Entry<std::uint32_t (*)()>();
+    for (unsigned i = 0; i < Attempts; ++i) {
+        target = {InitialValue, SecondValue};
+        if (entry() == 0 && target.first == InitialValue && target.second == SecondValue) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ProbePairResultRole(GuestContext& guest) {
+    auto image = BuildPatched({LdxpX18X1FromX0, Ret});
+    if (!image) {
+        return false;
+    }
+
+    alignas(16) PairValue target{InitialValue, SecondValue};
+    guest.cpu_registers[18] = 0;
+    const auto entry = image.Entry<void (*)(PairValue*)>();
+    entry(&target);
+    return guest.cpu_registers[18] == InitialValue;
+}
+
+bool ProbePairStoreDataRole(GuestContext& guest) {
+    auto image = BuildPatched({LdxpX2X3FromX0, StxpW4X18X3ToX0, MovW0W4, Ret});
+    if (!image) {
+        return false;
+    }
+
+    alignas(16) PairValue target{};
+    guest.cpu_registers[18] = StoreValue;
+    const auto entry = image.Entry<std::uint32_t (*)(PairValue*)>();
+    for (unsigned i = 0; i < Attempts; ++i) {
+        target = {InitialValue, SecondValue};
+        if (entry(&target) == 0 && target.first == StoreValue && target.second == SecondValue) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ProbePairStatusRole(GuestContext& guest) {
+    auto image = BuildPatched({LdxpX2X3FromX0, StxpW18X2X3ToX0, Ret});
+    if (!image) {
+        return false;
+    }
+
+    alignas(16) PairValue target{};
+    const auto entry = image.Entry<void (*)(PairValue*)>();
+    for (unsigned i = 0; i < Attempts; ++i) {
+        target = {InitialValue, SecondValue};
+        guest.cpu_registers[18] = ~0ull;
+        entry(&target);
+        if (guest.cpu_registers[18] == 0 && target.first == InitialValue &&
+            target.second == SecondValue) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ProbeAcquireRelease(GuestContext& guest) {
+    auto image = BuildPatched({LdaxrX1FromX18, AddX1X1One, StlxrW2X1ToX18, MovW0W2, Ret});
+    if (!image) {
+        return false;
+    }
+
+    alignas(64) std::uint64_t target{};
+    guest.cpu_registers[18] = reinterpret_cast<std::uint64_t>(&target);
+    const auto entry = image.Entry<std::uint32_t (*)()>();
+    for (unsigned i = 0; i < Attempts; ++i) {
+        target = InitialValue;
+        if (entry() == 0 && target == InitialValue + 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 int main() {
@@ -204,6 +309,11 @@ int main() {
     const bool result_ok = ProbeResultRole(guest);
     const bool store_data_ok = ProbeStoreDataRole(guest);
     const bool status_ok = ProbeStatusRole(guest);
+    const bool pair_base_ok = ProbePairBaseRole(guest);
+    const bool pair_result_ok = ProbePairResultRole(guest);
+    const bool pair_store_data_ok = ProbePairStoreDataRole(guest);
+    const bool pair_status_ok = ProbePairStatusRole(guest);
+    const bool acquire_release_ok = ProbeAcquireRelease(guest);
 
     CurrentNceContext::Clear();
     const bool x18_after = ReadPhysicalX18() == teb;
@@ -213,10 +323,23 @@ int main() {
     Report("PRODUCTION_SCALAR_X18_RESULT", result_ok);
     Report("PRODUCTION_SCALAR_X18_STORE_DATA", store_data_ok);
     Report("PRODUCTION_SCALAR_X18_STATUS", status_ok);
+    Report("PRODUCTION_PAIR_X18_BASE", pair_base_ok);
+    Report("PRODUCTION_PAIR_X18_RESULT", pair_result_ok);
+    Report("PRODUCTION_PAIR_X18_STORE_DATA", pair_store_data_ok);
+    Report("PRODUCTION_PAIR_X18_STATUS", pair_status_ok);
+    Report("PRODUCTION_ACQUIRE_RELEASE_X18_BASE", acquire_release_ok);
     Report("PRODUCTION_X18_TEB_AFTER", x18_after);
 
-    const bool pass = x18_before && base_ok && result_ok && store_data_ok && status_ok && x18_after;
+    const bool scalar_pass = base_ok && result_ok && store_data_ok && status_ok;
+    const bool pair_pass = pair_base_ok && pair_result_ok && pair_store_data_ok && pair_status_ok;
+    const bool pass = x18_before && scalar_pass && pair_pass && acquire_release_ok && x18_after;
+
     std::printf("IMP007_CLASSIC_EXCLUSIVE_PRODUCTION_SCALAR_SMOKE=%s\n",
-                pass ? "PASS" : "FAIL");
+                scalar_pass ? "PASS" : "FAIL");
+    std::printf("IMP007_CLASSIC_EXCLUSIVE_PRODUCTION_PAIR_SMOKE=%s\n",
+                pair_pass ? "PASS" : "FAIL");
+    std::printf("IMP007_CLASSIC_EXCLUSIVE_PRODUCTION_ACQREL_SMOKE=%s\n",
+                acquire_release_ok ? "PASS" : "FAIL");
+    std::printf("IMP007_CLASSIC_EXCLUSIVE_PRODUCTION_SMOKE=%s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }
