@@ -2,6 +2,9 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
 
 permissions:
   contents: read
@@ -70,25 +73,34 @@ jobs:
             echo 'Dynarmic64 unexpectedly overrides the lock-signature control' >&2
             exit 42
           fi
+          grep -Fq 'target_link_libraries(yuzu-cmd PRIVATE common core input_common frontend_common video_core)' src/yuzu_cmd/CMakeLists.txt
+          grep -Fq 'target_link_libraries(yuzu-cmd PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)' src/yuzu_cmd/CMakeLists.txt
+          grep -Fq 'set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} winmm iphlpapi ws2_32 wlanapi)' CMakeLists.txt
           echo 'IMP008B_REAL_OWNER_SOURCE_GUARD=PASS'
           echo 'IMP008B_BACKEND_LOCK_SIGNATURE_SOURCE=PASS'
           echo 'IMP008B_GUEST_ENTERED_HANDSHAKE_SOURCE=PASS'
+          echo 'IMP008B_STANDARD_EXECUTABLE_LINK_CONTRACT_SOURCE=PASS'
 
       - name: Add probe target to checkout only
         shell: bash
         working-directory: eden
         run: |
-          cat >> src/core/CMakeLists.txt <<'CMAKE'
+          cat >> src/CMakeLists.txt <<'CMAKE'
 
           # IMP-008B CI-only target. This stanza is appended only inside the Actions checkout and
-          # is intentionally not part of the committed product CMake graph.
+          # is intentionally not part of the committed product CMake graph. Keep its final-link
+          # dependency contract aligned with the normal Eden CLI executable rather than trying to
+          # link the large static core archive in isolation.
           add_executable(imp008b_runthread_smoke
               ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread/production_probe.cpp)
           target_include_directories(imp008b_runthread_smoke PRIVATE ${CMAKE_SOURCE_DIR}/src)
           target_compile_definitions(imp008b_runthread_smoke PRIVATE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-          target_link_libraries(imp008b_runthread_smoke PRIVATE core merry::oaknut dynarmic::dynarmic)
+          target_link_libraries(imp008b_runthread_smoke PRIVATE
+              common core input_common frontend_common video_core
+              ${PLATFORM_LIBRARIES} Threads::Threads)
           CMAKE
           echo 'IMP008B_CI_ONLY_TARGET_WIRING=PASS'
+          echo 'IMP008B_STANDARD_EXECUTABLE_LINK_CONTRACT=PASS'
 
       - name: Set up normal Eden CLANGARM64 toolchain
         id: msys2
@@ -131,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           cmake --build build --target imp008b_runthread_smoke
-          test -f build/src/core/imp008b_runthread_smoke.exe
+          test -f build/src/imp008b_runthread_smoke.exe
           echo 'IMP008B_REAL_CORE_LINK=PASS'
 
       - name: Run actual ArmNce RunThread SVC Break smoke
@@ -139,7 +151,7 @@ jobs:
         working-directory: eden
         run: |
           set -euo pipefail
-          timeout 60s ./build/src/core/imp008b_runthread_smoke.exe | tee imp008b-run.log
+          timeout 60s ./build/src/imp008b_runthread_smoke.exe | tee imp008b-run.log
           grep -Fq 'IMP008B_REAL_KPROCESS_ARMNCE_SELECTION=PASS' imp008b-run.log
           grep -Fq 'IMP008B_REAL_KTHREAD_OWNER=PASS' imp008b-run.log
           grep -Fq 'IMP008B_GUEST_STACK_ALLOCATION=PASS' imp008b-run.log
