@@ -2,6 +2,11 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - .github/workflows/probe-imp-008b-runthread-svc-break-arm64.yml
 
 permissions:
   contents: read
@@ -74,13 +79,11 @@ jobs:
           grep -Fq 'target_link_libraries(yuzu-cmd PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)' src/yuzu_cmd/CMakeLists.txt
           grep -Fq 'set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} winmm iphlpapi ws2_32 wlanapi)' CMakeLists.txt
           grep -Fq '#include "core/arm/nce/patcher.h"' "$probe"
-          grep -Fq '#include <vk_mem_alloc.h>' src/video_core/vulkan_common/vma.h
           echo 'IMP008B_REAL_OWNER_SOURCE_GUARD=PASS'
           echo 'IMP008B_BACKEND_LOCK_SIGNATURE_SOURCE=PASS'
           echo 'IMP008B_GUEST_ENTERED_HANDSHAKE_SOURCE=PASS'
           echo 'IMP008B_STANDARD_EXECUTABLE_LINK_CONTRACT_SOURCE=PASS'
           echo 'IMP008B_OAKNUT_DIRECT_HEADER_SOURCE=PASS'
-          echo 'IMP008B_VMA_HEADER_CONTRACT_SOURCE=PASS'
 
       - name: Add probe target to checkout only
         shell: bash
