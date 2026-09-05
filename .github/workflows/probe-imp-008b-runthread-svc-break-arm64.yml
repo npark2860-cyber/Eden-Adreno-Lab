@@ -2,6 +2,9 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
 
 permissions:
   contents: read
@@ -73,11 +76,14 @@ jobs:
           grep -Fq 'target_link_libraries(yuzu-cmd PRIVATE common core input_common frontend_common video_core)' src/yuzu_cmd/CMakeLists.txt
           grep -Fq 'target_link_libraries(yuzu-cmd PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)' src/yuzu_cmd/CMakeLists.txt
           grep -Fq 'set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} winmm iphlpapi ws2_32 wlanapi)' CMakeLists.txt
+          grep -Fq '#define VMA_STATIC_VULKAN_FUNCTIONS 0' src/video_core/vulkan_common/vma.h
+          grep -Fq '#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1' src/video_core/vulkan_common/vma.h
           grep -Fq '#include "core/arm/nce/patcher.h"' "$probe"
           echo 'IMP008B_REAL_OWNER_SOURCE_GUARD=PASS'
           echo 'IMP008B_BACKEND_LOCK_SIGNATURE_SOURCE=PASS'
           echo 'IMP008B_GUEST_ENTERED_HANDSHAKE_SOURCE=PASS'
           echo 'IMP008B_STANDARD_EXECUTABLE_LINK_CONTRACT_SOURCE=PASS'
+          echo 'IMP008B_PRODUCT_VMA_LOADER_CONTRACT_SOURCE=PASS'
           echo 'IMP008B_OAKNUT_DIRECT_HEADER_SOURCE=PASS'
 
       - name: Add probe target to checkout only
@@ -92,9 +98,10 @@ jobs:
           # link the large static core archive in isolation. The probe directly includes patcher.h,
           # so retain Oaknut's interface include path explicitly for this probe-only executable.
           # VMA 3.3 is an INTERFACE/STB-style dependency: video_core references its API, while the
-          # probe needs exactly one implementation TU to satisfy those unrelated final-link symbols.
+          # probe needs exactly one implementation TU. Include Eden's product VMA wrapper so this
+          # CI-only TU uses the same STATIC=0 / DYNAMIC=1 loader contract as the real product.
           file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/imp008b_vma_impl.cpp
-              "#define VMA_IMPLEMENTATION\n#include <vk_mem_alloc.h>\n")
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
           add_executable(imp008b_runthread_smoke
               ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread/production_probe.cpp
               ${CMAKE_CURRENT_BINARY_DIR}/imp008b_vma_impl.cpp)
@@ -108,7 +115,7 @@ jobs:
           echo 'IMP008B_CI_ONLY_TARGET_WIRING=PASS'
           echo 'IMP008B_STANDARD_EXECUTABLE_LINK_CONTRACT=PASS'
           echo 'IMP008B_OAKNUT_PROBE_INTERFACE=PASS'
-          echo 'IMP008B_PROBE_LOCAL_VMA_IMPLEMENTATION=PASS'
+          echo 'IMP008B_PROBE_LOCAL_PRODUCT_VMA_IMPLEMENTATION=PASS'
 
       - name: Set up normal Eden CLANGARM64 toolchain
         id: msys2
