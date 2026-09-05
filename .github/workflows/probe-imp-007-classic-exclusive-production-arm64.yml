@@ -2,15 +2,6 @@ name: Probe IMP-007 Classic Exclusive Production ARM64
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-007-windows-x18-exclusive-lse
-    paths:
-      - src/core/arm/nce/patcher.cpp
-      - src/core/arm/nce/windows_x18_exclusive.h
-      - src/core/arm/nce/instructions.h
-      - probes/windows-arm64-x18-exclusive-production/**
-      - .github/workflows/probe-imp-007-classic-exclusive-production-arm64.yml
 
 permissions:
   contents: read
@@ -54,7 +45,7 @@ jobs:
           test -s imp007_patcher.o
           echo "IMP007_PRODUCTION_PATCHER_COMPILE=PASS"
 
-      - name: Build and run scalar production classic-exclusive smoke
+      - name: Build and run production classic-exclusive smoke
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -84,6 +75,6 @@ jobs:
             production_link_stubs.cpp \
             eden/src/core/arm/nce/patcher.cpp \
             -Wl,--gc-sections -lfmt \
-            -o imp007_production_scalar_smoke.exe
+            -o imp007_production_classic_exclusive_smoke.exe
 
-          ./imp007_production_scalar_smoke.exe
+          ./imp007_production_classic_exclusive_smoke.exe
