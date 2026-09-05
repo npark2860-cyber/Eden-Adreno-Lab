@@ -2,6 +2,11 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - .github/workflows/probe-imp-008b-runthread-svc-break-arm64.yml
 
 permissions:
   contents: read
@@ -156,7 +161,15 @@ jobs:
         working-directory: eden
         run: |
           set -euo pipefail
-          cmake --build build --target imp008b_runthread_smoke
+          set +e
+          ninja -C build -v imp008b_runthread_smoke 2>&1 | tee imp008b-build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo '--- IMP-008B final build tail ---'
+          tail -n 300 imp008b-build.log
+          if [[ "$status" -ne 0 ]]; then
+            exit "$status"
+          fi
           test -f build/src/imp008b_runthread_smoke.exe
           echo 'IMP008B_REAL_CORE_LINK=PASS'
 
