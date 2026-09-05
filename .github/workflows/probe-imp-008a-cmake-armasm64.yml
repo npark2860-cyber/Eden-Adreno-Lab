@@ -2,12 +2,6 @@ name: Probe IMP-008A CMake ARM64 Assembly
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008-windows-nce-integration
-    paths:
-      - src/core/arm/nce/windows_nce_entry.asm
-      - .github/workflows/probe-imp-008a-cmake-armasm64.yml
 
 permissions:
   contents: read
