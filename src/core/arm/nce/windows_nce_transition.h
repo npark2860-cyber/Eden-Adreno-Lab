@@ -14,17 +14,25 @@
 
 namespace Core::NCE {
 
-// Fixed Windows ARM64 entry. The assembly function saves the Windows ABI nonvolatile host state,
-// restores guest architectural state except physical x18, and tail-enters entry_trampoline.
-// entry_trampoline owns the final restoration of guest x17/x30 and branches to GuestContext::pc.
+// Fixed Windows ARM64 trampoline entry. The assembly function saves the Windows ABI nonvolatile
+// host state, restores guest architectural state except physical x18, and tail-enters
+// entry_trampoline. The trampoline owns the final restoration of guest x16/x17 and branches to the
+// selected guest PC.
 extern "C" std::uint64_t WindowsNceEnterGuest(GuestContext* guest,
-                                                const void* entry_trampoline) noexcept;
+                                               const void* entry_trampoline) noexcept;
+
+// Windows ARM64 arbitrary-PC entry. The assembly wrapper saves the same host continuation consumed
+// by generated SVC/exception returns, then WindowsNceRestoreGuestContext builds a Windows CONTEXT
+// from GuestContext and resumes GuestContext::pc. Physical x18 remains the captured Windows/TEB
+// value and is never loaded from guest architectural state.
+extern "C" std::uint64_t WindowsNceEnterGuestContext(GuestContext* guest) noexcept;
+extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) noexcept;
 
 class WindowsNceTransition {
 public:
     // Convert an externally suspended target back to the saved host ABI continuation. If the
     // interrupted PC/SP is known to be native guest execution, save that guest state first.
-    // return_value becomes the x0 result of WindowsNceEnterGuest.
+    // return_value becomes the x0 result of the Windows guest-entry call.
     static void RedirectToHost(ARM64_NT_CONTEXT& interrupted, GuestContext& guest,
                                bool save_guest_state, std::uint64_t return_value) noexcept;
 };
