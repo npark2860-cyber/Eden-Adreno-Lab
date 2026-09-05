@@ -3,6 +3,8 @@
 
         AREA    |.text|, CODE, READONLY
         EXPORT  WindowsNceEnterGuest
+        EXPORT  WindowsNceEnterGuestContext
+        EXTERN  WindowsNceRestoreGuestContext
 
 ; These offsets are locked by static_asserts in windows_nce_transition.cpp.
 GuestContextSp          EQU 0x0F8
@@ -94,6 +96,35 @@ WindowsNceEnterGuest PROC
 
         ; entry_trampoline restores guest x16/x17 and uses a direct relative branch to guest PC.
         br      x16
+        ENDP
+
+; uint64_t WindowsNceEnterGuestContext(GuestContext* guest)
+;
+; Save the same host ABI continuation used by the trampoline entry, then let the C helper build a
+; Windows ARM64 CONTEXT and resume GuestContext::pc. RtlRestoreContext restores x0-x17/x19-x30,
+; guest SP/PC/SIMD/status while the C adapter deliberately leaves physical x18 Windows-owned.
+WindowsNceEnterGuestContext PROC
+        add     x9, x0, #GuestContextHostContext
+
+        stp     x19, x20, [x9, #(HostContextRegs + 0x00)]
+        stp     x21, x22, [x9, #(HostContextRegs + 0x10)]
+        stp     x23, x24, [x9, #(HostContextRegs + 0x20)]
+        stp     x25, x26, [x9, #(HostContextRegs + 0x30)]
+        stp     x27, x28, [x9, #(HostContextRegs + 0x40)]
+        stp     x29, x30, [x9, #(HostContextRegs + 0x50)]
+
+        stp     q8,  q9,  [x9, #(HostContextVregs + 0x00)]
+        stp     q10, q11, [x9, #(HostContextVregs + 0x20)]
+        stp     q12, q13, [x9, #(HostContextVregs + 0x40)]
+        stp     q14, q15, [x9, #(HostContextVregs + 0x60)]
+
+        mov     x10, sp
+        str     x10, [x9, #HostContextSp]
+
+        bl      WindowsNceRestoreGuestContext
+
+        ; RtlRestoreContext is non-returning for this path.
+        brk     #1000
         ENDP
 
         END
