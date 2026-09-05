@@ -1,0 +1,64 @@
+name: Probe IMP-008A Windows ArmNce Compile
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - src/core/arm/nce/arm_nce.h
+      - src/core/arm/nce/arm_nce_windows.cpp
+      - src/core/arm/nce/windows_cross_thread_break.h
+      - src/core/arm/nce/windows_exception_context.h
+      - src/core/arm/nce/windows_nce_transition.h
+      - src/core/arm/nce/windows_nce_transition.cpp
+      - src/core/arm/nce/windows_x18_fallback_runner.h
+      - src/core/arm/nce/windows_x18_fallback_trap.h
+      - .github/workflows/probe-imp-008a-armnce-windows-compile.yml
+
+permissions:
+  contents: read
+
+jobs:
+  armnce-windows-compile:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Eden implementation
+        uses: actions/checkout@v4
+        with:
+          path: eden
+
+      - name: Set up CLANGARM64 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            clang:p boost:p fmt:p unordered_dense:p
+
+      - name: Compile actual Windows ArmNce translation unit
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          clang++ \
+            -std=c++20 -Wall -Wextra \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE \
+            -Ieden/src \
+            -c eden/src/core/arm/nce/arm_nce_windows.cpp \
+            -o imp008a_arm_nce_windows.o
+          test -s imp008a_arm_nce_windows.o
+          echo "IMP008A_WINDOWS_ARMNCE_TU_COMPILE=PASS"
+
+      - name: Compile Windows transition and x18 trap owners
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          clang++ -std=c++20 -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -Ieden/src \
+            -c eden/src/core/arm/nce/windows_nce_transition.cpp -o transition.o
+          clang++ -std=c++20 -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -Ieden/src \
+            -c eden/src/core/arm/nce/windows_x18_fallback_trap.cpp -o trap.o
+          test -s transition.o
+          test -s trap.o
+          echo "IMP008A_WINDOWS_ARMNCE_OWNER_TUS_COMPILE=PASS"
