@@ -2,6 +2,12 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - probes/windows-arm64-nce-runthread/production_probe.cpp
+      - .github/workflows/probe-imp-008b-runthread-svc-break-arm64.yml
 
 permissions:
   contents: read
