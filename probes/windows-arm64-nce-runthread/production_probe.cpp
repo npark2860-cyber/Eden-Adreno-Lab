@@ -30,11 +30,13 @@ constexpr std::size_t ImageSize = 0x100;
 constexpr std::size_t AllocationSize = 0x20000;
 constexpr std::size_t EntryOffset = 0x24;
 constexpr std::size_t GuestStackSize = 0x10000;
-constexpr std::size_t BreakLoopOffset = 0x1F000;
+constexpr std::size_t BreakEntryOffset = 0x1F000;
 
 constexpr std::uint32_t Svc6 = 0xD40000C1u;
 constexpr std::uint32_t Svc7 = 0xD40000E1u;
 constexpr std::uint32_t Brk = 0xD4200000u;
+constexpr std::uint32_t MovW1One = 0x52800021u;
+constexpr std::uint32_t StrW1X2 = 0xB9000041u;
 constexpr std::uint32_t BranchSelf = 0x14000000u;
 constexpr std::uint32_t ExpectedLockLocked = 0;
 constexpr std::uint32_t ExpectedLockUnlocked = 1;
@@ -242,13 +244,17 @@ int main() {
     const bool relocate_ok = patcher.RelocateAndCopy(
         Common::ProcessAddress{reinterpret_cast<std::uintptr_t>(allocation.base)}, code, image,
         &process->GetPostHandlers());
-    if (!relocate_ok || image.size() >= BreakLoopOffset) {
+    if (!relocate_ok || image.size() >= BreakEntryOffset) {
         Report("IMP008B_PATCH_RELOCATE", false);
         return 1;
     }
 
     std::memcpy(allocation.base, image.data(), image.size());
-    *reinterpret_cast<std::uint32_t*>(allocation.base + BreakLoopOffset) = BranchSelf;
+    auto* const break_words =
+        reinterpret_cast<std::uint32_t*>(allocation.base + BreakEntryOffset);
+    break_words[0] = MovW1One;
+    break_words[1] = StrW1X2;
+    break_words[2] = BranchSelf;
     if (!FlushInstructionCache(GetCurrentProcess(), allocation.base, AllocationSize)) {
         Report("IMP008B_FLUSH_ICACHE", false);
         return 1;
@@ -256,8 +262,9 @@ int main() {
 
     const auto first_svc_pc = reinterpret_cast<std::uintptr_t>(allocation.base) + EntryOffset;
     const auto second_svc_pc = first_svc_pc + 4;
-    const auto break_loop_pc =
-        reinterpret_cast<std::uintptr_t>(allocation.base) + BreakLoopOffset;
+    const auto break_entry_pc =
+        reinterpret_cast<std::uintptr_t>(allocation.base) + BreakEntryOffset;
+    const auto break_loop_pc = break_entry_pc + 2 * sizeof(std::uint32_t);
     const bool post_handler_ok = process->GetPostHandlers().contains(second_svc_pc);
 
     const auto guest_stack_top =
@@ -317,31 +324,36 @@ int main() {
                                      second_params.lock.load(std::memory_order_acquire) ==
                                          ExpectedLockUnlocked;
 
-    ctx.pc = break_loop_pc;
+    alignas(4) volatile LONG guest_entered = 0;
+    ctx.pc = break_entry_pc;
     ctx.sp = guest_stack_top;
     ctx.r[0] = BreakX0;
+    ctx.r[2] = reinterpret_cast<std::uintptr_t>(&guest_entered);
     ctx.r[18] = BreakX18;
     interface->SetContext(ctx);
 
     std::atomic<bool> interrupt_called{false};
-    // Match PhysicalCore::EnterContext: own the native-parameter lock before RunThread. The helper
-    // blocks in SignalInterrupt until Windows native entry releases that lock at guest ownership.
-    // This avoids polling the non-atomic is_running field from another host thread.
-    interface->LockThread(thread);
     std::thread breaker([&] {
+        while (InterlockedCompareExchange(&guest_entered, 0, 0) == 0) {
+            std::this_thread::yield();
+        }
         interface->SignalInterrupt(thread);
         interrupt_called.store(true, std::memory_order_release);
     });
+
+    interface->LockThread(thread);
     const auto break_hr = interface->RunThread(thread);
     interface->UnlockThread(thread);
     breaker.join();
     interface->GetContext(ctx);
 
+    const bool guest_entered_ok = InterlockedCompareExchange(&guest_entered, 0, 0) == 1;
     const bool break_return_ok = HasReason(break_hr, HaltReason::BreakLoop);
     const bool break_called_ok = interrupt_called.load(std::memory_order_acquire);
     const bool break_pc_ok = ctx.pc == break_loop_pc;
     const bool break_sp_ok = ctx.sp == guest_stack_top;
     const bool break_x0_ok = ctx.r[0] == BreakX0;
+    const bool break_x2_ok = ctx.r[2] == reinterpret_cast<std::uintptr_t>(&guest_entered);
     const bool break_x18_ok = ctx.r[18] == BreakX18;
     const auto& break_params = thread->GetNativeExecutionParameters();
     const bool break_lifecycle_ok = !break_params.is_running && break_params.native_context == nullptr &&
@@ -394,11 +406,13 @@ int main() {
     Report("IMP008B_RESUME_X17", resumed_x17_ok);
     Report("IMP008B_RESUME_VIRTUAL_X18", resumed_x18_ok);
     Report("IMP008B_SECOND_LOCK_LIFECYCLE", second_lifecycle_ok);
+    Report("IMP008B_GUEST_LOOP_ENTERED", guest_entered_ok);
     Report("IMP008B_SIGNALINTERRUPT_CALLED", break_called_ok);
     Report("IMP008B_BREAKLOOP_RETURN", break_return_ok);
     Report("IMP008B_BREAK_ARCH_PC", break_pc_ok);
     Report("IMP008B_BREAK_ARCH_SP", break_sp_ok);
     Report("IMP008B_BREAK_X0", break_x0_ok);
+    Report("IMP008B_BREAK_X2", break_x2_ok);
     Report("IMP008B_BREAK_VIRTUAL_X18", break_x18_ok);
     Report("IMP008B_BREAK_LOCK_LIFECYCLE", break_lifecycle_ok);
     Report("IMP008B_PHYSICAL_X18_TEB_BEFORE", x18_before);
@@ -411,10 +425,10 @@ int main() {
                       post_handler_ok && first_return_ok && first_svc_ok && first_pc_ok && first_x0_ok &&
                       first_x16_ok && first_x17_ok && first_x18_ok && first_lifecycle_ok &&
                       second_return_ok && second_svc_ok && resumed_x0_ok && resumed_x16_ok &&
-                      resumed_x17_ok && resumed_x18_ok && second_lifecycle_ok && break_called_ok &&
-                      break_return_ok && break_pc_ok && break_sp_ok && break_x0_ok && break_x18_ok &&
-                      break_lifecycle_ok && x18_after_nce && nce_disabled_for_control &&
-                      dynarmic_control_ok && x18_after_control;
+                      resumed_x17_ok && resumed_x18_ok && second_lifecycle_ok && guest_entered_ok &&
+                      break_called_ok && break_return_ok && break_pc_ok && break_sp_ok && break_x0_ok &&
+                      break_x2_ok && break_x18_ok && break_lifecycle_ok && x18_after_nce &&
+                      nce_disabled_for_control && dynarmic_control_ok && x18_after_control;
 
     std::printf("IMP008B_WINDOWS_REAL_RUNTHREAD_SVC_BREAK_SMOKE=%s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
