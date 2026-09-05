@@ -1,0 +1,88 @@
+name: Probe IMP-007 LSE Production ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-007-windows-x18-exclusive-lse
+    paths:
+      - src/core/arm/nce/patcher.cpp
+      - src/core/arm/nce/windows_x18_lse.h
+      - probes/windows-arm64-x18-lse-production/**
+      - .github/workflows/probe-imp-007-lse-production-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  production-lse:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Eden implementation
+        uses: actions/checkout@v4
+        with:
+          path: eden
+
+      - name: Checkout fixed Oaknut dependency
+        uses: actions/checkout@v4
+        with:
+          repository: eden-emulator/oaknut
+          ref: v2.0.3
+          path: oaknut
+
+      - name: Set up CLANGARM64 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          pacboy: >-
+            clang:p boost:p fmt:p unordered_dense:p
+
+      - name: Compile actual Eden production patcher
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          clang++ \
+            -std=c++20 -Wall -Wextra \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE \
+            -Ieden/src -Ioaknut/include \
+            -c eden/src/core/arm/nce/patcher.cpp \
+            -o imp007_lse_patcher.o
+          test -s imp007_lse_patcher.o
+          echo "IMP007_LSE_PRODUCTION_PATCHER_COMPILE=PASS"
+
+      - name: Build and run production LSE smoke
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cat > production_link_stubs.cpp <<'EOF'
+          #include <cstdlib>
+          #include "common/cpu_features.h"
+          #include "common/logging.h"
+
+          void AssertFailSoftImpl() {}
+          [[noreturn]] void AssertFatalImpl() { std::abort(); }
+
+          namespace Common {
+          WallClock::WallClock(bool, u64) noexcept {}
+          }
+
+          namespace Common::Log {
+          void FmtLogMessageImpl(Class, Level, const char*, unsigned int, const char*,
+                                 fmt::string_view, const fmt::format_args&) {}
+          } // namespace Common::Log
+          EOF
+
+          clang++ \
+            -std=c++20 -O2 -ffunction-sections -fdata-sections \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -DNDEBUG \
+            -Ieden/src -Ioaknut/include \
+            eden/probes/windows-arm64-x18-lse-production/production_probe.cpp \
+            production_link_stubs.cpp \
+            eden/src/core/arm/nce/patcher.cpp \
+            -Wl,--gc-sections -lfmt \
+            -o imp007_lse_production_smoke.exe
+
+          ./imp007_lse_production_smoke.exe
