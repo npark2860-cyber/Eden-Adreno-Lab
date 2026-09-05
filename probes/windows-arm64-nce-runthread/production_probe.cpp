@@ -9,8 +9,6 @@
 #include <vector>
 
 #include "common/settings.h"
-#include "core/arm/dynarmic/arm_dynarmic_64.h"
-#include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/instructions.h"
 #include "core/arm/nce/patcher.h"
 #include "core/core.h"
@@ -38,7 +36,8 @@ constexpr std::uint32_t Svc6 = 0xD40000C1u;
 constexpr std::uint32_t Svc7 = 0xD40000E1u;
 constexpr std::uint32_t Brk = 0xD4200000u;
 constexpr std::uint32_t BranchSelf = 0x14000000u;
-constexpr std::uint32_t SpinLockUnlocked = 1;
+constexpr std::uint32_t ExpectedLockLocked = 0;
+constexpr std::uint32_t ExpectedLockUnlocked = 1;
 
 static_assert(SVC{Svc6}.Verify() && SVC{Svc6}.GetValue() == 6);
 static_assert(SVC{Svc7}.Verify() && SVC{Svc7}.GetValue() == 7);
@@ -140,6 +139,50 @@ bool BuildRealNceProcess(KernelObjects& objects) {
     return true;
 }
 
+bool HasNceLockSignature(Core::ArmInterface* interface, Kernel::KThread* thread) {
+    auto& params = thread->GetNativeExecutionParameters();
+    const bool initial_ok =
+        params.lock.load(std::memory_order_acquire) == ExpectedLockUnlocked;
+    interface->LockThread(thread);
+    const bool locked_ok =
+        params.lock.load(std::memory_order_acquire) == ExpectedLockLocked;
+    interface->UnlockThread(thread);
+    const bool unlocked_ok =
+        params.lock.load(std::memory_order_acquire) == ExpectedLockUnlocked;
+    return initial_ok && locked_ok && unlocked_ok;
+}
+
+bool HasDynarmicNoopLockSignature(Core::System& system, Kernel::KernelCore& kernel,
+                                 Kernel::KProcess* process) {
+    Kernel::KScopedResourceReservation reservation(
+        kernel, process, Kernel::Svc::LimitableResource::ThreadCountMax);
+    if (!reservation.Succeeded()) {
+        return false;
+    }
+
+    auto* const thread = Kernel::KThread::Create(kernel);
+    if (thread == nullptr ||
+        !Kernel::KThread::InitializeDummyThread(system, thread, process).IsSuccess()) {
+        return false;
+    }
+    reservation.Commit();
+    Kernel::KThread::Register(kernel, thread);
+
+    auto* const interface = process->GetArmInterface(3);
+    auto& params = thread->GetNativeExecutionParameters();
+    const bool initial_ok =
+        params.lock.load(std::memory_order_acquire) == ExpectedLockUnlocked;
+    interface->LockThread(thread);
+    const bool lock_is_noop =
+        params.lock.load(std::memory_order_acquire) == ExpectedLockUnlocked;
+    interface->UnlockThread(thread);
+    const bool unlock_is_noop =
+        params.lock.load(std::memory_order_acquire) == ExpectedLockUnlocked;
+
+    thread->Close(kernel);
+    return initial_ok && lock_is_noop && unlock_is_noop;
+}
+
 } // namespace
 
 int main() {
@@ -157,8 +200,8 @@ int main() {
     auto* const thread = objects.thread;
     auto* const interface = process->GetArmInterface(3);
 
-    const bool nce_selection_ok = dynamic_cast<Core::ArmNce*>(interface) != nullptr;
     const bool owner_ok = thread->GetOwnerProcess() == process;
+    const bool nce_selection_ok = interface != nullptr && HasNceLockSignature(interface, thread);
     Report("IMP008B_REAL_KPROCESS_ARMNCE_SELECTION", nce_selection_ok);
     Report("IMP008B_REAL_KTHREAD_OWNER", owner_ok);
     if (!nce_selection_ok || !owner_ok) {
@@ -249,7 +292,8 @@ int main() {
     const bool first_x18_ok = ctx.r[18] == InitialX18;
     const auto& first_params = thread->GetNativeExecutionParameters();
     const bool first_lifecycle_ok = !first_params.is_running && first_params.native_context == nullptr &&
-                                    first_params.lock.load(std::memory_order_acquire) == SpinLockUnlocked;
+                                    first_params.lock.load(std::memory_order_acquire) ==
+                                        ExpectedLockUnlocked;
 
     ctx.r[0] = ResumeX0;
     ctx.r[16] = ResumeX16;
@@ -270,7 +314,8 @@ int main() {
     const bool resumed_x18_ok = ctx.r[18] == ResumeX18;
     const auto& second_params = thread->GetNativeExecutionParameters();
     const bool second_lifecycle_ok = !second_params.is_running && second_params.native_context == nullptr &&
-                                     second_params.lock.load(std::memory_order_acquire) == SpinLockUnlocked;
+                                     second_params.lock.load(std::memory_order_acquire) ==
+                                         ExpectedLockUnlocked;
 
     ctx.pc = break_loop_pc;
     ctx.sp = guest_stack_top;
@@ -279,16 +324,14 @@ int main() {
     interface->SetContext(ctx);
 
     std::atomic<bool> interrupt_called{false};
+    // Match PhysicalCore::EnterContext: own the native-parameter lock before RunThread. The helper
+    // blocks in SignalInterrupt until Windows native entry releases that lock at guest ownership.
+    // This avoids polling the non-atomic is_running field from another host thread.
+    interface->LockThread(thread);
     std::thread breaker([&] {
-        auto& params = thread->GetNativeExecutionParameters();
-        while (!params.is_running) {
-            std::this_thread::yield();
-        }
         interface->SignalInterrupt(thread);
         interrupt_called.store(true, std::memory_order_release);
     });
-
-    interface->LockThread(thread);
     const auto break_hr = interface->RunThread(thread);
     interface->UnlockThread(thread);
     breaker.join();
@@ -302,7 +345,8 @@ int main() {
     const bool break_x18_ok = ctx.r[18] == BreakX18;
     const auto& break_params = thread->GetNativeExecutionParameters();
     const bool break_lifecycle_ok = !break_params.is_running && break_params.native_context == nullptr &&
-                                    break_params.lock.load(std::memory_order_acquire) == SpinLockUnlocked;
+                                    break_params.lock.load(std::memory_order_acquire) ==
+                                        ExpectedLockUnlocked;
 
     const bool x18_after_nce = ReadPhysicalX18() == teb;
 
@@ -320,7 +364,7 @@ int main() {
                                    Kernel::KProcessAddress{}, 0)
                 .IsSuccess()) {
             dynarmic_control_ok =
-                dynamic_cast<Core::ArmDynarmic64*>(control_process->GetArmInterface(3)) != nullptr;
+                HasDynarmicNoopLockSignature(objects.system, kernel, control_process);
         }
         control_process->Close(kernel);
     }
