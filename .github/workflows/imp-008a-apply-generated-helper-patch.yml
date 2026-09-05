@@ -33,9 +33,9 @@ jobs:
           changed="$(git diff --name-only | sort)"
           expected=$'CMakeLists.txt\nsrc/core/CMakeLists.txt'
           test "$changed" = "$expected"
-          grep -Fq 'ARCHITECTURE_arm64 AND (ANDROID OR LINUX OR (WIN32 AND MSVC))' CMakeLists.txt
+          grep -Fq 'ARCHITECTURE_arm64 AND (ANDROID OR LINUX OR WIN32)' CMakeLists.txt
           grep -Fq 'arm/nce/arm_nce_windows.cpp' src/core/CMakeLists.txt
-          grep -Fq 'NCE_ARMASM64' src/core/CMakeLists.txt
+          grep -Fq 'NCE_ARMASM64_CANDIDATES' src/core/CMakeLists.txt
           grep -Fq 'arm/nce/x18_site_patcher.cpp' src/core/CMakeLists.txt
           if awk '/if \(WIN32\)/,/else\(\)/' src/core/CMakeLists.txt | grep -Fq 'arm/nce/arm_nce.s'; then
             echo 'Linux arm_nce.s leaked into Windows NCE source branch' >&2
@@ -49,5 +49,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CMakeLists.txt src/core/CMakeLists.txt
-          git commit -m "nce: wire Windows ARM64 product build selection"
+          git commit -m "nce: align Windows ARM64 NCE with normal CLANGARM64 build"
           git push origin HEAD:exp/imp-008-windows-nce-integration
