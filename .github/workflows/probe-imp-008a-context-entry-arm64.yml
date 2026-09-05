@@ -2,6 +2,18 @@ name: Probe IMP-008A Windows Arbitrary-PC Entry ARM64
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - src/core/arm/nce/windows_exception_context.h
+      - src/core/arm/nce/windows_nce_transition.cpp
+      - src/core/arm/nce/windows_nce_transition.h
+      - src/core/arm/nce/windows_nce_entry.asm
+      - src/core/arm/nce/windows_generated_context.h
+      - src/core/arm/nce/patcher.cpp
+      - probes/windows-arm64-nce-context-entry/**
+      - .github/workflows/probe-imp-008a-context-entry-arm64.yml
 
 permissions:
   contents: read
@@ -24,7 +36,7 @@ jobs:
           ref: v2.0.3
           path: oaknut
 
-      - name: Assemble arbitrary-PC entry shim
+      - name: Assemble production Windows NCE entry
         shell: cmd
         run: |
           set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -33,7 +45,7 @@ jobs:
           if not defined VSROOT exit /b 12
           call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" arm64
           if errorlevel 1 exit /b 13
-          armasm64 -nologo eden\probes\windows-arm64-nce-context-entry\context_entry_probe.asm context_entry_probe.obj
+          armasm64 -nologo eden\src\core\arm\nce\windows_nce_entry.asm windows_nce_entry.obj
           if errorlevel 1 exit /b 14
 
       - name: Set up CLANGARM64 dependencies
@@ -44,7 +56,7 @@ jobs:
           pacboy: >-
             clang:p boost:p fmt:p unordered_dense:p
 
-      - name: Build and run arbitrary-PC production path smoke
+      - name: Build and run production arbitrary-PC path smoke
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -74,7 +86,7 @@ jobs:
             production_link_stubs.cpp \
             eden/src/core/arm/nce/windows_nce_transition.cpp \
             eden/src/core/arm/nce/patcher.cpp \
-            context_entry_probe.obj \
+            windows_nce_entry.obj \
             -Wl,--gc-sections -lfmt -lkernel32 \
             -o imp008a_context_entry_smoke.exe
 
