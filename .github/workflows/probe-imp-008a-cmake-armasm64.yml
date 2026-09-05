@@ -1,0 +1,40 @@
+name: Probe IMP-008A CMake ARM64 Assembly
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - src/core/arm/nce/windows_nce_entry.asm
+      - .github/workflows/probe-imp-008a-cmake-armasm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cmake-armasm64:
+    runs-on: windows-11-arm
+    timeout-minutes: 6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: eden
+
+      - name: Configure and build production Windows entry through CMake
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force cmake-armasm-probe | Out-Null
+          @'
+          cmake_minimum_required(VERSION 3.24)
+          project(Imp008ArmAsm LANGUAGES CXX ASM_MASM)
+          add_library(imp008_entry OBJECT "${CMAKE_CURRENT_LIST_DIR}/../eden/src/core/arm/nce/windows_nce_entry.asm")
+          '@ | Set-Content -Encoding utf8 cmake-armasm-probe/CMakeLists.txt
+
+          cmake -S cmake-armasm-probe -B cmake-armasm-build -G "Visual Studio 17 2022" -A ARM64
+          if ($LASTEXITCODE -ne 0) { exit 20 }
+          cmake --build cmake-armasm-build --config Release --target imp008_entry
+          if ($LASTEXITCODE -ne 0) { exit 21 }
+          Write-Output 'IMP008A_CMAKE_ARMASM64_PRODUCTION_ENTRY=PASS'
