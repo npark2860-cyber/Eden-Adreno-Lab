@@ -2,14 +2,6 @@ name: Probe IMP-008A Generated Helper ARM64
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008-windows-nce-integration
-    paths:
-      - src/core/arm/nce/patcher.cpp
-      - src/core/arm/nce/windows_generated_context.h
-      - probes/windows-arm64-nce-generated-context/**
-      - .github/workflows/probe-imp-008a-generated-helper-arm64.yml
 
 permissions:
   contents: read
