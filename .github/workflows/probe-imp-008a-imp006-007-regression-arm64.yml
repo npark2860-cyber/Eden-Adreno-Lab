@@ -2,6 +2,11 @@ name: Probe IMP-008A IMP-006/007 Regression ARM64
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - .github/workflows/probe-imp-008a-imp006-007-regression-arm64.yml
 
 permissions:
   contents: read
