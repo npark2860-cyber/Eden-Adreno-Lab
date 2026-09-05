@@ -1,0 +1,134 @@
+name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-runthread-smoke:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout IMP-008 implementation
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify IMP-008B real-owner source contract
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          probe='probes/windows-arm64-nce-runthread/production_probe.cpp'
+          grep -Fq 'Kernel::KProcess::Create(kernel)' "$probe"
+          grep -Fq 'LoadFromMetadata(kernel, metadata' "$probe"
+          grep -Fq 'Kernel::KThread::InitializeDummyThread' "$probe"
+          grep -Fq 'process->GetArmInterface(3)' "$probe"
+          grep -Fq 'interface->RunThread(thread)' "$probe"
+          grep -Fq 'interface->SignalInterrupt(thread)' "$probe"
+          grep -Fq '&process->GetPostHandlers()' "$probe"
+          echo 'IMP008B_REAL_OWNER_SOURCE_GUARD=PASS'
+
+      - name: Add probe target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/core/CMakeLists.txt <<'CMAKE'
+
+          # IMP-008B CI-only target. This stanza is appended only inside the Actions checkout and
+          # is intentionally not part of the committed product CMake graph.
+          add_executable(imp008b_runthread_smoke
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread/production_probe.cpp)
+          target_include_directories(imp008b_runthread_smoke PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_compile_definitions(imp008b_runthread_smoke PRIVATE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+          target_link_libraries(imp008b_runthread_smoke PRIVATE core merry::oaknut dynarmic::dynarmic)
+          CMAKE
+          echo 'IMP008B_CI_ONLY_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product plus CI-only probe
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-runthread/production_probe.cpp' build/compile_commands.json
+          grep -R -Fq 'windows_nce_entry.obj' build
+          echo 'IMP008B_NORMAL_CONFIGURE=PASS'
+
+      - name: Build real core-linked IMP-008B smoke
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_runthread_smoke
+          test -f build/src/core/imp008b_runthread_smoke.exe
+          echo 'IMP008B_REAL_CORE_LINK=PASS'
+
+      - name: Run actual ArmNce RunThread SVC Break smoke
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          timeout 60s ./build/src/core/imp008b_runthread_smoke.exe | tee imp008b-run.log
+          grep -Fq 'IMP008B_REAL_KPROCESS_ARMNCE_SELECTION=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_REAL_KTHREAD_OWNER=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_FIRST_RUNTHREAD_SVC_RETURN=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_SECOND_RUNTHREAD_SVC_RETURN=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_BREAKLOOP_RETURN=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_BREAK_LOCK_LIFECYCLE=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_DYNARMIC_CONTROL_SELECTED=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_PHYSICAL_X18_TEB_AFTER_CONTROL=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_WINDOWS_REAL_RUNTHREAD_SVC_BREAK_SMOKE=PASS' imp008b-run.log
+          echo 'IMP008B_WINDOWS_REAL_RUNTHREAD_GATE=PASS'
