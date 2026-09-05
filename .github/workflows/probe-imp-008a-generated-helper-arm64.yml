@@ -8,13 +8,14 @@ on:
     paths:
       - src/core/arm/nce/patcher.cpp
       - src/core/arm/nce/windows_generated_context.h
+      - probes/windows-arm64-nce-generated-context/**
       - .github/workflows/probe-imp-008a-generated-helper-arm64.yml
 
 permissions:
   contents: read
 
 jobs:
-  generated-helper-compile:
+  generated-helper:
     runs-on: windows-11-arm
     timeout-minutes: 10
 
@@ -60,3 +61,37 @@ jobs:
           $header = Get-Content -Raw eden/src/core/arm/nce/windows_generated_context.h
           if ($header -match 'MRS\([^\r\n]*TPIDR_EL0') { throw 'Windows generated helper must not read physical TPIDR_EL0' }
           Write-Output 'IMP008A_GENERATED_HELPER_SOURCE_GUARD=PASS'
+
+      - name: Build and run generated context runtime smoke
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cat > production_link_stubs.cpp <<'EOF'
+          #include <cstdlib>
+          #include "common/cpu_features.h"
+          #include "common/logging.h"
+
+          void AssertFailSoftImpl() {}
+          [[noreturn]] void AssertFatalImpl() { std::abort(); }
+
+          namespace Common {
+          WallClock::WallClock(bool, u64) noexcept {}
+          }
+
+          namespace Common::Log {
+          void FmtLogMessageImpl(Class, Level, const char*, unsigned int, const char*,
+                                 fmt::string_view, const fmt::format_args&) {}
+          } // namespace Common::Log
+          EOF
+
+          clang++ \
+            -std=c++20 -O2 -ffunction-sections -fdata-sections \
+            -D_WIN32 -D_WIN64 -DARCHITECTURE_arm64 -DHAS_NCE -DNDEBUG \
+            -Ieden/src -Ioaknut/include \
+            eden/probes/windows-arm64-nce-generated-context/production_probe.cpp \
+            production_link_stubs.cpp \
+            eden/src/core/arm/nce/patcher.cpp \
+            -Wl,--gc-sections -lfmt \
+            -o imp008a_generated_context_smoke.exe
+
+          ./imp008a_generated_context_smoke.exe
