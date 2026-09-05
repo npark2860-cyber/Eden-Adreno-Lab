@@ -2,6 +2,11 @@ name: Probe IMP-006 X18 Fallback ARM64
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-007-windows-x18-exclusive-lse
+    paths:
+      - .github/workflows/probe-imp-006-x18-fallback-arm64.yml
 
 permissions:
   contents: read
