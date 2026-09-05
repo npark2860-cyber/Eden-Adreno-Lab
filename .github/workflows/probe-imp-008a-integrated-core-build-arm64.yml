@@ -1,0 +1,115 @@
+name: Probe IMP-008A Integrated Windows ARM64 Core Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - CMakeLists.txt
+      - src/core/CMakeLists.txt
+      - src/core/arm/nce/**
+      - src/core/loader/nro.cpp
+      - src/core/loader/nso.cpp
+      - .github/workflows/probe-imp-008a-integrated-core-build-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  integrated-core-build:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout IMP-008 implementation
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify Windows NCE source selection contract
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          grep -Fq 'ARCHITECTURE_arm64 AND (ANDROID OR LINUX OR WIN32)' CMakeLists.txt
+          grep -Fq 'arm/nce/arm_nce_windows.cpp' src/core/CMakeLists.txt
+          grep -Fq 'NCE_ARMASM64_CANDIDATES' src/core/CMakeLists.txt
+          grep -Fq 'arm/nce/x18_site_patcher.cpp' src/core/CMakeLists.txt
+          echo 'IMP008A_WINDOWS_BUILD_SELECTION_SOURCE=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          if grep -Fq 'arm/nce/arm_nce.cpp' build/compile_commands.json; then
+            echo 'Linux arm_nce.cpp selected in Windows build' >&2
+            exit 31
+          fi
+          if grep -Fq 'arm/nce/interpreter_visitor.cpp' build/compile_commands.json; then
+            echo 'Linux interpreter_visitor.cpp selected in Windows build' >&2
+            exit 32
+          fi
+          grep -R -Fq 'windows_nce_entry.obj' build
+          echo 'IMP008A_WINDOWS_NORMAL_CONFIGURE=PASS'
+          echo 'IMP008A_WINDOWS_HAS_NCE_SELECTION=PASS'
+          echo 'IMP008A_WINDOWS_ARMASM64_OBJECT_SELECTION=PASS'
+
+      - name: Build actual core target
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target core
+          echo 'IMP008A_WINDOWS_NORMAL_ARM64_CORE_BUILD=PASS'
