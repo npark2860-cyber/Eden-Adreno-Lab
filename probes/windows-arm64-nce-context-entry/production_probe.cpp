@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/arm/arm_interface.h"
+#include "core/arm/nce/arm_nce_asm_definitions.h"
 #include "core/arm/nce/current_nce_context.h"
 #include "core/arm/nce/guest_context.h"
 #include "core/arm/nce/instructions.h"
@@ -32,7 +33,6 @@ constexpr std::size_t GuestStackSize = 0x10000;
 
 constexpr std::uint32_t Svc9 = 0xD4000121u;
 constexpr std::uint32_t Brk = 0xD4200000u;
-constexpr std::uint32_t LockUnlocked = 1;
 
 static_assert(SVC{Svc9}.Verify() && SVC{Svc9}.GetValue() == 9);
 
@@ -128,7 +128,8 @@ int main() {
 
     CurrentNceContext::Parameters params{};
     params.native_context = &guest;
-    params.lock.store(LockUnlocked, std::memory_order_release);
+    // Match PhysicalCore::EnterContext: RunThread begins with the native-parameter lock held.
+    params.lock.store(SpinLockLocked, std::memory_order_release);
     CurrentNceContext::Install(&params);
 
     const auto result = Core::NCE::WindowsNceEnterGuestContext(&guest);
@@ -142,7 +143,14 @@ int main() {
     const bool x17_ok = guest.cpu_registers[17] == GuestX17;
     const bool x18_virtual_ok = guest.cpu_registers[18] == GuestX18;
 
-    params.lock.store(LockUnlocked, std::memory_order_release);
+    // WindowsNceRestoreGuestContext must release the scheduler-owned entry lock before guest
+    // execution. The patched SVC then reacquires that same lock before returning to host, exactly
+    // matching the lock state expected by PhysicalCore::ExitContext.
+    const bool lock_reacquired_on_host_return =
+        params.lock.load(std::memory_order_acquire) == SpinLockLocked;
+
+    // Simulate PhysicalCore::ExitContext for clean shutdown.
+    params.lock.store(SpinLockUnlocked, std::memory_order_release);
     const bool x18_after = ReadPhysicalX18() == teb;
 
     Report("IMP008A_PRODUCTION_CONTEXT_ENTRY_PATCH_MODE", mode_ok);
@@ -154,11 +162,13 @@ int main() {
     Report("IMP008A_PRODUCTION_CONTEXT_ENTRY_X16", x16_ok);
     Report("IMP008A_PRODUCTION_CONTEXT_ENTRY_X17", x17_ok);
     Report("IMP008A_PRODUCTION_CONTEXT_ENTRY_VIRTUAL_X18", x18_virtual_ok);
+    Report("IMP008A_PRODUCTION_CONTEXT_ENTRY_LOCK_REACQUIRED", lock_reacquired_on_host_return);
     Report("IMP008A_PRODUCTION_CONTEXT_ENTRY_PHYSICAL_X18_TEB_BEFORE", x18_before);
     Report("IMP008A_PRODUCTION_CONTEXT_ENTRY_PHYSICAL_X18_TEB_AFTER", x18_after);
 
     const bool pass = patch_ok && mode_ok && relocate_ok && host_return_ok && svc_ok && pc_ok &&
-                      x0_ok && x16_ok && x17_ok && x18_virtual_ok && x18_before && x18_after;
+                      x0_ok && x16_ok && x17_ok && x18_virtual_ok &&
+                      lock_reacquired_on_host_return && x18_before && x18_after;
     std::printf("IMP008A_WINDOWS_PRODUCTION_ARBITRARY_PC_ENTRY_SMOKE=%s\n",
                 pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
