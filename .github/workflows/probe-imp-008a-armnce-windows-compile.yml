@@ -2,19 +2,6 @@ name: Probe IMP-008A Windows ArmNce Compile
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008-windows-nce-integration
-    paths:
-      - src/core/arm/nce/arm_nce.h
-      - src/core/arm/nce/arm_nce_windows.cpp
-      - src/core/arm/nce/windows_cross_thread_break.h
-      - src/core/arm/nce/windows_exception_context.h
-      - src/core/arm/nce/windows_nce_transition.h
-      - src/core/arm/nce/windows_nce_transition.cpp
-      - src/core/arm/nce/windows_x18_fallback_runner.h
-      - src/core/arm/nce/windows_x18_fallback_trap.h
-      - .github/workflows/probe-imp-008a-armnce-windows-compile.yml
 
 permissions:
   contents: read
