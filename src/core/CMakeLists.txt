@@ -1229,21 +1229,72 @@ if (ENABLE_WEB_SERVICE)
 endif()
 
 if (HAS_NCE)
-    enable_language(C ASM)
-    set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
-
     target_sources(core PRIVATE
         arm/nce/arm_nce_asm_definitions.h
-        arm/nce/arm_nce.cpp
         arm/nce/arm_nce.h
-        arm/nce/arm_nce.s
         arm/nce/guest_context.h
         arm/nce/instructions.h
-        arm/nce/interpreter_visitor.cpp
-        arm/nce/interpreter_visitor.h
         arm/nce/patcher.cpp
         arm/nce/patcher.h
         arm/nce/visitor_base.h)
+
+    if (WIN32)
+        # Windows ARM64 keeps x18/TEB and host TPIDR platform-owned. Use the verified
+        # Windows transition/runtime owners and assemble the entry shim with MSVC armasm64.
+        get_filename_component(NCE_MSVC_ARM64_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        set(NCE_ARMASM64 "${NCE_MSVC_ARM64_BIN}/armasm64.exe")
+        if (NOT EXISTS "${NCE_ARMASM64}")
+            message(FATAL_ERROR
+                "Windows ARM64 NCE requires armasm64.exe next to the selected ARM64 compiler: ${NCE_ARMASM64}")
+        endif()
+
+        set(NCE_WINDOWS_ENTRY_SOURCE
+            "${CMAKE_CURRENT_SOURCE_DIR}/arm/nce/windows_nce_entry.asm")
+        set(NCE_WINDOWS_ENTRY_OBJECT
+            "${CMAKE_CURRENT_BINARY_DIR}/arm/nce/windows_nce_entry.obj")
+        add_custom_command(
+            OUTPUT "${NCE_WINDOWS_ENTRY_OBJECT}"
+            COMMAND "${NCE_ARMASM64}" -nologo
+                    "${NCE_WINDOWS_ENTRY_SOURCE}" "${NCE_WINDOWS_ENTRY_OBJECT}"
+            DEPENDS "${NCE_WINDOWS_ENTRY_SOURCE}"
+            VERBATIM)
+        set_source_files_properties("${NCE_WINDOWS_ENTRY_OBJECT}" PROPERTIES
+            GENERATED TRUE
+            EXTERNAL_OBJECT TRUE)
+
+        target_sources(core PRIVATE
+            arm/nce/arm_nce_windows.cpp
+            arm/nce/current_nce_context.h
+            arm/nce/windows_cross_thread_break.h
+            arm/nce/windows_exception_context.h
+            arm/nce/windows_generated_context.h
+            arm/nce/windows_nce_entry.asm
+            arm/nce/windows_nce_transition.cpp
+            arm/nce/windows_nce_transition.h
+            arm/nce/windows_x18_exclusive.h
+            arm/nce/windows_x18_fallback_runner.cpp
+            arm/nce/windows_x18_fallback_runner.h
+            arm/nce/windows_x18_fallback_trap.cpp
+            arm/nce/windows_x18_fallback_trap.h
+            arm/nce/windows_x18_lse.h
+            arm/nce/x18_classifier.cpp
+            arm/nce/x18_fallback.cpp
+            arm/nce/x18_fallback.h
+            arm/nce/x18_site_patcher.cpp
+            arm/nce/x18_site_patcher.h
+            "${NCE_WINDOWS_ENTRY_OBJECT}")
+        set_source_files_properties(arm/nce/windows_nce_entry.asm PROPERTIES HEADER_FILE_ONLY TRUE)
+    else()
+        enable_language(C ASM)
+        set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
+
+        target_sources(core PRIVATE
+            arm/nce/arm_nce.cpp
+            arm/nce/arm_nce.s
+            arm/nce/interpreter_visitor.cpp
+            arm/nce/interpreter_visitor.h)
+    endif()
+
     target_link_libraries(core PRIVATE merry::oaknut)
 endif()
 
