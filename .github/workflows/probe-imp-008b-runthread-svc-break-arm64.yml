@@ -2,6 +2,12 @@ name: Probe IMP-008B Real Windows ARM64 RunThread SVC Break
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008-windows-nce-integration
+    paths:
+      - probes/windows-arm64-nce-runthread/production_probe.cpp
+      - .github/workflows/probe-imp-008b-runthread-svc-break-arm64.yml
 
 permissions:
   contents: read
@@ -56,6 +62,7 @@ jobs:
           grep -Fq 'interface->RunThread(thread)' "$probe"
           grep -Fq 'interface->SignalInterrupt(thread)' "$probe"
           grep -Fq '&process->GetPostHandlers()' "$probe"
+          grep -Fq 'VirtualAlloc(nullptr, GuestStackSize' "$probe"
           echo 'IMP008B_REAL_OWNER_SOURCE_GUARD=PASS'
 
       - name: Add probe target to checkout only
@@ -124,6 +131,7 @@ jobs:
           timeout 60s ./build/src/core/imp008b_runthread_smoke.exe | tee imp008b-run.log
           grep -Fq 'IMP008B_REAL_KPROCESS_ARMNCE_SELECTION=PASS' imp008b-run.log
           grep -Fq 'IMP008B_REAL_KTHREAD_OWNER=PASS' imp008b-run.log
+          grep -Fq 'IMP008B_GUEST_STACK_ALLOCATION=PASS' imp008b-run.log
           grep -Fq 'IMP008B_FIRST_RUNTHREAD_SVC_RETURN=PASS' imp008b-run.log
           grep -Fq 'IMP008B_SECOND_RUNTHREAD_SVC_RETURN=PASS' imp008b-run.log
           grep -Fq 'IMP008B_BREAKLOOP_RETURN=PASS' imp008b-run.log
