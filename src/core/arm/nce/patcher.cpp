@@ -693,9 +693,15 @@ void Patcher::WriteSaveContext(oaknut::VectorCodeGenerator& cg) {
     cg.RET();
 }
 
-void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id, oaknut::VectorCodeGenerator& cg, oaknut::Label& save_ctx, oaknut::Label& load_ctx) {
-    // Determine if we're writing to the pre-patch buffer
+void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id,
+                                 oaknut::VectorCodeGenerator& cg, oaknut::Label& save_ctx,
+                                 oaknut::Label& load_ctx) {
+    // Determine if we're writing to the pre-patch buffer.
     const bool is_pre = (&cg == &c_pre);
+#if defined(_WIN32)
+    // Windows re-entry uses WindowsNceEnterGuest instead of the Linux load-context trampoline.
+    (void)load_ctx;
+#endif
 
     // We are about to start saving state, so we need to lock the context.
     this->LockContext(cg);
@@ -706,15 +712,18 @@ void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id, oaknut
     cg.BL(save_ctx);
     cg.LDR(X30, SP, POST_INDEXED, 16);
 
-    // Now that we've saved all registers, we can use any registers as scratch.
-    // Store PC + 4 to arm interface, since we know the instruction offset from the entry point.
+    // Now that we've saved all guest registers, ordinary scratch registers are available.
     oaknut::Label pc_after_svc;
+#if defined(_WIN32)
+    WriteWindowsCurrentNceParametersLookup(cg, X1);
+#else
     cg.MRS(X1, oaknut::SystemReg::TPIDR_EL0);
+#endif
     cg.LDR(X1, X1, offsetof(NativeExecutionParameters, native_context));
     cg.LDR(X2, pc_after_svc);
     cg.STR(X2, X1, offsetof(GuestContext, pc));
 
-    // Store SVC number to execute when we return
+    // Store SVC number to execute when we return.
     cg.MOV(X2, svc_id);
     cg.STR(W2, X1, offsetof(GuestContext, svc));
 
@@ -727,19 +736,26 @@ void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id, oaknut
     cg.STLXR(W3, XZR, X2);
     cg.CBNZ(W3, retry);
 
-    // Add "calling SVC" flag. Since this is X0, this is now our return value.
+    // Add the calling-SVC flag. X0 is the host return value.
     cg.ORR(X0, X0, static_cast<u64>(HaltReason::SupervisorCall));
 
     // Offset the GuestContext pointer to the HostContext member.
-    // STP has limited range of [-512, 504] which we can't reach otherwise
-    // NB: Due to this all offsets below are from the start of HostContext.
+    // STP/LDP have limited ranges, so all offsets below are from HostContext.
     cg.ADD(X1, X1, offsetof(GuestContext, host_ctx));
 
-    // Reload host TPIDR_EL0 and SP.
+#if defined(_WIN32)
+    // WindowsNceEnterGuest saved the host ABI continuation without repurposing physical TPIDR_EL0.
+    // Restore only the saved host SP/nonvolatile state and return to its C++ caller. Physical x18
+    // and physical TPIDR_EL0 stay platform-owned throughout.
+    cg.LDR(X2, X1, offsetof(HostContext, host_sp));
+    cg.MOV(SP, X2);
+#else
+    // Reload host TPIDR_EL0 and SP on the Linux/Android path.
     static_assert(offsetof(HostContext, host_sp) + 8 == offsetof(HostContext, host_tpidr_el0));
     cg.LDP(X2, X3, X1, offsetof(HostContext, host_sp));
     cg.MOV(SP, X2);
     cg.MSR(oaknut::SystemReg::TPIDR_EL0, X3);
+#endif
 
     // Load callee-saved host registers and return to host.
     static constexpr size_t HOST_REGS_OFF = offsetof(HostContext, host_saved_regs);
@@ -756,16 +772,30 @@ void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id, oaknut
     cg.LDP(Q14, Q15, X1, HOST_VREGS_OFF + 6 * sizeof(u128));
     cg.RET();
 
-    // Write the post-SVC trampoline address, which will jump back to the guest after restoring its
-    // state.
+    // This address is the post-SVC entry point selected by RunThread when GuestContext::pc equals
+    // the instruction after the emulated SVC.
     if (is_pre) {
         curr_patch->m_trampolines_pre.push_back({cg.offset(), module_dest});
     } else {
         curr_patch->m_trampolines.push_back({cg.offset(), module_dest});
     }
 
-    // Host called this location. Save the return address so we can
-    // unwind the stack properly when jumping back.
+#if defined(_WIN32)
+    // WindowsNceEnterGuest has already restored guest x0-x15, x19-x30, SIMD/status and guest SP.
+    // It intentionally carries GuestContext in x17 and the selected trampoline in x16. Unlock the
+    // scheduler-owned NCE context, restore the two guest scratch registers, then use a direct branch
+    // so no architectural guest register is consumed as a PC carrier.
+    this->UnlockContext(cg);
+    cg.LDR(X16, X17, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 16);
+    cg.LDR(X17, X17, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 17);
+
+    if (is_pre)
+        this->BranchToModulePre(module_dest);
+    else
+        this->BranchToModule(module_dest);
+#else
+    // Linux/Android host called this location. Save the return address so the existing assembly
+    // entry path can unwind the stack properly when jumping back.
     cg.MRS(X2, oaknut::SystemReg::TPIDR_EL0);
     cg.LDR(X2, X2, offsetof(NativeExecutionParameters, native_context));
     cg.ADD(X0, X2, offsetof(GuestContext, host_ctx));
@@ -788,14 +818,15 @@ void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id, oaknut
     this->UnlockContext(cg);
 
     // Jump back to the instruction after the emulated SVC.
-    if (&cg == &c_pre)
+    if (is_pre)
         this->BranchToModulePre(module_dest);
     else
         this->BranchToModule(module_dest);
+#endif
 
     // Store PC after call.
     cg.l(pc_after_svc);
-    if (&cg == &c_pre)
+    if (is_pre)
         this->WriteModulePcPre(module_dest);
     else
         this->WriteModulePc(module_dest);
