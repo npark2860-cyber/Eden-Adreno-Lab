@@ -32,6 +32,7 @@ constexpr std::size_t PageSize = 0x1000;
 constexpr std::size_t InitialImageSize = PageSize * 2;
 constexpr u64 FaultSearchOffset = 0x100000;
 constexpr u64 FaultSearchLimit = 0x2000000;
+constexpr u32 BranchX2Instruction = 0xD61F0040U;
 constexpr u64 X0Sentinel = 0x1122334455667788ULL;
 constexpr u64 X1Sentinel = 0x8877665544332211ULL;
 constexpr u64 X18Sentinel = 0x123456789ABC0000ULL;
@@ -146,6 +147,10 @@ int main() {
 
     Kernel::CodeSet code_set;
     code_set.memory.resize(InitialImageSize);
+    code_set.memory[0] = static_cast<u8>(BranchX2Instruction & 0xFFU);
+    code_set.memory[1] = static_cast<u8>((BranchX2Instruction >> 8) & 0xFFU);
+    code_set.memory[2] = static_cast<u8>((BranchX2Instruction >> 16) & 0xFFU);
+    code_set.memory[3] = static_cast<u8>((BranchX2Instruction >> 24) & 0xFFU);
     auto& code = code_set.CodeSegment();
     code.offset = 0;
     code.addr = Kernel::KProcessAddress{0};
@@ -250,15 +255,19 @@ int main() {
                  fault_mbi.AllocationBase);
     std::fprintf(stderr, "IMP008C_C1_GUEST_SP=0x%llX\n",
                  static_cast<unsigned long long>(guest_sp));
+    std::fprintf(stderr, "IMP008C_C1_ENTRY_PC=0x%llX BRANCH_TARGET=0x%llX\n",
+                 static_cast<unsigned long long>(load_base_u64),
+                 static_cast<unsigned long long>(fault_pc));
     std::fflush(stderr);
     Trace("IMP008C_C1_NONEXEC_FAULT_PC");
 
     Kernel::Svc::ThreadContext context{};
     context.r[0] = X0Sentinel;
     context.r[1] = X1Sentinel;
+    context.r[2] = fault_pc;
     context.r[18] = X18Sentinel;
     context.sp = guest_sp;
-    context.pc = fault_pc;
+    context.pc = load_base_u64;
     context.pstate = 0;
     arm->SetContext(context);
     arm->SetTpidrroEl0(0);
