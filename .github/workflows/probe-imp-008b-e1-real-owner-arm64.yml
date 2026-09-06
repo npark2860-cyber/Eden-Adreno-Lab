@@ -74,8 +74,11 @@ jobs:
           cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
 
           # IMP-008B E1 CI-only executable. Reuse the normal Eden CLI executable dependency contract.
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008b_e1_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
           add_executable(imp008b_e1_real_owner
-              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread-e1/real_owner_selection.cpp)
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread-e1/real_owner_selection.cpp
+              ${CMAKE_BINARY_DIR}/imp008b_e1_vma.cpp)
           target_include_directories(imp008b_e1_real_owner PRIVATE ${CMAKE_SOURCE_DIR}/src)
           target_link_libraries(imp008b_e1_real_owner PRIVATE
               common core input_common frontend_common video_core)
