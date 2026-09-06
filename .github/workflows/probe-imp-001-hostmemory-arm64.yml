@@ -2,9 +2,6 @@ name: Probe IMP-001 HostMemory ARM64
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008b-clean-recovery
 
 permissions:
   contents: read
