@@ -2,12 +2,6 @@ name: Probe IMP-008B E5 X18 Runtime Invariant
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008b-clean-recovery
-    paths:
-      - '.github/workflows/probe-imp-008b-e5-x18-runtime-invariant-arm64.yml'
-      - 'probes/windows-arm64-nce-runthread-e5/**'
 
 permissions:
   contents: read
