@@ -1,0 +1,187 @@
+name: Probe IMP-008C C1 Prefetch Fault Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008c-windows-nce-fault-runtime
+    paths:
+      - '.github/workflows/probe-imp-008c-c1-prefetch-fault-runtime-arm64.yml'
+      - 'probes/windows-arm64-nce-fault-c1/**'
+
+permissions:
+  contents: read
+
+jobs:
+  c1-prefetch-fault-runtime:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout IMP-008C branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify C1 scope contract
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          probe='probes/windows-arm64-nce-fault-c1/prefetch_fault_runtime.cpp'
+          test -f "$probe"
+          grep -Fq 'Settings::CpuBackend::Nce' "$probe"
+          grep -Fq 'Settings::SetNceEnabled(true)' "$probe"
+          grep -Fq 'KProcess::Create(kernel)' "$probe"
+          grep -Fq 'process->LoadFromMetadata' "$probe"
+          grep -Fq 'KThread::InitializeDummyThread' "$probe"
+          grep -Fq 'process->GetArmInterface(0)' "$probe"
+          grep -Fq 'AddVectoredExceptionHandler(1, &C1ObservationVeh)' "$probe"
+          grep -Fq 'EXCEPTION_ACCESS_VIOLATION' "$probe"
+          grep -Fq 'record.ExceptionInformation[0]' "$probe"
+          grep -Fq 'Core::HaltReason::PrefetchAbort' "$probe"
+          grep -Fq 'NtCurrentTeb()' "$probe"
+          grep -Fq 'ReadPhysicalX18()' "$probe"
+          grep -Fq 'arm->RunThread(thread)' "$probe"
+          if grep -Fq 'InvalidateNCE(' "$probe"; then
+            echo 'C1 must not directly exercise or modify InvalidateNCE recovery' >&2
+            exit 61
+          fi
+          if grep -Fq 'dynamic_cast<' "$probe"; then
+            echo 'C1 must preserve normal -fno-rtti product contract' >&2
+            exit 62
+          fi
+          echo 'IMP008C_C1_SCOPE_SOURCE=PASS'
+
+      - name: Add C1 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          # IMP-008C C1 CI-only executable. Reuse the normal Eden CLI product dependency contract.
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008c_c1_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008c_c1_prefetch_fault
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-fault-c1/prefetch_fault_runtime.cpp
+              ${CMAKE_BINARY_DIR}/imp008c_c1_vma.cpp)
+          target_include_directories(imp008c_c1_prefetch_fault PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008c_c1_prefetch_fault PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008c_c1_prefetch_fault PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+          CMAKE
+          echo 'IMP008C_C1_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-fault-c1/prefetch_fault_runtime.cpp' build/compile_commands.json
+          grep -Fq 'windows_nce_entry.obj' build/build.ninja
+          grep -Fq -- '-fno-rtti' build/compile_commands.json
+          echo 'IMP008C_C1_NORMAL_CONFIGURE=PASS'
+
+      - name: Build and run C1 product-linked executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008c_c1_prefetch_fault --parallel
+          exe="$(find build -type f -name 'imp008c_c1_prefetch_fault.exe' -print -quit)"
+          test -n "$exe"
+          echo "IMP008C_C1_EXECUTABLE=$exe"
+          winexe="$(cygpath -w "$exe")"
+          winout="$(cygpath -w imp008c-c1.out.log)"
+          winerr="$(cygpath -w imp008c-c1.err.log)"
+          set +e
+          powershell.exe -NoProfile -NonInteractive -Command "& {
+            \$ErrorActionPreference = 'Stop'
+            try {
+              \$p = Start-Process -FilePath '$winexe' -NoNewWindow -PassThru -RedirectStandardOutput '$winout' -RedirectStandardError '$winerr'
+              if (-not \$p.WaitForExit(30000)) {
+                Write-Host 'IMP008C_C1_PROCESS_TIMEOUT=FAIL'
+                Stop-Process -Id \$p.Id -Force -ErrorAction SilentlyContinue
+                exit 124
+              }
+              \$p.Refresh()
+              Write-Host ('IMP008C_C1_PROCESS_EXIT=' + \$p.ExitCode)
+              exit \$p.ExitCode
+            } catch {
+              Write-Host ('IMP008C_C1_LAUNCH_EXCEPTION=' + \$_.Exception.Message)
+              Write-Host ('IMP008C_C1_LAUNCH_HRESULT=0x{0:X8}' -f (\$_.Exception.HResult -band 0xffffffff))
+              if (\$_.Exception.InnerException) {
+                Write-Host ('IMP008C_C1_LAUNCH_INNER=' + \$_.Exception.InnerException.Message)
+              }
+              exit 125
+            }
+          }"
+          rc=$?
+          set -e
+          cat imp008c-c1.out.log 2>/dev/null || true
+          cat imp008c-c1.err.log >&2 2>/dev/null || true
+          echo "IMP008C_C1_LAUNCH_RC=$rc"
+          test "$rc" -eq 0
+          grep -Fq 'IMP008C_C1_REAL_APPLICATION_PROCESS=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_REAL_KTHREAD=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_NCE_SELECTED=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_NONEXEC_FAULT_PC=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_PHYSICAL_X18_TEB_BEFORE=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_RUNTHREAD_RETURNED=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_EXECUTE_AV=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_PREFETCH_ABORT_RETURN=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_CONTEXT_COHERENT=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_PHYSICAL_X18_TEB_AFTER=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_GATE=PASS' imp008c-c1.out.log
+          grep -Fq 'IMP008C_C1_EXCEPTION_CODE=0xC0000005' imp008c-c1.err.log
+          grep -Fq 'IMP008C_C1_EXCEPTION_ACCESS=8' imp008c-c1.err.log
