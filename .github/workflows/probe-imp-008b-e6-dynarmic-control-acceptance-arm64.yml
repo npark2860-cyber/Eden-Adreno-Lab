@@ -83,7 +83,9 @@ jobs:
           add_executable(imp008b_e6_dynarmic_control
               ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread-e6/dynarmic_control_acceptance.cpp
               ${CMAKE_BINARY_DIR}/imp008b_e6_vma.cpp)
-          target_include_directories(imp008b_e6_dynarmic_control PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_include_directories(imp008b_e6_dynarmic_control PRIVATE
+              ${CMAKE_SOURCE_DIR}/src
+              ${CMAKE_SOURCE_DIR}/src/dynarmic/src)
           target_link_libraries(imp008b_e6_dynarmic_control PRIVATE
               common core input_common frontend_common video_core merry::oaknut)
           target_link_libraries(imp008b_e6_dynarmic_control PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
