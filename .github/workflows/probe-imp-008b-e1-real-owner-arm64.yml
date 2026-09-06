@@ -2,6 +2,9 @@ name: Probe IMP-008B E1 Real Owner Selection
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008b-clean-recovery
 
 permissions:
   contents: read
