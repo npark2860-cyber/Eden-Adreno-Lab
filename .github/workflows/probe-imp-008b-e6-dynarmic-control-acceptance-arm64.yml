@@ -2,12 +2,6 @@ name: Probe IMP-008B E6 Dynarmic Control Acceptance
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008b-clean-recovery
-    paths:
-      - '.github/workflows/probe-imp-008b-e6-dynarmic-control-acceptance-arm64.yml'
-      - 'probes/windows-arm64-nce-runthread-e6/**'
 
 permissions:
   contents: read
