@@ -2,12 +2,6 @@ name: Probe IMP-008B E6 Dynarmic Control Acceptance
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008b-clean-recovery
-    paths:
-      - '.github/workflows/probe-imp-008b-e6-dynarmic-control-acceptance-arm64.yml'
-      - 'probes/windows-arm64-nce-runthread-e6/**'
 
 permissions:
   contents: read
@@ -63,11 +57,18 @@ jobs:
           grep -Fq 'process->IsApplication()' "$probe"
           grep -Fq 'process->Is64Bit()' "$probe"
           grep -Fq 'process->GetArmInterface(0)' "$probe"
-          grep -Fq 'dynamic_cast<Core::ArmDynarmic64*>' "$probe"
-          grep -Fq 'dynamic_cast<Core::ArmNce*>' "$probe"
+          grep -Fq 'ReadPrimaryVtable' "$probe"
+          grep -Fq 'Core::ArmDynarmic64 dynarmic_control' "$probe"
+          grep -Fq 'Core::ArmNce nce_control' "$probe"
+          grep -Fq 'actual_vtable != dynarmic_vtable' "$probe"
+          grep -Fq 'actual_vtable == nce_vtable' "$probe"
+          if grep -Fq 'dynamic_cast<' "$probe"; then
+            echo 'E6 must preserve normal -fno-rtti product contract' >&2
+            exit 61
+          fi
           if grep -Fq 'RunThread(' "$probe"; then
             echo 'E6 control acceptance must not execute RunThread' >&2
-            exit 61
+            exit 62
           fi
           echo 'IMP008B_E6_SCOPE_SOURCE=PASS'
 
@@ -123,6 +124,7 @@ jobs:
           grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
           grep -Fq 'arm_dynarmic_64.cpp' build/compile_commands.json
           grep -Fq 'windows-arm64-nce-runthread-e6/dynarmic_control_acceptance.cpp' build/compile_commands.json
+          grep -Fq -- '-fno-rtti' build/compile_commands.json
           echo 'IMP008B_E6_NORMAL_CONFIGURE=PASS'
 
       - name: Build and run E6 product-linked executable
