@@ -1,7 +1,13 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <utility>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -38,6 +44,38 @@ int Fail(const char* marker) {
 void Trace(const char* marker) {
     std::cerr << marker << "=PASS\n" << std::flush;
 }
+
+#if defined(_WIN32)
+LONG CALLBACK E2VectoredExceptionHandler(EXCEPTION_POINTERS* exception) noexcept {
+    if (exception == nullptr || exception->ExceptionRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto* const record = exception->ExceptionRecord;
+    std::fprintf(stderr, "IMP008B_E2_EXCEPTION_CODE=0x%08lX\n",
+                 static_cast<unsigned long>(record->ExceptionCode));
+    std::fprintf(stderr, "IMP008B_E2_EXCEPTION_FLAGS=0x%08lX\n",
+                 static_cast<unsigned long>(record->ExceptionFlags));
+    std::fprintf(stderr, "IMP008B_E2_EXCEPTION_ADDRESS=%p\n", record->ExceptionAddress);
+    std::fprintf(stderr, "IMP008B_E2_EXCEPTION_PARAMETER_COUNT=%lu\n",
+                 static_cast<unsigned long>(record->NumberParameters));
+    for (ULONG i = 0; i < record->NumberParameters && i < EXCEPTION_MAXIMUM_PARAMETERS; ++i) {
+        std::fprintf(stderr, "IMP008B_E2_EXCEPTION_PARAMETER_%lu=0x%llX\n",
+                     static_cast<unsigned long>(i),
+                     static_cast<unsigned long long>(record->ExceptionInformation[i]));
+    }
+#if defined(_M_ARM64) || defined(__aarch64__)
+    if (exception->ContextRecord != nullptr) {
+        std::fprintf(stderr, "IMP008B_E2_EXCEPTION_PC=0x%llX\n",
+                     static_cast<unsigned long long>(exception->ContextRecord->Pc));
+        std::fprintf(stderr, "IMP008B_E2_EXCEPTION_SP=0x%llX\n",
+                     static_cast<unsigned long long>(exception->ContextRecord->Sp));
+    }
+#endif
+    std::fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
 
 std::size_t PageAlign(std::size_t value) {
     return (value + PageSize - 1) & ~(PageSize - 1);
@@ -184,10 +222,28 @@ int main() {
     interface->ClearInstructionCache();
     Trace("IMP008B_E2_CONTEXT_SET_DONE");
 
+    std::fprintf(stderr, "IMP008B_E2_LOAD_BASE=0x%llX\n",
+                 static_cast<unsigned long long>(load_base_u64));
+    std::fprintf(stderr, "IMP008B_E2_GUEST_PC=0x%llX\n",
+                 static_cast<unsigned long long>(guest_pc));
+    std::fprintf(stderr, "IMP008B_E2_GUEST_SP=0x%llX\n",
+                 static_cast<unsigned long long>(guest_sp));
+    std::fflush(stderr);
+
+    PVOID diagnostic_veh = AddVectoredExceptionHandler(1, &E2VectoredExceptionHandler);
+    if (diagnostic_veh == nullptr) {
+        thread->Close(kernel);
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008B_E2_VEH_INSTALL");
+    }
+    Trace("IMP008B_E2_VEH_INSTALLED");
+
     std::cout << "IMP008B_E2_PRE_RUNTHREAD=PASS\n" << std::flush;
     interface->LockThread(thread);
     const Core::HaltReason halt_reason = interface->RunThread(thread);
     interface->UnlockThread(thread);
+    RemoveVectoredExceptionHandler(diagnostic_veh);
     std::cout << "IMP008B_E2_RUNTHREAD_RETURNED=PASS\n" << std::flush;
 
     if (!True(halt_reason & Core::HaltReason::SupervisorCall)) {
