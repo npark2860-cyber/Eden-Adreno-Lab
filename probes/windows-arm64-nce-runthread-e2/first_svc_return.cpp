@@ -161,6 +161,17 @@ int main() {
     }
     Trace("IMP008B_E2_PROCESS_CREATED");
 
+    PVOID diagnostic_veh = AddVectoredExceptionHandler(1, &E2VectoredExceptionHandler);
+    if (diagnostic_veh == nullptr) {
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008B_E2_VEH_INSTALL");
+    }
+    const HMODULE module_base = GetModuleHandleW(nullptr);
+    std::fprintf(stderr, "IMP008B_E2_MODULE_BASE=%p\n", module_base);
+    std::fflush(stderr);
+    Trace("IMP008B_E2_VEH_INSTALLED");
+
     const std::size_t mapped_code_size = PageAlign(InitialImageSize + patch_size);
     const auto metadata = FileSys::ProgramMetadata::GetDefault();
     Trace("IMP008B_E2_PROCESS_LOAD_BEGIN");
@@ -242,15 +253,6 @@ int main() {
     std::fprintf(stderr, "IMP008B_E2_GUEST_SP=0x%llX\n",
                  static_cast<unsigned long long>(guest_sp));
     std::fflush(stderr);
-
-    PVOID diagnostic_veh = AddVectoredExceptionHandler(1, &E2VectoredExceptionHandler);
-    if (diagnostic_veh == nullptr) {
-        thread->Close(kernel);
-        process->Close(kernel);
-        kernel.Shutdown();
-        return Fail("IMP008B_E2_VEH_INSTALL");
-    }
-    Trace("IMP008B_E2_VEH_INSTALLED");
 
     std::cout << "IMP008B_E2_PRE_RUNTHREAD=PASS\n" << std::flush;
     interface->LockThread(thread);
