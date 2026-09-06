@@ -14,6 +14,7 @@
 #include "core/arm/arm_interface.h"
 #include "core/arm/nce/patcher.h"
 #include "core/core.h"
+#include "core/device_memory.h"
 #include "core/file_sys/program_metadata.h"
 #include "core/hle/kernel/code_set.h"
 #include "core/hle/kernel/k_process.h"
@@ -141,6 +142,18 @@ int main() {
     kernel.Initialize();
     Trace("IMP008B_E2_KERNEL_INIT_DONE");
 
+    // Match the production NCE loader path exactly: native guest addresses are shifted into the
+    // HostMemory fastmem reservation, then that reservation is switched to direct-mapped mode
+    // before KProcess::LoadFromMetadata constructs the 39-bit process address space.
+    auto& direct_buffer = system.DeviceMemory().buffer;
+    Trace("IMP008B_E2_DIRECT_MAP_BEGIN");
+    direct_buffer.EnableDirectMappedAddress();
+    const u64 fastmem_base = reinterpret_cast<u64>(direct_buffer.VirtualBasePointer());
+    std::fprintf(stderr, "IMP008B_E2_FASTMEM_BASE=0x%llX\n",
+                 static_cast<unsigned long long>(fastmem_base));
+    std::fflush(stderr);
+    Trace("IMP008B_E2_DIRECT_MAP_DONE");
+
     auto* process = Kernel::KProcess::Create(kernel);
     if (process == nullptr) {
         kernel.Shutdown();
@@ -152,7 +165,7 @@ int main() {
     const auto metadata = FileSys::ProgramMetadata::GetDefault();
     Trace("IMP008B_E2_PROCESS_LOAD_BEGIN");
     const Result load_result = process->LoadFromMetadata(
-        kernel, metadata, mapped_code_size, Kernel::KProcessAddress{0}, 0);
+        kernel, metadata, mapped_code_size, Kernel::KProcessAddress{fastmem_base}, 0);
     if (load_result.IsFailure() || !process->IsApplication() || !process->Is64Bit()) {
         process->Close(kernel);
         kernel.Shutdown();
