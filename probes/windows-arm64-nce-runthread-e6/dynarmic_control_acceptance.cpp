@@ -1,10 +1,14 @@
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <iostream>
 
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "core/arm/arm_interface.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
+#include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/arm/nce/arm_nce.h"
 #include "core/core.h"
 #include "core/device_memory.h"
@@ -23,6 +27,12 @@ int Fail(const char* marker) {
 
 void Trace(const char* marker) {
     std::cout << marker << "=PASS\n" << std::flush;
+}
+
+std::uintptr_t ReadPrimaryVtable(const Core::ArmInterface* object) {
+    std::uintptr_t vtable{};
+    std::memcpy(&vtable, object, sizeof(vtable));
+    return vtable;
 }
 
 } // namespace
@@ -104,19 +114,37 @@ int main() {
     }
     Trace("IMP008B_E6_PROCESS_OWNED_INTERFACE");
 
-    auto* const dynarmic64 = dynamic_cast<Core::ArmDynarmic64*>(interface);
-    auto* const nce = dynamic_cast<Core::ArmNce*>(interface);
-    if (dynarmic64 == nullptr) {
-        process->Close(kernel);
-        kernel.Shutdown();
-        return Fail("IMP008B_E6_DYNARMIC64_BACKEND");
+    {
+        Core::DynarmicExclusiveMonitor control_monitor(process->GetMemory(),
+                                                       Core::Hardware::NUM_CPU_CORES);
+        Core::ArmDynarmic64 dynarmic_control(system, false, process, control_monitor, 0);
+        Core::ArmNce nce_control(system, false, 0);
+
+        const std::uintptr_t actual_vtable = ReadPrimaryVtable(interface);
+        const std::uintptr_t dynarmic_vtable = ReadPrimaryVtable(&dynarmic_control);
+        const std::uintptr_t nce_vtable = ReadPrimaryVtable(&nce_control);
+
+        std::fprintf(stderr, "IMP008B_E6_ACTUAL_VTABLE=%p\n",
+                     reinterpret_cast<void*>(actual_vtable));
+        std::fprintf(stderr, "IMP008B_E6_DYNARMIC64_CONTROL_VTABLE=%p\n",
+                     reinterpret_cast<void*>(dynarmic_vtable));
+        std::fprintf(stderr, "IMP008B_E6_NCE_CONTROL_VTABLE=%p\n",
+                     reinterpret_cast<void*>(nce_vtable));
+        std::fflush(stderr);
+
+        if (actual_vtable != dynarmic_vtable) {
+            process->Close(kernel);
+            kernel.Shutdown();
+            return Fail("IMP008B_E6_DYNARMIC64_BACKEND");
+        }
+        if (actual_vtable == nce_vtable) {
+            process->Close(kernel);
+            kernel.Shutdown();
+            return Fail("IMP008B_E6_NOT_NCE_BACKEND");
+        }
     }
-    if (nce != nullptr) {
-        process->Close(kernel);
-        kernel.Shutdown();
-        return Fail("IMP008B_E6_NOT_NCE_BACKEND");
-    }
-    if (dynarmic64->GetArchitecture() != Core::Architecture::AArch64) {
+
+    if (interface->GetArchitecture() != Core::Architecture::AArch64) {
         process->Close(kernel);
         kernel.Shutdown();
         return Fail("IMP008B_E6_AARCH64_BACKEND");
