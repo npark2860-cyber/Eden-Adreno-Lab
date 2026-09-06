@@ -37,6 +37,7 @@ constexpr u64 X0Sentinel = 0x1122334455667788ULL;
 constexpr u64 X1Sentinel = 0x8877665544332211ULL;
 constexpr u64 X18Sentinel = 0x123456789ABC0000ULL;
 
+std::atomic<u32> g_observation_seen{};
 std::atomic<u32> g_fault_seen{};
 std::atomic<u64> g_fault_access_type{};
 std::atomic<u64> g_fault_address{};
@@ -60,6 +61,28 @@ LONG CALLBACK C1ObservationVeh(EXCEPTION_POINTERS* exception) noexcept {
     }
 
     const auto& record = *exception->ExceptionRecord;
+
+    u32 observation_expected = 0;
+    if (g_observation_seen.compare_exchange_strong(observation_expected, 1,
+                                                   std::memory_order_acq_rel)) {
+        const auto info0 = record.NumberParameters >= 1 ? record.ExceptionInformation[0] : 0;
+        const auto info1 = record.NumberParameters >= 2 ? record.ExceptionInformation[1] : 0;
+        std::fprintf(stderr, "IMP008C_C1_OBS_EXCEPTION_CODE=0x%08lX\n",
+                     static_cast<unsigned long>(record.ExceptionCode));
+        std::fprintf(stderr, "IMP008C_C1_OBS_EXCEPTION_PARAMS=%lu\n",
+                     static_cast<unsigned long>(record.NumberParameters));
+        std::fprintf(stderr, "IMP008C_C1_OBS_EXCEPTION_ADDRESS=%p\n", record.ExceptionAddress);
+        std::fprintf(stderr, "IMP008C_C1_OBS_EXCEPTION_PC=0x%llX\n",
+                     static_cast<unsigned long long>(exception->ContextRecord->Pc));
+        std::fprintf(stderr, "IMP008C_C1_OBS_EXCEPTION_SP=0x%llX\n",
+                     static_cast<unsigned long long>(exception->ContextRecord->Sp));
+        std::fprintf(stderr, "IMP008C_C1_OBS_EXCEPTION_INFO0=0x%llX\n",
+                     static_cast<unsigned long long>(info0));
+        std::fprintf(stderr, "IMP008C_C1_OBS_EXCEPTION_INFO1=0x%llX\n",
+                     static_cast<unsigned long long>(info1));
+        std::fflush(stderr);
+    }
+
     if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
