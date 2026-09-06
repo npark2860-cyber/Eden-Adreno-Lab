@@ -127,14 +127,11 @@ bool IsExecutableProtect(DWORD protect) {
            base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
 }
 
-bool IsKnownFaultPc(u64 address, MEMORY_BASIC_INFORMATION& mbi) {
+bool IsReservedFaultPc(u64 address, MEMORY_BASIC_INFORMATION& mbi) {
     if (VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof(mbi)) == 0) {
         return false;
     }
-    if (mbi.State != MEM_COMMIT) {
-        return true;
-    }
-    return !IsExecutableProtect(mbi.Protect);
+    return mbi.State == MEM_RESERVE;
 }
 #endif
 
@@ -257,7 +254,7 @@ int main() {
     for (u64 offset = FaultSearchOffset; offset < FaultSearchLimit; offset += PageSize) {
         MEMORY_BASIC_INFORMATION candidate{};
         const u64 address = load_base_u64 + offset;
-        if (IsKnownFaultPc(address, candidate)) {
+        if (IsReservedFaultPc(address, candidate)) {
             fault_pc = address;
             fault_mbi = candidate;
             break;
@@ -271,6 +268,28 @@ int main() {
     }
 
     std::fprintf(stderr,
+                 "IMP008C_C1_RESERVED_FAULT_PC=0x%llX STATE=0x%lX PROTECT=0x%lX BASE=%p ALLOC=%p\n",
+                 static_cast<unsigned long long>(fault_pc),
+                 static_cast<unsigned long>(fault_mbi.State),
+                 static_cast<unsigned long>(fault_mbi.Protect), fault_mbi.BaseAddress,
+                 fault_mbi.AllocationBase);
+    std::fflush(stderr);
+
+    // Previous C1 runs branched directly into a MEM_RESERVE placeholder and Windows never reached
+    // even the generic observation VEH. Commit exactly one probe-only fastmem page as RW/NX while
+    // leaving the guest page table untouched, so executing it must be a normal user-mode execute AV.
+    direct_buffer.Map(fault_pc, 0, PageSize, Common::MemoryPermission::ReadWrite, false);
+    MEMORY_BASIC_INFORMATION committed_fault_mbi{};
+    if (VirtualQuery(reinterpret_cast<const void*>(fault_pc), &committed_fault_mbi,
+                     sizeof(committed_fault_mbi)) == 0 ||
+        committed_fault_mbi.State != MEM_COMMIT || IsExecutableProtect(committed_fault_mbi.Protect)) {
+        thread->Close(kernel);
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008C_C1_COMMITTED_NX_FAULT_PC");
+    }
+    fault_mbi = committed_fault_mbi;
+    std::fprintf(stderr,
                  "IMP008C_C1_FAULT_PC=0x%llX STATE=0x%lX PROTECT=0x%lX BASE=%p ALLOC=%p\n",
                  static_cast<unsigned long long>(fault_pc),
                  static_cast<unsigned long>(fault_mbi.State),
@@ -283,6 +302,7 @@ int main() {
                  static_cast<unsigned long long>(fault_pc));
     std::fflush(stderr);
     Trace("IMP008C_C1_NONEXEC_FAULT_PC");
+    Trace("IMP008C_C1_COMMITTED_NX_FAULT_PC");
 
     Kernel::Svc::ThreadContext context{};
     context.r[0] = X0Sentinel;
