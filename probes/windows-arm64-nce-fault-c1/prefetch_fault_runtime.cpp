@@ -142,7 +142,7 @@ int main() {
         kernel.Shutdown();
         return Fail("IMP008C_C1_DIRECT_MAP");
     }
-    Trace("IMP008C_C1_DIRECT_MAP=PASS");
+    Trace("IMP008C_C1_DIRECT_MAP");
 
     Kernel::CodeSet code_set;
     code_set.memory.resize(InitialImageSize);
