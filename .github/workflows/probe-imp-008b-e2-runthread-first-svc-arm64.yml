@@ -127,7 +127,35 @@ jobs:
           exe="$(find build -type f -name 'imp008b_e2_first_svc.exe' -print -quit)"
           test -n "$exe"
           echo "IMP008B_E2_EXECUTABLE=$exe"
-          "$exe" | tee imp008b-e2.log
+          winexe="$(cygpath -w "$exe")"
+          winout="$(cygpath -w imp008b-e2.out.log)"
+          winerr="$(cygpath -w imp008b-e2.err.log)"
+          set +e
+          powershell.exe -NoProfile -NonInteractive -Command "& {
+            \$ErrorActionPreference = 'Stop'
+            try {
+              \$p = Start-Process -FilePath '$winexe' -NoNewWindow -Wait -PassThru -RedirectStandardOutput '$winout' -RedirectStandardError '$winerr'
+              Write-Host ('IMP008B_E2_PROCESS_EXIT=' + \$p.ExitCode)
+              exit \$p.ExitCode
+            } catch {
+              Write-Host ('IMP008B_E2_LAUNCH_EXCEPTION=' + \$_.Exception.Message)
+              Write-Host ('IMP008B_E2_LAUNCH_HRESULT=0x{0:X8}' -f (\$_.Exception.HResult -band 0xffffffff))
+              if (\$_.Exception.InnerException) {
+                Write-Host ('IMP008B_E2_LAUNCH_INNER=' + \$_.Exception.InnerException.Message)
+                if (\$_.Exception.InnerException.NativeErrorCode -ne \$null) {
+                  Write-Host ('IMP008B_E2_LAUNCH_NATIVE=' + \$_.Exception.InnerException.NativeErrorCode)
+                }
+              }
+              exit 125
+            }
+          }"
+          rc=$?
+          set -e
+          cat imp008b-e2.out.log 2>/dev/null || true
+          cat imp008b-e2.err.log >&2 2>/dev/null || true
+          echo "IMP008B_E2_LAUNCH_RC=$rc"
+          test "$rc" -eq 0
+          cp imp008b-e2.out.log imp008b-e2.log
           grep -Fq 'IMP008B_E2_REAL_PROCESS=PASS' imp008b-e2.log
           grep -Fq 'IMP008B_E2_REAL_KTHREAD=PASS' imp008b-e2.log
           grep -Fq 'IMP008B_E2_PRE_RUNTHREAD=PASS' imp008b-e2.log
