@@ -2,12 +2,6 @@ name: Probe IMP-008B E4 BreakLoop SignalInterrupt
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008b-clean-recovery
-    paths:
-      - '.github/workflows/probe-imp-008b-e4-breakloop-signalinterrupt-arm64.yml'
-      - 'probes/windows-arm64-nce-runthread-e4/**'
 
 permissions:
   contents: read
