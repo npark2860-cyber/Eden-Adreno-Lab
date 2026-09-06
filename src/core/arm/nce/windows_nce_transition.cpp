@@ -62,7 +62,7 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     // Match the existing Linux NCE ownership handoff: PhysicalCore enters RunThread with the
     // NativeExecutionParameters lock held, but native guest code owns an unlocked interval so SVC,
     // fault and cross-thread-break paths can acquire it. This is the last host-side state mutation
-    // before RtlRestoreContext transfers control to guest SP/PC.
+    // before the Windows context transition transfers control to guest SP/PC.
     auto* const parameters = CurrentNceContext::Get();
     if (parameters == nullptr || parameters->native_context != guest) {
         std::abort();
@@ -84,10 +84,25 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     TraceVirtualMapping("RESTORE_PC", context.Pc);
     TraceVirtualMapping("RESTORE_SP", context.Sp);
 
-    std::fputs("IMP008B_E2_BEFORE_RTL_RESTORE=PASS\n", stderr);
+    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
+    // underlying transition directly for this E2 diagnostic so the exact NTSTATUS is observable.
+    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_continue = ntdll != nullptr
+                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
+                                 : nullptr;
+    if (nt_continue == nullptr) {
+        std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RESOLVE_ERROR=%lu\n",
+                     static_cast<unsigned long>(GetLastError()));
+        std::fflush(stderr);
+        std::abort();
+    }
+
+    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\n", stderr);
     std::fflush(stderr);
-    RtlRestoreContext(reinterpret_cast<PCONTEXT>(&context), nullptr);
-    std::fputs("IMP008B_E2_RTL_RESTORE_RETURNED=PASS\n", stderr);
+    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
+    std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RETURN=0x%08lX\n",
+                 static_cast<unsigned long>(status));
     std::fflush(stderr);
     std::abort();
 }
