@@ -3,6 +3,7 @@
 
 #include "core/arm/nce/windows_nce_transition.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -28,6 +29,9 @@ static_assert(offsetof(HostContext, host_saved_vregs) == HostContextVregs);
 static_assert(offsetof(HostContext, host_sp) == HostContextSpTpidrEl0);
 
 extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) noexcept {
+    std::fputs("IMP008B_E2_RESTORE_ENTER=PASS\n", stderr);
+    std::fflush(stderr);
+
     ARM64_NT_CONTEXT context{};
     RtlCaptureContext(reinterpret_cast<PCONTEXT>(&context));
 
@@ -50,9 +54,16 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     if (parameters == nullptr || parameters->native_context != guest) {
         std::abort();
     }
+    std::fputs("IMP008B_E2_RESTORE_CONTEXT_MATCH=PASS\n", stderr);
+    std::fflush(stderr);
+
     parameters->lock.store(SpinLockUnlocked, std::memory_order_release);
 
+    std::fputs("IMP008B_E2_BEFORE_RTL_RESTORE=PASS\n", stderr);
+    std::fflush(stderr);
     RtlRestoreContext(reinterpret_cast<PCONTEXT>(&context), nullptr);
+    std::fputs("IMP008B_E2_RTL_RESTORE_RETURNED=PASS\n", stderr);
+    std::fflush(stderr);
     std::abort();
 }
 
