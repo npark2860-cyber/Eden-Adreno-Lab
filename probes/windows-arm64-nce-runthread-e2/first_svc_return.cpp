@@ -15,6 +15,10 @@
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/svc_types.h"
 
+#ifdef interface
+#undef interface
+#endif
+
 namespace {
 
 constexpr std::size_t PageSize = 0x1000;
