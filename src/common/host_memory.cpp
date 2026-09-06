@@ -591,7 +591,7 @@ static int shm_open_anon(int flags, mode_t mode) {
 }
 #elif defined(__OpenBSD__)
 /// Except OpenBSD which explicitly uses shm_mkstemp instead (as a more secure alternative)
-static int shm_open_anon(int flags, int mode) {
+static int shm_open_anon(int flags, mode_t mode) {
     char name[16] = "/shm-XXXXXXXXXX";
     int fd;
     if ((fd = shm_mkstemp(name)) == -1)
