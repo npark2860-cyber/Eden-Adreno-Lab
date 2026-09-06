@@ -2,9 +2,6 @@ name: Probe IMP-008A Integrated Windows ARM64 Core Build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008b-clean-recovery
 
 permissions:
   contents: read
