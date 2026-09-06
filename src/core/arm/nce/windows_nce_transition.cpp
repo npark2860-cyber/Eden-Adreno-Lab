@@ -15,7 +15,20 @@ namespace Core::NCE {
 
 namespace {
 constexpr std::uint32_t NzcvMask = 0xF0000000U;
+
+void TraceVirtualMapping(const char* name, std::uint64_t address) noexcept {
+    MEMORY_BASIC_INFORMATION mbi{};
+    const SIZE_T size = VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof(mbi));
+    std::fprintf(stderr,
+                 "IMP008B_E2_%s_ADDR=0x%llX QUERY=%llu BASE=%p ALLOC=%p STATE=0x%lX "
+                 "PROTECT=0x%lX TYPE=0x%lX\n",
+                 name, static_cast<unsigned long long>(address),
+                 static_cast<unsigned long long>(size), mbi.BaseAddress, mbi.AllocationBase,
+                 static_cast<unsigned long>(mbi.State), static_cast<unsigned long>(mbi.Protect),
+                 static_cast<unsigned long>(mbi.Type));
+    std::fflush(stderr);
 }
+} // namespace
 
 static_assert(offsetof(GuestContext, cpu_registers) == 0x000);
 static_assert(offsetof(GuestContext, sp) == GuestContextSp);
@@ -58,6 +71,18 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     std::fflush(stderr);
 
     parameters->lock.store(SpinLockUnlocked, std::memory_order_release);
+
+    std::fprintf(stderr,
+                 "IMP008B_E2_RESTORE_CONTEXT PC=0x%llX SP=0x%llX X18=0x%llX CPSR=0x%08lX "
+                 "FLAGS=0x%08lX\n",
+                 static_cast<unsigned long long>(context.Pc),
+                 static_cast<unsigned long long>(context.Sp),
+                 static_cast<unsigned long long>(context.X[18]),
+                 static_cast<unsigned long>(context.Cpsr),
+                 static_cast<unsigned long>(context.ContextFlags));
+    std::fflush(stderr);
+    TraceVirtualMapping("RESTORE_PC", context.Pc);
+    TraceVirtualMapping("RESTORE_SP", context.Sp);
 
     std::fputs("IMP008B_E2_BEFORE_RTL_RESTORE=PASS\n", stderr);
     std::fflush(stderr);
