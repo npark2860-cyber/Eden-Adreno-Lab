@@ -1,0 +1,138 @@
+name: Probe IMP-008B E2 RunThread First SVC
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008b-clean-recovery
+
+permissions:
+  contents: read
+
+jobs:
+  e2-runthread-first-svc:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout clean IMP-008B recovery branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify E2 scope contract
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          probe='probes/windows-arm64-nce-runthread-e2/first_svc_return.cpp'
+          grep -Fq 'KProcess::Create(kernel)' "$probe"
+          grep -Fq 'KThread::InitializeDummyThread(system, thread, process)' "$probe"
+          grep -Fq 'patcher.PatchText' "$probe"
+          grep -Fq 'patcher.RelocateAndCopy' "$probe"
+          grep -Fq 'interface->RunThread(thread)' "$probe"
+          grep -Fq 'Core::HaltReason::SupervisorCall' "$probe"
+          grep -Fq 'returned.r[0] != 0x42' "$probe"
+          if grep -Fq 'SignalInterrupt(' "$probe"; then
+            echo 'E2 must stop before cross-thread interrupt' >&2
+            exit 51
+          fi
+          test "$(grep -Fc 'interface->RunThread(thread)' "$probe")" -eq 1
+          echo 'IMP008B_E2_SCOPE_SOURCE=PASS'
+
+      - name: Add E2 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          # IMP-008B E2 CI-only executable. Reuse the normal Eden CLI product dependency contract.
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008b_e2_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008b_e2_first_svc
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread-e2/first_svc_return.cpp
+              ${CMAKE_BINARY_DIR}/imp008b_e2_vma.cpp)
+          target_include_directories(imp008b_e2_first_svc PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008b_e2_first_svc PRIVATE
+              common core input_common frontend_common video_core)
+          target_link_libraries(imp008b_e2_first_svc PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+          CMAKE
+          echo 'IMP008B_E2_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-runthread-e2/first_svc_return.cpp' build/compile_commands.json
+          grep -R -Fq 'windows_nce_entry.obj' build
+          echo 'IMP008B_E2_NORMAL_CONFIGURE=PASS'
+
+      - name: Build and run E2 product-linked executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e2_first_svc --parallel
+          exe="$(find build -type f -name 'imp008b_e2_first_svc.exe' -print -quit)"
+          test -n "$exe"
+          echo "IMP008B_E2_EXECUTABLE=$exe"
+          "$exe" | tee imp008b-e2.log
+          grep -Fq 'IMP008B_E2_REAL_PROCESS=PASS' imp008b-e2.log
+          grep -Fq 'IMP008B_E2_REAL_KTHREAD=PASS' imp008b-e2.log
+          grep -Fq 'IMP008B_E2_PRE_RUNTHREAD=PASS' imp008b-e2.log
+          grep -Fq 'IMP008B_E2_RUNTHREAD_RETURNED=PASS' imp008b-e2.log
+          grep -Fq 'IMP008B_E2_GUEST_ENTERED=PASS' imp008b-e2.log
+          grep -Fq 'IMP008B_E2_FIRST_SVC_RETURN=PASS' imp008b-e2.log
+          grep -Fq 'IMP008B_E2_CONTEXT_COHERENT=PASS' imp008b-e2.log
+          grep -Fq 'IMP008B_E2_GATE=PASS' imp008b-e2.log
