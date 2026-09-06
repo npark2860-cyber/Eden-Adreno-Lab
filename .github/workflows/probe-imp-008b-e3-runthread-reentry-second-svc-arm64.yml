@@ -2,12 +2,6 @@ name: Probe IMP-008B E3 RunThread Reentry Second SVC
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008b-clean-recovery
-    paths:
-      - '.github/workflows/probe-imp-008b-e3-runthread-reentry-second-svc-arm64.yml'
-      - 'probes/windows-arm64-nce-runthread-e3/**'
 
 permissions:
   contents: read
