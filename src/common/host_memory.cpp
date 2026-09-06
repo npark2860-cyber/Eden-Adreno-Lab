@@ -209,6 +209,7 @@ public:
             LOG_CRITICAL(HW_Memory, "Failed to reserve {} GiB of virtual memory", virtual_size >> 30);
             return false;
         }
+        virtual_map_base = virtual_base;
         return true;
     }
 
@@ -217,6 +218,11 @@ public:
     }
 
     void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {
+        AdjustMap(&virtual_offset, &length);
+        if (length == 0) {
+            return;
+        }
+
         std::unique_lock lock{placeholder_mutex};
         if (!IsNiechePlaceholder(virtual_offset, length)) {
             Split(virtual_offset, length);
@@ -233,6 +239,11 @@ public:
     }
 
     void Unmap(size_t virtual_offset, size_t length) {
+        AdjustMap(&virtual_offset, &length);
+        if (length == 0) {
+            return;
+        }
+
         std::scoped_lock lock{placeholder_mutex};
 
         // Unmap until there are no more placeholders
@@ -241,6 +252,11 @@ public:
     }
 
     void Protect(size_t virtual_offset, size_t length, bool read, bool write, bool execute) {
+        AdjustMap(&virtual_offset, &length);
+        if (length == 0) {
+            return;
+        }
+
         const DWORD new_flags = GetWindowsProtection(read, write, execute);
         const size_t virtual_end = virtual_offset + length;
 
@@ -262,8 +278,7 @@ public:
     }
 
     void EnableDirectMappedAddress() {
-        // TODO
-        UNREACHABLE();
+        direct_mapped = true;
     }
 
     const size_t backing_size; ///< Size of the backing memory in bytes
@@ -300,6 +315,28 @@ private:
         if (!CloseHandle(backing_handle)) {
             LOG_CRITICAL(HW_Memory, "Failed to free backing memory file handle");
         }
+    }
+
+    void AdjustMap(size_t* virtual_offset, size_t* length) const {
+        if (!direct_mapped) {
+            return;
+        }
+
+        const size_t intended_start = *virtual_offset;
+        const size_t intended_end = intended_start + *length;
+        const size_t address_space_start = reinterpret_cast<size_t>(virtual_map_base);
+        const size_t address_space_end = address_space_start + virtual_size;
+
+        if (intended_end <= address_space_start || intended_start >= address_space_end) {
+            *virtual_offset = 0;
+            *length = 0;
+            return;
+        }
+
+        const size_t mapped_start = (std::max)(intended_start, address_space_start);
+        const size_t mapped_end = (std::min)(intended_end, address_space_end);
+        *virtual_offset = mapped_start - address_space_start;
+        *length = mapped_end - mapped_start;
     }
 
     /// Unmap one placeholder in the given range (partial unmaps are supported)
@@ -434,6 +471,9 @@ private:
     PFN_VirtualAlloc2 pfn_VirtualAlloc2{};
     PFN_MapViewOfFile3 pfn_MapViewOfFile3{};
     PFN_UnmapViewOfFile2 pfn_UnmapViewOfFile2{};
+
+    u8* virtual_map_base{}; ///< Original placeholder reservation base for direct mappings
+    bool direct_mapped{};
 
     std::mutex placeholder_mutex;                                 ///< Mutex for placeholders
     boost::icl::separate_interval_set<size_t> placeholders;       ///< Mapped placeholders
@@ -817,6 +857,11 @@ void HostMemory::EnableDirectMappedAddress() {
 #if !(defined(__OPENORBIS__) || defined(__managarm__))
     if (impl) {
         impl->EnableDirectMappedAddress();
+#ifdef _WIN32
+        // Direct-mapped callers pass absolute guest addresses. The Windows implementation
+        // converts those back to offsets from the original placeholder reservation itself.
+        virtual_base_offset = 0;
+#endif
         virtual_size += reinterpret_cast<uintptr_t>(virtual_base);
     }
 #endif
