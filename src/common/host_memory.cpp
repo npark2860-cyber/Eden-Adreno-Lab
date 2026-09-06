@@ -202,8 +202,29 @@ public:
             LOG_CRITICAL(HW_Memory, "Failed to map {} MiB of virtual memory", backing_size >> 20);
             return false;
         }
+
+        // NCE embeds the host fastmem base into the guest 39-bit address space. POSIX explicitly
+        // reserves its arena between 36 and 39 bits; Windows must enforce the same invariant rather
+        // than accepting the much higher address that VirtualAlloc2 commonly chooses by default.
+        MEM_EXTENDED_PARAMETER* virtual_parameters = nullptr;
+        ULONG virtual_parameter_count = 0;
+#if defined(ARCHITECTURE_arm64) && defined(HAS_NCE)
+        MEM_ADDRESS_REQUIREMENTS nce_address_requirements{};
+        nce_address_requirements.LowestStartingAddress = reinterpret_cast<PVOID>(1ULL << 36);
+        nce_address_requirements.HighestEndingAddress = reinterpret_cast<PVOID>((1ULL << 39) - 1);
+        nce_address_requirements.Alignment = HugePageSize;
+
+        MEM_EXTENDED_PARAMETER nce_address_parameter{};
+        nce_address_parameter.Type = MemExtendedParameterAddressRequirements;
+        nce_address_parameter.Pointer = &nce_address_requirements;
+        virtual_parameters = &nce_address_parameter;
+        virtual_parameter_count = 1;
+#endif
+
         // Allocate virtual address placeholder
-        virtual_base = static_cast<u8*>(pfn_VirtualAlloc2(process, nullptr, virtual_size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0));
+        virtual_base = static_cast<u8*>(pfn_VirtualAlloc2(
+            process, nullptr, virtual_size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS,
+            virtual_parameters, virtual_parameter_count));
         if (!virtual_base) {
             Release();
             LOG_CRITICAL(HW_Memory, "Failed to reserve {} GiB of virtual memory", virtual_size >> 30);
@@ -570,7 +591,7 @@ static int shm_open_anon(int flags, mode_t mode) {
 }
 #elif defined(__OpenBSD__)
 /// Except OpenBSD which explicitly uses shm_mkstemp instead (as a more secure alternative)
-static int shm_open_anon(int flags, mode_t mode) {
+static int shm_open_anon(int flags, int mode) {
     char name[16] = "/shm-XXXXXXXXXX";
     int fd;
     if ((fd = shm_mkstemp(name)) == -1)
