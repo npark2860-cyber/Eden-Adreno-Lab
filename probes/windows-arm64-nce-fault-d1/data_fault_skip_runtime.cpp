@@ -54,6 +54,28 @@ std::atomic<u64> g_fault_address{};
 std::atomic<u64> g_exception_pc{};
 std::atomic<u64> g_exception_sp{};
 
+#if defined(_WIN32)
+constexpr u64 D1ObservationMagic = 0x31444F4257415231ULL; // "1RAWBOD1", endian-stable marker only
+constexpr u32 D1ObservationVersion = 1;
+
+struct D1FirstExceptionRecord {
+    u64 magic;
+    u32 version;
+    u32 exception_code;
+    u32 parameter_count;
+    u32 reserved;
+    u64 exception_address;
+    u64 pc;
+    u64 sp;
+    u64 info0;
+    u64 info1;
+};
+static_assert(sizeof(D1FirstExceptionRecord) == 64);
+
+HANDLE g_observation_file = INVALID_HANDLE_VALUE;
+D1FirstExceptionRecord g_first_exception_record{};
+#endif
+
 int Fail(const char* marker) {
     std::cerr << marker << "=FAIL\n" << std::flush;
     return 1;
@@ -168,22 +190,22 @@ LONG CALLBACK D1ObservationVeh(EXCEPTION_POINTERS* exception) noexcept {
     u32 observation_expected = 0;
     if (g_observation_seen.compare_exchange_strong(observation_expected, 1,
                                                    std::memory_order_acq_rel)) {
-        const auto info0 = record.NumberParameters >= 1 ? record.ExceptionInformation[0] : 0;
-        const auto info1 = record.NumberParameters >= 2 ? record.ExceptionInformation[1] : 0;
-        std::fprintf(stderr, "IMP008D_D1_OBS_EXCEPTION_CODE=0x%08lX\n",
-                     static_cast<unsigned long>(record.ExceptionCode));
-        std::fprintf(stderr, "IMP008D_D1_OBS_EXCEPTION_PARAMS=%lu\n",
-                     static_cast<unsigned long>(record.NumberParameters));
-        std::fprintf(stderr, "IMP008D_D1_OBS_EXCEPTION_ADDRESS=%p\n", record.ExceptionAddress);
-        std::fprintf(stderr, "IMP008D_D1_OBS_EXCEPTION_PC=0x%llX\n",
-                     static_cast<unsigned long long>(exception->ContextRecord->Pc));
-        std::fprintf(stderr, "IMP008D_D1_OBS_EXCEPTION_SP=0x%llX\n",
-                     static_cast<unsigned long long>(exception->ContextRecord->Sp));
-        std::fprintf(stderr, "IMP008D_D1_OBS_EXCEPTION_INFO0=0x%llX\n",
-                     static_cast<unsigned long long>(info0));
-        std::fprintf(stderr, "IMP008D_D1_OBS_EXCEPTION_INFO1=0x%llX\n",
-                     static_cast<unsigned long long>(info1));
-        std::fflush(stderr);
+        g_first_exception_record.magic = D1ObservationMagic;
+        g_first_exception_record.version = D1ObservationVersion;
+        g_first_exception_record.exception_code = static_cast<u32>(record.ExceptionCode);
+        g_first_exception_record.parameter_count = static_cast<u32>(record.NumberParameters);
+        g_first_exception_record.reserved = 0;
+        g_first_exception_record.exception_address = reinterpret_cast<u64>(record.ExceptionAddress);
+        g_first_exception_record.pc = static_cast<u64>(exception->ContextRecord->Pc);
+        g_first_exception_record.sp = static_cast<u64>(exception->ContextRecord->Sp);
+        g_first_exception_record.info0 =
+            record.NumberParameters >= 1 ? static_cast<u64>(record.ExceptionInformation[0]) : 0;
+        g_first_exception_record.info1 =
+            record.NumberParameters >= 2 ? static_cast<u64>(record.ExceptionInformation[1]) : 0;
+
+        DWORD bytes_written{};
+        WriteFile(g_observation_file, &g_first_exception_record,
+                  static_cast<DWORD>(sizeof(g_first_exception_record)), &bytes_written, nullptr);
     }
 
     if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
@@ -463,9 +485,23 @@ int main() {
     g_fault_address.store(0, std::memory_order_release);
     g_exception_pc.store(0, std::memory_order_release);
     g_exception_sp.store(0, std::memory_order_release);
+    g_first_exception_record = {};
+
+    g_observation_file = CreateFileW(L"imp008d-d1-first-exception.bin", GENERIC_WRITE,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (g_observation_file == INVALID_HANDLE_VALUE) {
+        thread->Close(kernel);
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008D_D1_OBSERVATION_FILE_OPEN");
+    }
+    Trace("IMP008D_D1_OBSERVATION_FILE_READY");
 
     PVOID const observation_veh = AddVectoredExceptionHandler(1, &D1ObservationVeh);
     if (observation_veh == nullptr) {
+        CloseHandle(g_observation_file);
+        g_observation_file = INVALID_HANDLE_VALUE;
         thread->Close(kernel);
         process->Close(kernel);
         kernel.Shutdown();
@@ -477,6 +513,9 @@ int main() {
     const Core::HaltReason halt_reason = arm->RunThread(thread);
     arm->UnlockThread(thread);
     RemoveVectoredExceptionHandler(observation_veh);
+    FlushFileBuffers(g_observation_file);
+    CloseHandle(g_observation_file);
+    g_observation_file = INVALID_HANDLE_VALUE;
     Trace("IMP008D_D1_RUNTHREAD_RETURNED");
 
     const u64 physical_x18_after = ReadPhysicalX18();
