@@ -37,6 +37,8 @@ constexpr u64 X0Sentinel = 0x1122334455667788ULL;
 constexpr u64 X1Sentinel = 0x8877665544332211ULL;
 constexpr u64 X18Sentinel = 0x123456789ABC0000ULL;
 
+std::atomic<u32> g_host_preflight_seen{};
+std::atomic<u64> g_host_preflight_page{};
 std::atomic<u32> g_observation_seen{};
 std::atomic<u32> g_fault_seen{};
 std::atomic<u64> g_fault_access_type{};
@@ -54,6 +56,71 @@ void Trace(const char* marker) {
 }
 
 #if defined(_WIN32)
+LONG CALLBACK C1HostVehPreflight(EXCEPTION_POINTERS* exception) noexcept {
+    if (exception == nullptr || exception->ExceptionRecord == nullptr ||
+        exception->ContextRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto& record = *exception->ExceptionRecord;
+    if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const u64 expected_page = g_host_preflight_page.load(std::memory_order_acquire);
+    const u64 access_type = static_cast<u64>(record.ExceptionInformation[0]);
+    const u64 fault_address = static_cast<u64>(record.ExceptionInformation[1]);
+    if (expected_page == 0 || access_type != 0 || fault_address < expected_page ||
+        fault_address >= expected_page + PageSize) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    DWORD old_protect{};
+    if (!VirtualProtect(reinterpret_cast<void*>(expected_page), PageSize, PAGE_READWRITE,
+                        &old_protect)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    g_host_preflight_seen.store(1, std::memory_order_release);
+    std::fprintf(stderr, "IMP008C_C1_HOST_VEH_EXCEPTION_CODE=0x%08lX\n",
+                 static_cast<unsigned long>(record.ExceptionCode));
+    std::fprintf(stderr, "IMP008C_C1_HOST_VEH_EXCEPTION_ACCESS=%llu\n",
+                 static_cast<unsigned long long>(access_type));
+    std::fprintf(stderr, "IMP008C_C1_HOST_VEH_EXCEPTION_FAULT=0x%llX\n",
+                 static_cast<unsigned long long>(fault_address));
+    std::fprintf(stderr, "IMP008C_C1_HOST_VEH_EXCEPTION_PC=0x%llX\n",
+                 static_cast<unsigned long long>(exception->ContextRecord->Pc));
+    std::fflush(stderr);
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+bool RunHostVehPreflight() {
+    void* const page = VirtualAlloc(nullptr, PageSize, MEM_RESERVE | MEM_COMMIT, PAGE_NOACCESS);
+    if (page == nullptr) {
+        return false;
+    }
+
+    g_host_preflight_seen.store(0, std::memory_order_release);
+    g_host_preflight_page.store(reinterpret_cast<u64>(page), std::memory_order_release);
+
+    PVOID const veh = AddVectoredExceptionHandler(1, &C1HostVehPreflight);
+    if (veh == nullptr) {
+        g_host_preflight_page.store(0, std::memory_order_release);
+        VirtualFree(page, 0, MEM_RELEASE);
+        return false;
+    }
+
+    volatile const u8* const probe = static_cast<volatile const u8*>(page);
+    const volatile u8 value = *probe;
+    (void)value;
+
+    RemoveVectoredExceptionHandler(veh);
+    const bool seen = g_host_preflight_seen.load(std::memory_order_acquire) == 1;
+    g_host_preflight_page.store(0, std::memory_order_release);
+    VirtualFree(page, 0, MEM_RELEASE);
+    return seen;
+}
+
 LONG CALLBACK C1ObservationVeh(EXCEPTION_POINTERS* exception) noexcept {
     if (exception == nullptr || exception->ExceptionRecord == nullptr ||
         exception->ContextRecord == nullptr) {
@@ -142,6 +209,11 @@ int main() {
     return Fail("IMP008C_C1_PLATFORM_CONTRACT");
 #else
     Trace("IMP008C_C1_MAIN_ENTER");
+
+    if (!RunHostVehPreflight()) {
+        return Fail("IMP008C_C1_HOST_VEH_PREFLIGHT");
+    }
+    Trace("IMP008C_C1_HOST_VEH_PREFLIGHT");
 
     Settings::values.use_multi_core.SetValue(false);
     Settings::values.cpu_backend.SetValue(Settings::CpuBackend::Nce);
