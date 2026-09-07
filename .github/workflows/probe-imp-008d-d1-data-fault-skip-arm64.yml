@@ -83,6 +83,42 @@ jobs:
           fi
           echo 'IMP008D_D1_SCOPE_SOURCE=PASS'
 
+      - name: Apply low-stack D1 observer diagnostic
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp'
+          $lines = [System.IO.File]::ReadAllLines($path)
+          $out = [System.Collections.Generic.List[string]]::new()
+          $skipping = $false
+          $removed = $false
+          foreach ($line in $lines) {
+            if (-not $skipping -and $line.Contains('std::fprintf(stderr, "IMP008D_D1_EXCEPTION_CODE=')) {
+              $skipping = $true
+              $removed = $true
+              continue
+            }
+            if ($skipping) {
+              if ($line.Contains('std::fflush(stderr);')) {
+                $skipping = $false
+              }
+              continue
+            }
+            $out.Add($line)
+          }
+          if (-not $removed -or $skipping) {
+            throw 'D1 AV-specific stdio block was not removed exactly once'
+          }
+          [System.IO.File]::WriteAllLines($path, $out, [System.Text.UTF8Encoding]::new($false))
+          if (Select-String -Path $path -SimpleMatch 'IMP008D_D1_EXCEPTION_CODE=' -Quiet) {
+            throw 'D1 AV-specific stdio marker remains after low-stack patch'
+          }
+          if (-not (Select-String -Path $path -SimpleMatch 'WriteFile(g_observation_file' -Quiet)) {
+            throw 'D1 raw WriteFile observer was unexpectedly removed'
+          }
+          Write-Host 'IMP008D_D1_LOW_STACK_OBSERVER_PATCH=PASS'
+
       - name: Add D1 target to checkout only
         shell: bash
         working-directory: eden
@@ -192,6 +228,7 @@ jobs:
           set -e
           cat imp008d-d1.out.log 2>/dev/null || true
           cat imp008d-d1.err.log >&2 2>/dev/null || true
+          : > imp008d-d1-raw.log
           if test -f imp008d-d1-first-exception.bin; then
             winobs="$(cygpath -w imp008d-d1-first-exception.bin)"
             powershell.exe -NoProfile -NonInteractive -Command "& {
@@ -210,9 +247,9 @@ jobs:
               } else {
                 Write-Host 'IMP008D_D1_RAW_OBS_RECORD=INCOMPLETE'
               }
-            }"
+            }" | tee imp008d-d1-raw.log
           else
-            echo 'IMP008D_D1_RAW_OBS_FILE=ABSENT'
+            echo 'IMP008D_D1_RAW_OBS_FILE=ABSENT' | tee imp008d-d1-raw.log
           fi
           echo "IMP008D_D1_LAUNCH_RC=$rc"
           test "$rc" -eq 0
@@ -231,6 +268,8 @@ jobs:
           grep -Fq 'IMP008D_D1_CONTEXT_COHERENT=PASS' imp008d-d1.out.log
           grep -Fq 'IMP008D_D1_PHYSICAL_X18_TEB_AFTER=PASS' imp008d-d1.out.log
           grep -Fq 'IMP008D_D1_GATE=PASS' imp008d-d1.out.log
-          grep -Fq 'IMP008D_D1_EXCEPTION_CODE=0xC0000005' imp008d-d1.err.log
-          grep -Fq 'IMP008D_D1_EXCEPTION_ACCESS=0' imp008d-d1.err.log
+          grep -Fq 'IMP008D_D1_RAW_OBS_SIZE=64' imp008d-d1-raw.log
+          grep -Fq 'IMP008D_D1_RAW_OBS_CODE=0xC0000005' imp008d-d1-raw.log
+          grep -Fq 'IMP008D_D1_RAW_OBS_PARAMS=2' imp008d-d1-raw.log
+          grep -Fq 'IMP008D_D1_RAW_OBS_INFO0=0x0000000000000000' imp008d-d1-raw.log
           grep -Fq 'IMP008D_D1_SVC_NUMBER=0x33' imp008d-d1.err.log
