@@ -2,6 +2,12 @@ name: Probe IMP-008D D1 Data Fault Skip Runtime
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008d-windows-nce-data-fault-runtime
+    paths:
+      - '.github/workflows/probe-imp-008d-d1-data-fault-skip-arm64.yml'
+      - 'probes/windows-arm64-nce-fault-d1/**'
 
 permissions:
   contents: read
