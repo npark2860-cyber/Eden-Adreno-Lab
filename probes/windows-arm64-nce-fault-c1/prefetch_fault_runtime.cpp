@@ -29,7 +29,8 @@
 namespace {
 
 constexpr std::size_t PageSize = 0x1000;
-constexpr std::size_t InitialImageSize = PageSize * 2;
+constexpr std::size_t StackPages = 16;
+constexpr std::size_t InitialImageSize = PageSize * (1 + StackPages);
 constexpr u64 FaultSearchOffset = 0x100000;
 constexpr u64 FaultSearchLimit = 0x2000000;
 constexpr u32 BranchX2Instruction = 0xD61F0040U;
@@ -336,7 +337,7 @@ int main() {
     auto& data = code_set.DataSegment();
     data.offset = PageSize;
     data.addr = Kernel::KProcessAddress{PageSize};
-    data.size = static_cast<u32>(PageSize);
+    data.size = static_cast<u32>(PageSize * StackPages);
 
     auto* process = Kernel::KProcess::Create(kernel);
     if (process == nullptr) {
