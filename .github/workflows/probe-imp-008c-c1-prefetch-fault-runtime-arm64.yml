@@ -2,12 +2,6 @@ name: Probe IMP-008C C1 Prefetch Fault Runtime
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008c-windows-nce-fault-runtime
-    paths:
-      - '.github/workflows/probe-imp-008c-c1-prefetch-fault-runtime-arm64.yml'
-      - 'probes/windows-arm64-nce-fault-c1/**'
 
 permissions:
   contents: read
