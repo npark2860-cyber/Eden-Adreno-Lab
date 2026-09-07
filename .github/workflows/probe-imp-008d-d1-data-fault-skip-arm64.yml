@@ -192,6 +192,141 @@ jobs:
           }
           Write-Host 'IMP008D_D1_BOUNDED_SEQUENCE_PATCH=PASS'
 
+      - name: Apply D1 post-VEH continuation diagnostic
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp'
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+
+          $defsAnchor = 'D1ExceptionRecord g_exception_records[D1ObservationMaxRecords]{};'
+          $defsReplacement = @'
+          D1ExceptionRecord g_exception_records[D1ObservationMaxRecords]{};
+          constexpr u32 D1ContinueObservationVersion = 3;
+          std::atomic<u32> g_continue_observation_seen{};
+          '@.Replace("`r`n", "`n").Trim()
+          if (([regex]::Matches($text, [regex]::Escape($defsAnchor))).Count -ne 1) {
+            throw 'D1 continuation definitions anchor count was not exactly 1'
+          }
+          $text = $text.Replace($defsAnchor, $defsReplacement)
+
+          $callbackAnchor = @'
+              // Observation only. The production NCE VEH owns the fault decision and PC skip.
+              return EXCEPTION_CONTINUE_SEARCH;
+          }
+          #endif
+
+          } // namespace
+          '@.Replace("`r`n", "`n").Trim()
+          $callbackReplacement = @'
+              // Observation only. The production NCE VEH owns the fault decision and PC skip.
+              return EXCEPTION_CONTINUE_SEARCH;
+          }
+
+          LONG CALLBACK D1ContinueObservation(EXCEPTION_POINTERS* exception) noexcept {
+              if (exception == nullptr || exception->ExceptionRecord == nullptr ||
+                  exception->ContextRecord == nullptr) {
+                  return EXCEPTION_CONTINUE_SEARCH;
+              }
+
+              u32 expected = 0;
+              if (!g_continue_observation_seen.compare_exchange_strong(
+                      expected, 1, std::memory_order_acq_rel)) {
+                  return EXCEPTION_CONTINUE_SEARCH;
+              }
+
+              const auto& record = *exception->ExceptionRecord;
+              const u32 sequence = g_observation_sequence.fetch_add(1, std::memory_order_acq_rel);
+              if (sequence < D1ObservationMaxRecords) {
+                  auto& observed = g_exception_records[sequence];
+                  observed.magic = D1ObservationMagic;
+                  observed.version = D1ContinueObservationVersion;
+                  observed.sequence = sequence;
+                  observed.exception_code = static_cast<u32>(record.ExceptionCode);
+                  observed.parameter_count = static_cast<u32>(record.NumberParameters);
+                  observed.exception_address = reinterpret_cast<u64>(record.ExceptionAddress);
+                  observed.pc = static_cast<u64>(exception->ContextRecord->Pc);
+                  observed.sp = static_cast<u64>(exception->ContextRecord->Sp);
+                  observed.info0 =
+                      record.NumberParameters >= 1 ? static_cast<u64>(record.ExceptionInformation[0]) : 0;
+                  observed.info1 =
+                      record.NumberParameters >= 2 ? static_cast<u64>(record.ExceptionInformation[1]) : 0;
+
+                  DWORD bytes_written{};
+                  WriteFile(g_observation_file, &observed, static_cast<DWORD>(sizeof(observed)),
+                            &bytes_written, nullptr);
+              }
+
+              return EXCEPTION_CONTINUE_SEARCH;
+          }
+          #endif
+
+          } // namespace
+          '@.Replace("`r`n", "`n").Trim()
+          if (([regex]::Matches($text, [regex]::Escape($callbackAnchor))).Count -ne 1) {
+            throw 'D1 continuation callback anchor count was not exactly 1'
+          }
+          $text = $text.Replace($callbackAnchor, $callbackReplacement)
+
+          $resetAnchor = '    g_observation_sequence.store(0, std::memory_order_release);'
+          $resetReplacement = @'
+              g_observation_sequence.store(0, std::memory_order_release);
+              g_continue_observation_seen.store(0, std::memory_order_release);
+          '@.Replace("`r`n", "`n").TrimEnd()
+          if (([regex]::Matches($text, [regex]::Escape($resetAnchor))).Count -ne 1) {
+            throw 'D1 continuation reset anchor count was not exactly 1'
+          }
+          $text = $text.Replace($resetAnchor, $resetReplacement)
+
+          $preAnchor = '    Trace("IMP008D_D1_PRE_RUNTHREAD");'
+          $preReplacement = @'
+              PVOID const continue_handler = AddVectoredContinueHandler(1, &D1ContinueObservation);
+              if (continue_handler == nullptr) {
+                  RemoveVectoredExceptionHandler(observation_veh);
+                  CloseHandle(g_observation_file);
+                  g_observation_file = INVALID_HANDLE_VALUE;
+                  thread->Close(kernel);
+                  process->Close(kernel);
+                  kernel.Shutdown();
+                  return Fail("IMP008D_D1_CONTINUE_HANDLER");
+              }
+              Trace("IMP008D_D1_CONTINUE_HANDLER_READY");
+
+              Trace("IMP008D_D1_PRE_RUNTHREAD");
+          '@.Replace("`r`n", "`n").TrimEnd()
+          if (([regex]::Matches($text, [regex]::Escape($preAnchor))).Count -ne 1) {
+            throw 'D1 continuation registration anchor count was not exactly 1'
+          }
+          $text = $text.Replace($preAnchor, $preReplacement)
+
+          $removeAnchor = @'
+              arm->UnlockThread(thread);
+              RemoveVectoredExceptionHandler(observation_veh);
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $removeReplacement = @'
+              arm->UnlockThread(thread);
+              RemoveVectoredContinueHandler(continue_handler);
+              RemoveVectoredExceptionHandler(observation_veh);
+          '@.Replace("`r`n", "`n").TrimEnd()
+          if (([regex]::Matches($text, [regex]::Escape($removeAnchor))).Count -ne 1) {
+            throw 'D1 continuation removal anchor count was not exactly 1'
+          }
+          $text = $text.Replace($removeAnchor, $removeReplacement)
+
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+
+          if (-not (Select-String -Path $path -SimpleMatch 'AddVectoredContinueHandler(1, &D1ContinueObservation)' -Quiet)) {
+            throw 'D1 continuation handler registration was not installed'
+          }
+          if (-not (Select-String -Path $path -SimpleMatch 'D1ContinueObservationVersion = 3' -Quiet)) {
+            throw 'D1 continuation record version was not installed'
+          }
+          if (-not (Select-String -Path $path -SimpleMatch 'RemoveVectoredContinueHandler(continue_handler)' -Quiet)) {
+            throw 'D1 continuation handler removal was not installed'
+          }
+          Write-Host 'IMP008D_D1_CONTINUE_CONTEXT_PATCH=PASS'
+
       - name: Add D1 target to checkout only
         shell: bash
         working-directory: eden
