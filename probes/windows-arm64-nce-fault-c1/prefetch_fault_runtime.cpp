@@ -33,12 +33,15 @@ constexpr std::size_t InitialImageSize = PageSize * 2;
 constexpr u64 FaultSearchOffset = 0x100000;
 constexpr u64 FaultSearchLimit = 0x2000000;
 constexpr u32 BranchX2Instruction = 0xD61F0040U;
+constexpr u32 RetInstruction = 0xD65F03C0U;
 constexpr u64 X0Sentinel = 0x1122334455667788ULL;
 constexpr u64 X1Sentinel = 0x8877665544332211ULL;
 constexpr u64 X18Sentinel = 0x123456789ABC0000ULL;
 
 std::atomic<u32> g_host_preflight_seen{};
 std::atomic<u64> g_host_preflight_page{};
+std::atomic<u32> g_same_address_execute_seen{};
+std::atomic<u64> g_same_address_execute_page{};
 std::atomic<u32> g_observation_seen{};
 std::atomic<u32> g_fault_seen{};
 std::atomic<u64> g_fault_access_type{};
@@ -199,6 +202,85 @@ bool IsReservedFaultPc(u64 address, MEMORY_BASIC_INFORMATION& mbi) {
         return false;
     }
     return mbi.State == MEM_RESERVE;
+}
+
+LONG CALLBACK C1SameAddressExecuteVeh(EXCEPTION_POINTERS* exception) noexcept {
+    if (exception == nullptr || exception->ExceptionRecord == nullptr ||
+        exception->ContextRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto& record = *exception->ExceptionRecord;
+    if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const u64 expected_page = g_same_address_execute_page.load(std::memory_order_acquire);
+    const u64 access_type = static_cast<u64>(record.ExceptionInformation[0]);
+    const u64 fault_address = static_cast<u64>(record.ExceptionInformation[1]);
+    const u64 exception_pc = static_cast<u64>(exception->ContextRecord->Pc);
+    if (expected_page == 0 || access_type != 8 || fault_address != expected_page ||
+        exception_pc != expected_page) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    DWORD old_protect{};
+    if (!VirtualProtect(reinterpret_cast<void*>(expected_page), PageSize, PAGE_EXECUTE_READ,
+                        &old_protect)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    g_same_address_execute_seen.store(1, std::memory_order_release);
+    std::fprintf(stderr, "IMP008C_C1_SAME_ADDRESS_EXCEPTION_CODE=0x%08lX\n",
+                 static_cast<unsigned long>(record.ExceptionCode));
+    std::fprintf(stderr, "IMP008C_C1_SAME_ADDRESS_EXCEPTION_ACCESS=%llu\n",
+                 static_cast<unsigned long long>(access_type));
+    std::fprintf(stderr, "IMP008C_C1_SAME_ADDRESS_EXCEPTION_FAULT=0x%llX\n",
+                 static_cast<unsigned long long>(fault_address));
+    std::fprintf(stderr, "IMP008C_C1_SAME_ADDRESS_EXCEPTION_PC=0x%llX\n",
+                 static_cast<unsigned long long>(exception_pc));
+    std::fflush(stderr);
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+bool RunSameAddressExecutePreflight(u64 page) {
+    if (page == 0) {
+        return false;
+    }
+
+    *reinterpret_cast<volatile u32*>(page) = RetInstruction;
+    if (!FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<const void*>(page),
+                               sizeof(RetInstruction))) {
+        return false;
+    }
+
+    g_same_address_execute_seen.store(0, std::memory_order_release);
+    g_same_address_execute_page.store(page, std::memory_order_release);
+
+    PVOID const veh = AddVectoredExceptionHandler(1, &C1SameAddressExecuteVeh);
+    if (veh == nullptr) {
+        g_same_address_execute_page.store(0, std::memory_order_release);
+        return false;
+    }
+
+    using Target = void (*)();
+    reinterpret_cast<Target>(page)();
+
+    RemoveVectoredExceptionHandler(veh);
+    g_same_address_execute_page.store(0, std::memory_order_release);
+
+    DWORD old_protect{};
+    if (!VirtualProtect(reinterpret_cast<void*>(page), PageSize, PAGE_READWRITE, &old_protect)) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<const void*>(page), &mbi, sizeof(mbi)) == 0 ||
+        mbi.State != MEM_COMMIT || IsExecutableProtect(mbi.Protect)) {
+        return false;
+    }
+
+    return g_same_address_execute_seen.load(std::memory_order_acquire) == 1;
 }
 #endif
 
@@ -375,6 +457,14 @@ int main() {
     std::fflush(stderr);
     Trace("IMP008C_C1_NONEXEC_FAULT_PC");
     Trace("IMP008C_C1_COMMITTED_NX_FAULT_PC");
+
+    if (!RunSameAddressExecutePreflight(fault_pc)) {
+        thread->Close(kernel);
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008C_C1_SAME_ADDRESS_EXECUTE_PREFLIGHT");
+    }
+    Trace("IMP008C_C1_SAME_ADDRESS_EXECUTE_PREFLIGHT");
 
     Kernel::Svc::ThreadContext context{};
     context.r[0] = X0Sentinel;
