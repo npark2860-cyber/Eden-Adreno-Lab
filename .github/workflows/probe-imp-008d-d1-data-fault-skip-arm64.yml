@@ -2,12 +2,6 @@ name: Probe IMP-008D D1 Data Fault Skip Runtime
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008d-windows-nce-data-fault-runtime
-    paths:
-      - '.github/workflows/probe-imp-008d-d1-data-fault-skip-arm64.yml'
-      - 'probes/windows-arm64-nce-fault-d1/**'
 
 permissions:
   contents: read
@@ -71,6 +65,8 @@ jobs:
           grep -Fq 'Core::HaltReason::SupervisorCall' "$probe"
           grep -Fq 'ReadPhysicalX18()' "$probe"
           grep -Fq 'arm->RunThread(thread)' "$probe"
+          grep -Fq 'imp008d-d1-first-exception.bin' "$probe"
+          grep -Fq 'WriteFile(' "$probe"
           if grep -Fq 'InvalidateNCE(' "$probe"; then
             echo 'D1 must not directly exercise or modify InvalidateNCE' >&2
             exit 61
@@ -190,6 +186,28 @@ jobs:
           set -e
           cat imp008d-d1.out.log 2>/dev/null || true
           cat imp008d-d1.err.log >&2 2>/dev/null || true
+          if test -f imp008d-d1-first-exception.bin; then
+            winobs="$(cygpath -w imp008d-d1-first-exception.bin)"
+            powershell.exe -NoProfile -NonInteractive -Command "& {
+              \$b = [System.IO.File]::ReadAllBytes('$winobs')
+              Write-Host ('IMP008D_D1_RAW_OBS_SIZE=' + \$b.Length)
+              if (\$b.Length -ge 64) {
+                Write-Host ('IMP008D_D1_RAW_OBS_MAGIC=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 0))
+                Write-Host ('IMP008D_D1_RAW_OBS_VERSION=' + [BitConverter]::ToUInt32(\$b, 8))
+                Write-Host ('IMP008D_D1_RAW_OBS_CODE=0x{0:X8}' -f [BitConverter]::ToUInt32(\$b, 12))
+                Write-Host ('IMP008D_D1_RAW_OBS_PARAMS=' + [BitConverter]::ToUInt32(\$b, 16))
+                Write-Host ('IMP008D_D1_RAW_OBS_ADDRESS=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 24))
+                Write-Host ('IMP008D_D1_RAW_OBS_PC=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 32))
+                Write-Host ('IMP008D_D1_RAW_OBS_SP=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 40))
+                Write-Host ('IMP008D_D1_RAW_OBS_INFO0=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 48))
+                Write-Host ('IMP008D_D1_RAW_OBS_INFO1=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 56))
+              } else {
+                Write-Host 'IMP008D_D1_RAW_OBS_RECORD=INCOMPLETE'
+              }
+            }"
+          else
+            echo 'IMP008D_D1_RAW_OBS_FILE=ABSENT'
+          fi
           echo "IMP008D_D1_LAUNCH_RC=$rc"
           test "$rc" -eq 0
           grep -Fq 'IMP008D_D1_REAL_APPLICATION_PROCESS=PASS' imp008d-d1.out.log
