@@ -222,18 +222,6 @@ LONG CALLBACK D1ObservationVeh(EXCEPTION_POINTERS* exception) noexcept {
         g_fault_address.store(fault_address, std::memory_order_release);
         g_exception_pc.store(exception_pc, std::memory_order_release);
         g_exception_sp.store(exception_sp, std::memory_order_release);
-
-        std::fprintf(stderr, "IMP008D_D1_EXCEPTION_CODE=0x%08lX\n",
-                     static_cast<unsigned long>(record.ExceptionCode));
-        std::fprintf(stderr, "IMP008D_D1_EXCEPTION_ACCESS=%llu\n",
-                     static_cast<unsigned long long>(access_type));
-        std::fprintf(stderr, "IMP008D_D1_EXCEPTION_FAULT=0x%llX\n",
-                     static_cast<unsigned long long>(fault_address));
-        std::fprintf(stderr, "IMP008D_D1_EXCEPTION_PC=0x%llX\n",
-                     static_cast<unsigned long long>(exception_pc));
-        std::fprintf(stderr, "IMP008D_D1_EXCEPTION_SP=0x%llX\n",
-                     static_cast<unsigned long long>(exception_sp));
-        std::fflush(stderr);
     }
 
     // Observation only. The production NCE VEH owns the fault decision and PC skip.
