@@ -150,15 +150,33 @@ jobs:
           powershell.exe -NoProfile -NonInteractive -Command "& {
             \$ErrorActionPreference = 'Stop'
             try {
-              \$p = Start-Process -FilePath '$winexe' -NoNewWindow -PassThru -RedirectStandardOutput '$winout' -RedirectStandardError '$winerr'
+              \$psi = New-Object System.Diagnostics.ProcessStartInfo
+              \$psi.FileName = '$winexe'
+              \$psi.UseShellExecute = \$false
+              \$psi.CreateNoWindow = \$true
+              \$psi.RedirectStandardOutput = \$true
+              \$psi.RedirectStandardError = \$true
+              \$p = New-Object System.Diagnostics.Process
+              \$p.StartInfo = \$psi
+              if (-not \$p.Start()) {
+                throw 'System.Diagnostics.Process.Start returned false'
+              }
+              \$stdoutTask = \$p.StandardOutput.ReadToEndAsync()
+              \$stderrTask = \$p.StandardError.ReadToEndAsync()
               if (-not \$p.WaitForExit(30000)) {
                 Write-Host 'IMP008D_D1_PROCESS_TIMEOUT=FAIL'
-                Stop-Process -Id \$p.Id -Force -ErrorAction SilentlyContinue
+                \$p.Kill()
+                \$p.WaitForExit()
                 exit 124
               }
-              \$p.Refresh()
-              Write-Host ('IMP008D_D1_PROCESS_EXIT=' + \$p.ExitCode)
-              exit \$p.ExitCode
+              \$p.WaitForExit()
+              [System.IO.File]::WriteAllText('$winout', \$stdoutTask.Result)
+              [System.IO.File]::WriteAllText('$winerr', \$stderrTask.Result)
+              \$nativeExit = [int]\$p.ExitCode
+              Write-Host ('IMP008D_D1_PROCESS_EXIT=' + \$nativeExit)
+              Write-Host ('IMP008D_D1_PROCESS_EXIT_HEX=0x{0:X8}' -f (\$nativeExit -band 0xffffffff))
+              if (\$nativeExit -eq 0) { exit 0 }
+              exit 1
             } catch {
               Write-Host ('IMP008D_D1_LAUNCH_EXCEPTION=' + \$_.Exception.Message)
               Write-Host ('IMP008D_D1_LAUNCH_HRESULT=0x{0:X8}' -f (\$_.Exception.HResult -band 0xffffffff))
