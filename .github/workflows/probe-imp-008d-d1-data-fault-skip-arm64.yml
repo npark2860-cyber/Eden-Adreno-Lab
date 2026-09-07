@@ -71,7 +71,6 @@ jobs:
           grep -Fq 'Core::HaltReason::SupervisorCall' "$probe"
           grep -Fq 'ReadPhysicalX18()' "$probe"
           grep -Fq 'arm->RunThread(thread)' "$probe"
-          grep -Fq 'imp008d-d1-first-exception.bin' "$probe"
           grep -Fq 'WriteFile(' "$probe"
           if grep -Fq 'InvalidateNCE(' "$probe"; then
             echo 'D1 must not directly exercise or modify InvalidateNCE' >&2
@@ -81,43 +80,117 @@ jobs:
             echo 'D1 must preserve normal -fno-rtti product contract' >&2
             exit 62
           fi
+          if grep -Fq 'IMP008D_D1_EXCEPTION_CODE=' "$probe"; then
+            echo 'D1 runtime AV observer must not use stderr formatting' >&2
+            exit 63
+          fi
           echo 'IMP008D_D1_SCOPE_SOURCE=PASS'
 
-      - name: Apply low-stack D1 observer diagnostic
+      - name: Apply bounded D1 exception-sequence diagnostic
         shell: pwsh
         working-directory: eden
         run: |
           $ErrorActionPreference = 'Stop'
           $path = 'probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp'
-          $lines = [System.IO.File]::ReadAllLines($path)
-          $out = [System.Collections.Generic.List[string]]::new()
-          $skipping = $false
-          $removed = $false
-          foreach ($line in $lines) {
-            if (-not $skipping -and $line.Contains('std::fprintf(stderr, "IMP008D_D1_EXCEPTION_CODE=')) {
-              $skipping = $true
-              $removed = $true
-              continue
-            }
-            if ($skipping) {
-              if ($line.Contains('std::fflush(stderr);')) {
-                $skipping = $false
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+
+          $defsPattern = '(?s)constexpr u32 D1ObservationVersion = 1;\n\nstruct D1FirstExceptionRecord \{.*?\nD1FirstExceptionRecord g_first_exception_record\{\};'
+          $defsReplacement = @'
+          constexpr u32 D1ObservationVersion = 2;
+          constexpr u32 D1ObservationMaxRecords = 16;
+
+          struct D1ExceptionRecord {
+              u64 magic;
+              u32 version;
+              u32 sequence;
+              u32 exception_code;
+              u32 parameter_count;
+              u64 exception_address;
+              u64 pc;
+              u64 sp;
+              u64 info0;
+              u64 info1;
+          };
+          static_assert(sizeof(D1ExceptionRecord) == 64);
+
+          HANDLE g_observation_file = INVALID_HANDLE_VALUE;
+          std::atomic<u32> g_observation_sequence{};
+          D1ExceptionRecord g_exception_records[D1ObservationMaxRecords]{};
+          '@.Replace("`r`n", "`n").Trim()
+          $defsMatches = [regex]::Matches($text, $defsPattern).Count
+          if ($defsMatches -ne 1) {
+            throw "D1 sequence definitions match count was $defsMatches, expected 1"
+          }
+          $text = [regex]::Replace($text, $defsPattern, $defsReplacement, 1)
+
+          $observerPattern = '(?s)    u32 observation_expected = 0;\n    if \(g_observation_seen\.compare_exchange_strong\(observation_expected, 1,.*?\n    \}\n\n    if \(record\.ExceptionCode'
+          $observerReplacement = @'
+              const u32 sequence = g_observation_sequence.fetch_add(1, std::memory_order_acq_rel);
+              g_observation_seen.store(1, std::memory_order_release);
+              if (sequence < D1ObservationMaxRecords) {
+                  auto& observed = g_exception_records[sequence];
+                  observed.magic = D1ObservationMagic;
+                  observed.version = D1ObservationVersion;
+                  observed.sequence = sequence;
+                  observed.exception_code = static_cast<u32>(record.ExceptionCode);
+                  observed.parameter_count = static_cast<u32>(record.NumberParameters);
+                  observed.exception_address = reinterpret_cast<u64>(record.ExceptionAddress);
+                  observed.pc = static_cast<u64>(exception->ContextRecord->Pc);
+                  observed.sp = static_cast<u64>(exception->ContextRecord->Sp);
+                  observed.info0 =
+                      record.NumberParameters >= 1 ? static_cast<u64>(record.ExceptionInformation[0]) : 0;
+                  observed.info1 =
+                      record.NumberParameters >= 2 ? static_cast<u64>(record.ExceptionInformation[1]) : 0;
+
+                  DWORD bytes_written{};
+                  WriteFile(g_observation_file, &observed, static_cast<DWORD>(sizeof(observed)),
+                            &bytes_written, nullptr);
               }
-              continue
-            }
-            $out.Add($line)
+
+              if (record.ExceptionCode
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $observerMatches = [regex]::Matches($text, $observerPattern).Count
+          if ($observerMatches -ne 1) {
+            throw "D1 observer body match count was $observerMatches, expected 1"
           }
-          if (-not $removed -or $skipping) {
-            throw 'D1 AV-specific stdio block was not removed exactly once'
+          $text = [regex]::Replace($text, $observerPattern, $observerReplacement, 1)
+
+          $resetOld = '    g_first_exception_record = {};'
+          $resetNew = '    g_observation_sequence.store(0, std::memory_order_release);'
+          if (($text.IndexOf($resetOld, [System.StringComparison]::Ordinal)) -lt 0) {
+            throw 'D1 first-record reset was not found exactly where expected'
           }
-          [System.IO.File]::WriteAllLines($path, $out, [System.Text.UTF8Encoding]::new($false))
+          $text = $text.Replace($resetOld, $resetNew)
+
+          $oldName = 'imp008d-d1-first-exception.bin'
+          $newName = 'imp008d-d1-exception-sequence.bin'
+          $nameMatches = ([regex]::Matches($text, [regex]::Escape($oldName))).Count
+          if ($nameMatches -ne 1) {
+            throw "D1 raw filename match count was $nameMatches, expected 1"
+          }
+          $text = $text.Replace($oldName, $newName)
+
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+
+          if (-not (Select-String -Path $path -SimpleMatch 'D1ObservationMaxRecords = 16' -Quiet)) {
+            throw 'D1 bounded record count was not installed'
+          }
+          if (-not (Select-String -Path $path -SimpleMatch 'g_observation_sequence.fetch_add' -Quiet)) {
+            throw 'D1 sequence counter was not installed'
+          }
+          if (-not (Select-String -Path $path -SimpleMatch 'imp008d-d1-exception-sequence.bin' -Quiet)) {
+            throw 'D1 sequence raw filename was not installed'
+          }
+          if (Select-String -Path $path -SimpleMatch 'imp008d-d1-first-exception.bin' -Quiet) {
+            throw 'D1 first-exception filename remains after sequence patch'
+          }
           if (Select-String -Path $path -SimpleMatch 'IMP008D_D1_EXCEPTION_CODE=' -Quiet) {
-            throw 'D1 AV-specific stdio marker remains after low-stack patch'
+            throw 'D1 runtime observer stderr formatting reappeared'
           }
           if (-not (Select-String -Path $path -SimpleMatch 'WriteFile(g_observation_file' -Quiet)) {
             throw 'D1 raw WriteFile observer was unexpectedly removed'
           }
-          Write-Host 'IMP008D_D1_LOW_STACK_OBSERVER_PATCH=PASS'
+          Write-Host 'IMP008D_D1_BOUNDED_SEQUENCE_PATCH=PASS'
 
       - name: Add D1 target to checkout only
         shell: bash
@@ -228,28 +301,32 @@ jobs:
           set -e
           cat imp008d-d1.out.log 2>/dev/null || true
           cat imp008d-d1.err.log >&2 2>/dev/null || true
-          : > imp008d-d1-raw.log
-          if test -f imp008d-d1-first-exception.bin; then
-            winobs="$(cygpath -w imp008d-d1-first-exception.bin)"
+          : > imp008d-d1-sequence.log
+          if test -f imp008d-d1-exception-sequence.bin; then
+            winobs="$(cygpath -w imp008d-d1-exception-sequence.bin)"
             powershell.exe -NoProfile -NonInteractive -Command "& {
               \$b = [System.IO.File]::ReadAllBytes('$winobs')
-              Write-Host ('IMP008D_D1_RAW_OBS_SIZE=' + \$b.Length)
-              if (\$b.Length -ge 64) {
-                Write-Host ('IMP008D_D1_RAW_OBS_MAGIC=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 0))
-                Write-Host ('IMP008D_D1_RAW_OBS_VERSION=' + [BitConverter]::ToUInt32(\$b, 8))
-                Write-Host ('IMP008D_D1_RAW_OBS_CODE=0x{0:X8}' -f [BitConverter]::ToUInt32(\$b, 12))
-                Write-Host ('IMP008D_D1_RAW_OBS_PARAMS=' + [BitConverter]::ToUInt32(\$b, 16))
-                Write-Host ('IMP008D_D1_RAW_OBS_ADDRESS=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 24))
-                Write-Host ('IMP008D_D1_RAW_OBS_PC=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 32))
-                Write-Host ('IMP008D_D1_RAW_OBS_SP=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 40))
-                Write-Host ('IMP008D_D1_RAW_OBS_INFO0=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 48))
-                Write-Host ('IMP008D_D1_RAW_OBS_INFO1=0x{0:X16}' -f [BitConverter]::ToUInt64(\$b, 56))
-              } else {
-                Write-Host 'IMP008D_D1_RAW_OBS_RECORD=INCOMPLETE'
+              \$recordSize = 64
+              \$count = [int][Math]::Floor(\$b.Length / \$recordSize)
+              Write-Host ('IMP008D_D1_SEQ_SIZE=' + \$b.Length)
+              Write-Host ('IMP008D_D1_SEQ_COUNT=' + \$count)
+              Write-Host ('IMP008D_D1_SEQ_TRAILING_BYTES=' + (\$b.Length % \$recordSize))
+              for (\$i = 0; \$i -lt \$count; \$i++) {
+                \$o = \$i * \$recordSize
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_MAGIC=0x{1:X16}' -f \$i, [BitConverter]::ToUInt64(\$b, \$o + 0))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_VERSION={1}' -f \$i, [BitConverter]::ToUInt32(\$b, \$o + 8))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_INDEX={1}' -f \$i, [BitConverter]::ToUInt32(\$b, \$o + 12))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_CODE=0x{1:X8}' -f \$i, [BitConverter]::ToUInt32(\$b, \$o + 16))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_PARAMS={1}' -f \$i, [BitConverter]::ToUInt32(\$b, \$o + 20))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_ADDRESS=0x{1:X16}' -f \$i, [BitConverter]::ToUInt64(\$b, \$o + 24))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_PC=0x{1:X16}' -f \$i, [BitConverter]::ToUInt64(\$b, \$o + 32))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_SP=0x{1:X16}' -f \$i, [BitConverter]::ToUInt64(\$b, \$o + 40))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_INFO0=0x{1:X16}' -f \$i, [BitConverter]::ToUInt64(\$b, \$o + 48))
+                Write-Host ('IMP008D_D1_SEQ_{0:D2}_INFO1=0x{1:X16}' -f \$i, [BitConverter]::ToUInt64(\$b, \$o + 56))
               }
-            }" | tee imp008d-d1-raw.log
+            }" | tee imp008d-d1-sequence.log
           else
-            echo 'IMP008D_D1_RAW_OBS_FILE=ABSENT' | tee imp008d-d1-raw.log
+            echo 'IMP008D_D1_SEQ_FILE=ABSENT' | tee imp008d-d1-sequence.log
           fi
           echo "IMP008D_D1_LAUNCH_RC=$rc"
           test "$rc" -eq 0
@@ -268,8 +345,8 @@ jobs:
           grep -Fq 'IMP008D_D1_CONTEXT_COHERENT=PASS' imp008d-d1.out.log
           grep -Fq 'IMP008D_D1_PHYSICAL_X18_TEB_AFTER=PASS' imp008d-d1.out.log
           grep -Fq 'IMP008D_D1_GATE=PASS' imp008d-d1.out.log
-          grep -Fq 'IMP008D_D1_RAW_OBS_SIZE=64' imp008d-d1-raw.log
-          grep -Fq 'IMP008D_D1_RAW_OBS_CODE=0xC0000005' imp008d-d1-raw.log
-          grep -Fq 'IMP008D_D1_RAW_OBS_PARAMS=2' imp008d-d1-raw.log
-          grep -Fq 'IMP008D_D1_RAW_OBS_INFO0=0x0000000000000000' imp008d-d1-raw.log
+          grep -Fq 'IMP008D_D1_SEQ_COUNT=1' imp008d-d1-sequence.log || true
+          grep -Fq 'IMP008D_D1_SEQ_00_CODE=0xC0000005' imp008d-d1-sequence.log
+          grep -Fq 'IMP008D_D1_SEQ_00_PARAMS=2' imp008d-d1-sequence.log
+          grep -Fq 'IMP008D_D1_SEQ_00_INFO0=0x0000000000000000' imp008d-d1-sequence.log
           grep -Fq 'IMP008D_D1_SVC_NUMBER=0x33' imp008d-d1.err.log
