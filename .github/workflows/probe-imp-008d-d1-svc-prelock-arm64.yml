@@ -1,4 +1,4 @@
-name: Probe IMP-008D D1 Post-Resume Exception Runtime
+name: Probe IMP-008D D1 Native Windows Exit Runtime
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  d1-post-resume-exception-runtime:
+  d1-native-windows-exit-runtime:
     runs-on: windows-11-arm
     timeout-minutes: 120
 
@@ -212,41 +212,67 @@ jobs:
           cat imp008d-d1-build.log
           echo 'IMP008D_D1_BUILD=PASS'
 
-      - name: Run D1 diagnostic executable
+      - name: Run D1 diagnostic executable with native Windows exit capture
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
           exe="$(find build -type f -name 'imp008d_d1_data_fault_skip.exe' -print -quit)"
           test -n "$exe"
-          set +e
-          "$exe" > imp008d-d1.out.log 2> imp008d-d1.err.log
-          rc=$?
-          set -e
-          printf '%s\n' "$rc" > imp008d-d1.rc
+          export D1_EXE_WIN="$(cygpath -w "$exe")"
+          export D1_WORKDIR_WIN="$(cygpath -w .)"
+          export D1_OUT_WIN="$(cygpath -w imp008d-d1.out.log)"
+          export D1_ERR_WIN="$(cygpath -w imp008d-d1.err.log)"
+          export D1_RC_WIN="$(cygpath -w imp008d-d1.rc)"
+          export D1_RC_HEX_WIN="$(cygpath -w imp008d-d1.rc.hex)"
+          pwsh.exe -NoLogo -NoProfile -Command '
+            $ErrorActionPreference = "Stop"
+            $p = Start-Process -FilePath $env:D1_EXE_WIN -WorkingDirectory $env:D1_WORKDIR_WIN `
+                -Wait -PassThru -NoNewWindow `
+                -RedirectStandardOutput $env:D1_OUT_WIN `
+                -RedirectStandardError $env:D1_ERR_WIN
+            $signed = [int]$p.ExitCode
+            $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($signed), 0)
+            $hex = "0x{0:X8}" -f $unsigned
+            [System.IO.File]::WriteAllText($env:D1_RC_WIN, "$signed`n",
+                [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllText($env:D1_RC_HEX_WIN, "$hex`n",
+                [System.Text.UTF8Encoding]::new($false))
+          '
+          signed="$(tr -d '\r\n' < imp008d-d1.rc)"
+          hex="$(tr -d '\r\n' < imp008d-d1.rc.hex)"
           cat imp008d-d1.out.log || true
           cat imp008d-d1.err.log >&2 || true
-          echo "IMP008D_D1_PROCESS_EXIT=$rc"
+          echo "IMP008D_D1_NATIVE_PROCESS_EXIT_SIGNED=$signed"
+          echo "IMP008D_D1_NATIVE_PROCESS_EXIT_HEX=$hex"
           echo 'IMP008D_D1_RUNTIME_CAPTURE=PASS'
 
-      - name: Classify D1 post-resume exception
+      - name: Classify D1 native Windows exit
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
-          rc="$(cat imp008d-d1.rc)"
-          echo "IMP008D_D1_CLASSIFY_RC=$rc"
-          exit "$rc"
+          signed="$(tr -d '\r\n' < imp008d-d1.rc)"
+          hex="$(tr -d '\r\n' < imp008d-d1.rc.hex)"
+          test -n "$signed"
+          test -n "$hex"
+          echo "IMP008D_D1_CLASSIFY_NATIVE_RC_SIGNED=$signed"
+          echo "IMP008D_D1_CLASSIFY_NATIVE_RC_HEX=$hex"
+          if [ "$signed" = "0" ]; then
+            exit 0
+          fi
+          exit 1
 
-      - name: Persist D1 post-resume exception logs
+      - name: Persist D1 native Windows exit logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: imp008d-d1-post-resume-exception-${{ github.run_id }}
+          name: imp008d-d1-native-exit-${{ github.run_id }}
           path: |
             eden/imp008d-d1-build.log
             eden/imp008d-d1.out.log
             eden/imp008d-d1.err.log
             eden/imp008d-d1.rc
+            eden/imp008d-d1.rc.hex
             eden/imp008d-d1-first-exception.bin
           if-no-files-found: warn
