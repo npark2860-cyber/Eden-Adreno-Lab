@@ -90,6 +90,71 @@ std::size_t PageAlign(std::size_t value) {
 }
 
 #if defined(_WIN32)
+constexpr u32 D1ContinueRegistersVersionLow = 4;
+constexpr u32 D1ContinueRegistersVersionHigh = 5;
+
+struct D1ContinueRegisterRecord {
+    u64 magic;
+    u32 version;
+    u32 sequence;
+    u32 exception_code;
+    u32 parameter_count;
+    u64 value0;
+    u64 value1;
+    u64 value2;
+    u64 value3;
+    u64 value4;
+};
+static_assert(sizeof(D1ContinueRegisterRecord) == 64);
+
+std::atomic<u32> g_register_continue_seen{};
+
+LONG CALLBACK D1ContinueRegisterObservation(EXCEPTION_POINTERS* exception) noexcept {
+    if (exception == nullptr || exception->ExceptionRecord == nullptr ||
+        exception->ContextRecord == nullptr || g_observation_file == INVALID_HANDLE_VALUE) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    u32 expected = 0;
+    if (!g_register_continue_seen.compare_exchange_strong(expected, 1,
+                                                          std::memory_order_acq_rel)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto& exception_record = *exception->ExceptionRecord;
+    const auto& context = *reinterpret_cast<const ARM64_NT_CONTEXT*>(exception->ContextRecord);
+
+    D1ContinueRegisterRecord low{};
+    low.magic = D1ObservationMagic;
+    low.version = D1ContinueRegistersVersionLow;
+    low.sequence = 2;
+    low.exception_code = static_cast<u32>(exception_record.ExceptionCode);
+    low.parameter_count = 0;
+    low.value0 = context.X[0];
+    low.value1 = context.X[1];
+    low.value2 = context.X[2];
+    low.value3 = context.X[3];
+    low.value4 = context.X[30];
+
+    D1ContinueRegisterRecord high{};
+    high.magic = D1ObservationMagic;
+    high.version = D1ContinueRegistersVersionHigh;
+    high.sequence = 3;
+    high.exception_code = static_cast<u32>(exception_record.ExceptionCode);
+    high.parameter_count = 0;
+    high.value0 = context.X[16];
+    high.value1 = context.X[17];
+    high.value2 = context.X[18];
+    high.value3 = context.X[29];
+    high.value4 = static_cast<u64>(context.Cpsr);
+
+    DWORD bytes_written{};
+    WriteFile(g_observation_file, &low, static_cast<DWORD>(sizeof(low)), &bytes_written, nullptr);
+    bytes_written = 0;
+    WriteFile(g_observation_file, &high, static_cast<DWORD>(sizeof(high)), &bytes_written, nullptr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 u64 ReadPhysicalX18() {
     u64 value{};
     asm volatile("mov %0, x18" : "=r"(value));
@@ -474,6 +539,7 @@ int main() {
     g_exception_pc.store(0, std::memory_order_release);
     g_exception_sp.store(0, std::memory_order_release);
     g_first_exception_record = {};
+    g_register_continue_seen.store(0, std::memory_order_release);
 
     g_observation_file = CreateFileW(L"imp008d-d1-first-exception.bin", GENERIC_WRITE,
                                      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
@@ -496,11 +562,25 @@ int main() {
         return Fail("IMP008D_D1_OBSERVATION_VEH");
     }
 
+    PVOID const register_continue_handler =
+        AddVectoredContinueHandler(0, &D1ContinueRegisterObservation);
+    if (register_continue_handler == nullptr) {
+        RemoveVectoredExceptionHandler(observation_veh);
+        CloseHandle(g_observation_file);
+        g_observation_file = INVALID_HANDLE_VALUE;
+        thread->Close(kernel);
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008D_D1_REGISTER_CONTINUE_HANDLER");
+    }
+    Trace("IMP008D_D1_REGISTER_CONTINUE_HANDLER_READY");
+
     Trace("IMP008D_D1_PRE_RUNTHREAD");
     arm->LockThread(thread);
     const Core::HaltReason halt_reason = arm->RunThread(thread);
     arm->UnlockThread(thread);
     RemoveVectoredExceptionHandler(observation_veh);
+    RemoveVectoredContinueHandler(register_continue_handler);
     FlushFileBuffers(g_observation_file);
     CloseHandle(g_observation_file);
     g_observation_file = INVALID_HANDLE_VALUE;
