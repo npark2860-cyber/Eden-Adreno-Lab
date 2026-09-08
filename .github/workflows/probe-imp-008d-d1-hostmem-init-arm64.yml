@@ -1,0 +1,302 @@
+name: Probe IMP-008D D1 HostMemory Init Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008d-windows-nce-data-fault-runtime
+    paths:
+      - '.github/workflows/probe-imp-008d-d1-hostmem-init-arm64.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  d1-hostmem-init-runtime:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout IMP-008D branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify HostMemory diagnostic scope
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          host='src/common/host_memory.cpp'
+          probe='probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp'
+          test -f "$host"
+          test -f "$probe"
+          grep -Fq 'nce_address_requirements.LowestStartingAddress = reinterpret_cast<PVOID>(1ULL << 36);' "$host"
+          grep -Fq 'nce_address_requirements.HighestEndingAddress = reinterpret_cast<PVOID>((1ULL << 39) - 1);' "$host"
+          grep -Fq 'virtual_base = static_cast<u8*>(pfn_VirtualAlloc2(' "$host"
+          grep -Fq 'return Fail("IMP008D_D1_DIRECT_MAP")' "$probe"
+          if grep -Fq 'IMP008D_D1_HOSTMEM_FAIL_STAGE=' "$host"; then
+            echo 'HostMemory source already contains D1 diagnostic markers' >&2
+            exit 71
+          fi
+          echo 'IMP008D_D1_HOSTMEM_SCOPE=PASS'
+
+      - name: Apply checkout-only HostMemory init diagnostic
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'src/common/host_memory.cpp'
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+
+          function Replace-ExactlyOnce([string]$old, [string]$new, [string]$label) {
+            $count = ([regex]::Matches($script:text, [regex]::Escape($old))).Count
+            if ($count -ne 1) {
+              throw "$label match count was $count, expected 1"
+            }
+            $script:text = $script:text.Replace($old, $new)
+          }
+
+          Replace-ExactlyOnce @'
+          #ifdef _WIN32
+
+          #include <iterator>
+          '@.Replace("`r`n", "`n").Trim() @'
+          #ifdef _WIN32
+
+          #include <cstdio>
+          #include <iterator>
+          '@.Replace("`r`n", "`n").Trim() 'cstdio include'
+
+          $helperAnchor = @'
+          #ifndef MEM_PRESERVE_PLACEHOLDER
+          #define MEM_PRESERVE_PLACEHOLDER 0x00000002
+          #endif
+
+          using PFN_CreateFileMapping2
+          '@.Replace("`r`n", "`n").Trim()
+          $helperReplacement = @'
+          #ifndef MEM_PRESERVE_PLACEHOLDER
+          #define MEM_PRESERVE_PLACEHOLDER 0x00000002
+          #endif
+
+          static void Imp008dD1HostMemoryInitFailure(const char* stage, DWORD error) {
+              std::fprintf(stderr, "IMP008D_D1_HOSTMEM_FAIL_STAGE=%s\n", stage);
+              std::fprintf(stderr, "IMP008D_D1_HOSTMEM_WIN32_ERROR=%lu\n",
+                           static_cast<unsigned long>(error));
+              std::fprintf(stderr, "IMP008D_D1_HOSTMEM_WIN32_ERROR_HEX=0x%08lX\n",
+                           static_cast<unsigned long>(error));
+              std::fflush(stderr);
+          }
+
+          using PFN_CreateFileMapping2
+          '@.Replace("`r`n", "`n").Trim()
+          Replace-ExactlyOnce $helperAnchor $helperReplacement 'diagnostic helper'
+
+          $kernelOld = @'
+                  if (!kernelbase_dll.IsOpen()) {
+                      LOG_CRITICAL(HW_Memory, "Failed to load Kernelbase.dll");
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $kernelNew = @'
+                  if (!kernelbase_dll.IsOpen()) {
+                      const DWORD error = GetLastError();
+                      Imp008dD1HostMemoryInitFailure("KERNELBASE_OPEN", error);
+                      LOG_CRITICAL(HW_Memory, "Failed to load Kernelbase.dll");
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          Replace-ExactlyOnce $kernelOld $kernelNew 'Kernelbase failure'
+
+          $mappingOld = @'
+                  if (!backing_handle) {
+                      LOG_CRITICAL(HW_Memory, "Failed to allocate {} MiB of backing memory", backing_size >> 20);
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $mappingNew = @'
+                  if (!backing_handle) {
+                      const DWORD error = GetLastError();
+                      Imp008dD1HostMemoryInitFailure("CREATE_FILE_MAPPING2", error);
+                      LOG_CRITICAL(HW_Memory, "Failed to allocate {} MiB of backing memory", backing_size >> 20);
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          Replace-ExactlyOnce $mappingOld $mappingNew 'CreateFileMapping2 failure'
+
+          $backingOld = @'
+                  if (!backing_base) {
+                      Release();
+                      LOG_CRITICAL(HW_Memory, "Failed to reserve {} MiB of virtual memory", backing_size >> 20);
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $backingNew = @'
+                  if (!backing_base) {
+                      const DWORD error = GetLastError();
+                      Imp008dD1HostMemoryInitFailure("VIRTUAL_ALLOC2_BACKING", error);
+                      Release();
+                      LOG_CRITICAL(HW_Memory, "Failed to reserve {} MiB of virtual memory", backing_size >> 20);
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          Replace-ExactlyOnce $backingOld $backingNew 'backing VirtualAlloc2 failure'
+
+          $mapOld = @'
+                  if (ret != backing_base) {
+                      Release();
+                      LOG_CRITICAL(HW_Memory, "Failed to map {} MiB of virtual memory", backing_size >> 20);
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $mapNew = @'
+                  if (ret != backing_base) {
+                      const DWORD error = GetLastError();
+                      Imp008dD1HostMemoryInitFailure("MAP_VIEW_OF_FILE3_BACKING", error);
+                      Release();
+                      LOG_CRITICAL(HW_Memory, "Failed to map {} MiB of virtual memory", backing_size >> 20);
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          Replace-ExactlyOnce $mapOld $mapNew 'MapViewOfFile3 failure'
+
+          $virtualOld = @'
+                  if (!virtual_base) {
+                      Release();
+                      LOG_CRITICAL(HW_Memory, "Failed to reserve {} GiB of virtual memory", virtual_size >> 30);
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $virtualNew = @'
+                  if (!virtual_base) {
+                      const DWORD error = GetLastError();
+                      Imp008dD1HostMemoryInitFailure("VIRTUAL_ALLOC2_NCE_FASTMEM", error);
+                      Release();
+                      LOG_CRITICAL(HW_Memory, "Failed to reserve {} GiB of virtual memory", virtual_size >> 30);
+                      return false;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          Replace-ExactlyOnce $virtualOld $virtualNew 'NCE fastmem VirtualAlloc2 failure'
+
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+
+          if (-not (Select-String -Path $path -SimpleMatch 'IMP008D_D1_HOSTMEM_FAIL_STAGE=' -Quiet)) {
+            throw 'HostMemory stage marker was not installed'
+          }
+          if (-not (Select-String -Path $path -SimpleMatch 'VIRTUAL_ALLOC2_NCE_FASTMEM' -Quiet)) {
+            throw 'NCE fastmem failure stage was not installed'
+          }
+          if (-not (Select-String -Path $path -SimpleMatch 'const DWORD error = GetLastError();' -Quiet)) {
+            throw 'GetLastError capture was not installed'
+          }
+          Write-Host 'IMP008D_D1_HOSTMEM_CHECKOUT_PATCH=PASS'
+
+      - name: Add D1 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          # IMP-008D D1 CI-only executable. Reuse the normal Eden CLI product dependency contract.
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008d_d1_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008d_d1_data_fault_skip
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp
+              ${CMAKE_BINARY_DIR}/imp008d_d1_vma.cpp)
+          target_include_directories(imp008d_d1_data_fault_skip PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008d_d1_data_fault_skip PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008d_d1_data_fault_skip PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+          CMAKE
+          echo 'IMP008D_D1_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp' build/compile_commands.json
+          grep -Fq 'windows_nce_entry.obj' build/build.ninja
+          grep -Fq -- '-fno-rtti' build/compile_commands.json
+          echo 'IMP008D_D1_NORMAL_CONFIGURE=PASS'
+
+      - name: Build, run, and classify HostMemory initialization
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008d_d1_data_fault_skip --parallel
+          exe="$(find build -type f -name 'imp008d_d1_data_fault_skip.exe' -print -quit)"
+          test -n "$exe"
+          echo "IMP008D_D1_EXECUTABLE=$exe"
+          set +e
+          "$exe" > imp008d-d1.out.log 2> imp008d-d1.err.log
+          rc=$?
+          set -e
+          cat imp008d-d1.out.log || true
+          cat imp008d-d1.err.log >&2 || true
+          echo "IMP008D_D1_PROCESS_EXIT=$rc"
+          echo "IMP008D_D1_LAUNCH_RC=$rc"
+
+          if grep -Fq 'IMP008D_D1_DIRECT_MAP=FAIL' imp008d-d1.out.log; then
+            echo 'IMP008D_D1_DIRECT_MAP_REPRO=PASS'
+            grep -F 'IMP008D_D1_HOSTMEM_FAIL_STAGE=' imp008d-d1.err.log
+            grep -F 'IMP008D_D1_HOSTMEM_WIN32_ERROR=' imp008d-d1.err.log
+            grep -F 'IMP008D_D1_HOSTMEM_WIN32_ERROR_HEX=' imp008d-d1.err.log
+            echo 'IMP008D_D1_HOSTMEM_DIAGNOSTIC_CAPTURE=PASS'
+            exit 0
+          fi
+
+          echo 'IMP008D_D1_DIRECT_MAP_REPRO=MISS'
+          exit "$rc"
