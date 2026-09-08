@@ -1,0 +1,256 @@
+name: Probe IMP-008D D1 SVC Pre-Lock Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008d-windows-nce-data-fault-runtime
+    paths:
+      - '.github/workflows/probe-imp-008d-d1-svc-prelock-arm64.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  d1-svc-prelock-runtime:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout IMP-008D branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Apply checkout-only SVC pre-LockContext marker
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $patcherPath = 'src/core/arm/nce/patcher.cpp'
+          $probePath = 'probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp'
+          $patcher = [System.IO.File]::ReadAllText($patcherPath).Replace("`r`n", "`n")
+          $probe = [System.IO.File]::ReadAllText($probePath).Replace("`r`n", "`n")
+
+          function Replace-InText([string]$text, [string]$old, [string]$new, [string]$label) {
+            $count = ([regex]::Matches($text, [regex]::Escape($old))).Count
+            if ($count -ne 1) {
+              throw "$label match count was $count, expected 1"
+            }
+            return $text.Replace($old, $new)
+          }
+
+          $svcOld = @'
+              // We are about to start saving state, so we need to lock the context.
+              this->LockContext(cg);
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $svcNew = @'
+              // We are about to start saving state, so we need to lock the context.
+          #if defined(_WIN32)
+              // IMP-008D D1 checkout-only marker: first executed instruction in SVC trampoline.
+              cg.dw(0xD421A3A0U); // BRK #0xD1D
+          #endif
+              this->LockContext(cg);
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $patcher = Replace-InText $patcher $svcOld $svcNew 'SVC pre-LockContext marker'
+
+          $constOld = @'
+          constexpr u32 D1GeneratedSaveGetterEnterVersion = 7;
+          constexpr u32 D1GeneratedSaveGetterReturnVersion = 8;
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $constNew = @'
+          constexpr u32 D1GeneratedSaveGetterEnterVersion = 7;
+          constexpr u32 D1GeneratedSaveGetterReturnVersion = 8;
+          constexpr u32 D1SvcPreLockVersion = 12;
+          constexpr u32 D1SvcPreLockInstruction = 0xD421A3A0U;
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $probe = Replace-InText $probe $constOld $constNew 'SVC pre-LockContext constants'
+
+          $handlerOld = @'
+              const auto& record = *exception->ExceptionRecord;
+
+              u32 observation_expected = 0;
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $handlerNew = @'
+              const auto& record = *exception->ExceptionRecord;
+              auto& context = *reinterpret_cast<ARM64_NT_CONTEXT*>(exception->ContextRecord);
+
+              if (record.ExceptionCode == EXCEPTION_BREAKPOINT) {
+                  u64 marker_pc = static_cast<u64>(context.Pc);
+                  bool advance_pc = false;
+                  u32 instruction{};
+                  std::memcpy(&instruction, reinterpret_cast<const void*>(marker_pc), sizeof(instruction));
+                  if (instruction == D1SvcPreLockInstruction) {
+                      advance_pc = true;
+                  } else if (marker_pc >= sizeof(u32)) {
+                      const u64 previous_pc = marker_pc - sizeof(u32);
+                      std::memcpy(&instruction, reinterpret_cast<const void*>(previous_pc), sizeof(instruction));
+                      if (instruction == D1SvcPreLockInstruction) {
+                          marker_pc = previous_pc;
+                      } else {
+                          return EXCEPTION_CONTINUE_SEARCH;
+                      }
+                  } else {
+                      return EXCEPTION_CONTINUE_SEARCH;
+                  }
+
+                  u64 physical_x18{};
+                  asm volatile("mov %0, x18" : "=r"(physical_x18));
+                  D1ContinueRegisterRecord marker{};
+                  marker.magic = D1ObservationMagic;
+                  marker.version = D1SvcPreLockVersion;
+                  marker.sequence = 12;
+                  marker.exception_code = static_cast<u32>(record.ExceptionCode);
+                  marker.parameter_count = static_cast<u32>(record.NumberParameters);
+                  marker.value0 = marker_pc;
+                  marker.value1 = static_cast<u64>(context.Sp);
+                  marker.value2 = physical_x18;
+                  marker.value3 = context.X[0];
+                  marker.value4 = context.X[1];
+
+                  DWORD bytes_written{};
+                  WriteFile(g_observation_file, &marker, static_cast<DWORD>(sizeof(marker)),
+                            &bytes_written, nullptr);
+                  if (advance_pc) {
+                      context.Pc += sizeof(u32);
+                  }
+                  return EXCEPTION_CONTINUE_EXECUTION;
+              }
+
+              u32 observation_expected = 0;
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $probe = Replace-InText $probe $handlerOld $handlerNew 'SVC pre-LockContext observation handler'
+
+          [System.IO.File]::WriteAllText($patcherPath, $patcher, [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText($probePath, $probe, [System.Text.UTF8Encoding]::new($false))
+
+          if (-not (Select-String -Path $patcherPath -SimpleMatch 'cg.dw(0xD421A3A0U);' -Quiet)) {
+            throw 'SVC pre-LockContext marker missing'
+          }
+          if (-not (Select-String -Path $probePath -SimpleMatch 'D1SvcPreLockVersion = 12' -Quiet)) {
+            throw 'SVC pre-LockContext observation handler missing'
+          }
+          Write-Host 'IMP008D_D1_SVC_PRELOCK_MARKER=PASS'
+
+      - name: Add D1 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008d_d1_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008d_d1_data_fault_skip
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp
+              ${CMAKE_BINARY_DIR}/imp008d_d1_vma.cpp)
+          target_include_directories(imp008d_d1_data_fault_skip PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008d_d1_data_fault_skip PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008d_d1_data_fault_skip PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+          CMAKE
+          echo 'IMP008D_D1_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          echo 'IMP008D_D1_NORMAL_CONFIGURE=PASS'
+
+      - name: Build D1 diagnostic executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008d_d1_data_fault_skip --parallel > imp008d-d1-build.log 2>&1
+          cat imp008d-d1-build.log
+          echo 'IMP008D_D1_BUILD=PASS'
+
+      - name: Run D1 diagnostic executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          exe="$(find build -type f -name 'imp008d_d1_data_fault_skip.exe' -print -quit)"
+          test -n "$exe"
+          set +e
+          "$exe" > imp008d-d1.out.log 2> imp008d-d1.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008d-d1.rc
+          cat imp008d-d1.out.log || true
+          cat imp008d-d1.err.log >&2 || true
+          echo "IMP008D_D1_PROCESS_EXIT=$rc"
+          echo 'IMP008D_D1_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify D1 SVC pre-LockContext boundary
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          rc="$(cat imp008d-d1.rc)"
+          echo "IMP008D_D1_CLASSIFY_RC=$rc"
+          exit "$rc"
+
+      - name: Persist D1 SVC pre-LockContext logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008d-d1-svc-prelock-${{ github.run_id }}
+          path: |
+            eden/imp008d-d1-build.log
+            eden/imp008d-d1.out.log
+            eden/imp008d-d1.err.log
+            eden/imp008d-d1.rc
+            eden/imp008d-d1-first-exception.bin
+          if-no-files-found: warn
