@@ -271,12 +271,28 @@ jobs:
           grep -Fq -- '-fno-rtti' build/compile_commands.json
           echo 'IMP008D_D1_NORMAL_CONFIGURE=PASS'
 
-      - name: Build, run, and classify HostMemory initialization
+      - name: Build D1 diagnostic executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          set +e
+          cmake --build build --target imp008d_d1_data_fault_skip --parallel > imp008d-d1-build.log 2>&1
+          build_rc=$?
+          set -e
+          cat imp008d-d1-build.log || true
+          echo "IMP008D_D1_BUILD_RC=$build_rc"
+          if [ "$build_rc" -ne 0 ]; then
+            echo 'IMP008D_D1_BUILD=FAIL'
+            exit "$build_rc"
+          fi
+          echo 'IMP008D_D1_BUILD=PASS'
+
+      - name: Run D1 diagnostic executable
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
-          cmake --build build --target imp008d_d1_data_fault_skip --parallel
           exe="$(find build -type f -name 'imp008d_d1_data_fault_skip.exe' -print -quit)"
           test -n "$exe"
           echo "IMP008D_D1_EXECUTABLE=$exe"
@@ -284,19 +300,54 @@ jobs:
           "$exe" > imp008d-d1.out.log 2> imp008d-d1.err.log
           rc=$?
           set -e
+          printf '%s\n' "$rc" > imp008d-d1.rc
           cat imp008d-d1.out.log || true
           cat imp008d-d1.err.log >&2 || true
           echo "IMP008D_D1_PROCESS_EXIT=$rc"
+          printf 'IMP008D_D1_PROCESS_EXIT_HEX=0x%08X\n' "$rc"
           echo "IMP008D_D1_LAUNCH_RC=$rc"
+          echo 'IMP008D_D1_RUNTIME_CAPTURE=PASS'
 
+      - name: Classify HostMemory initialization
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          rc="$(cat imp008d-d1.rc)"
           if grep -Fq 'IMP008D_D1_DIRECT_MAP=FAIL' imp008d-d1.out.log; then
             echo 'IMP008D_D1_DIRECT_MAP_REPRO=PASS'
-            grep -F 'IMP008D_D1_HOSTMEM_FAIL_STAGE=' imp008d-d1.err.log
-            grep -F 'IMP008D_D1_HOSTMEM_WIN32_ERROR=' imp008d-d1.err.log
-            grep -F 'IMP008D_D1_HOSTMEM_WIN32_ERROR_HEX=' imp008d-d1.err.log
-            echo 'IMP008D_D1_HOSTMEM_DIAGNOSTIC_CAPTURE=PASS'
-            exit 0
+            capture_ok=1
+            for marker in \
+              'IMP008D_D1_HOSTMEM_FAIL_STAGE=' \
+              'IMP008D_D1_HOSTMEM_WIN32_ERROR=' \
+              'IMP008D_D1_HOSTMEM_WIN32_ERROR_HEX='; do
+              if grep -F "$marker" imp008d-d1.err.log; then
+                :
+              else
+                echo "IMP008D_D1_HOSTMEM_MARKER_MISSING=$marker"
+                capture_ok=0
+              fi
+            done
+            if [ "$capture_ok" -eq 1 ]; then
+              echo 'IMP008D_D1_HOSTMEM_DIAGNOSTIC_CAPTURE=PASS'
+              exit 0
+            fi
+            echo 'IMP008D_D1_HOSTMEM_DIAGNOSTIC_CAPTURE=FAIL'
+            exit 72
           fi
 
           echo 'IMP008D_D1_DIRECT_MAP_REPRO=MISS'
+          echo "IMP008D_D1_CLASSIFY_RC=$rc"
           exit "$rc"
+
+      - name: Persist D1 diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008d-d1-hostmem-diagnostic-${{ github.run_id }}
+          path: |
+            eden/imp008d-d1-build.log
+            eden/imp008d-d1.out.log
+            eden/imp008d-d1.err.log
+            eden/imp008d-d1.rc
+          if-no-files-found: warn
