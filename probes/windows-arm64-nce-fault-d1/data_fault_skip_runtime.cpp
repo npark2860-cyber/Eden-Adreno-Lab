@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <utility>
 
@@ -97,6 +98,8 @@ std::size_t PageAlign(std::size_t value) {
 constexpr u32 D1ContinueRegistersVersionLow = 4;
 constexpr u32 D1ContinueRegistersVersionHigh = 5;
 constexpr u32 D1ContinuePhysicalX18Version = 6;
+constexpr u32 D1GeneratedSaveGetterEnterVersion = 7;
+constexpr u32 D1GeneratedSaveGetterReturnVersion = 8;
 
 struct D1ContinueRegisterRecord {
     u64 magic;
@@ -184,7 +187,48 @@ u64 ReadPhysicalX18() {
     return value;
 }
 
+void WriteGeneratedSaveGetterRecord(u32 version, u32 sequence, u64 value0, u64 value1,
+                                    u64 value2) noexcept {
+    if (g_observation_file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    D1ContinueRegisterRecord observed{};
+    observed.magic = D1ObservationMagic;
+    observed.version = version;
+    observed.sequence = sequence;
+    observed.exception_code = 0;
+    observed.parameter_count = 0;
+    observed.value0 = value0;
+    observed.value1 = value1;
+    observed.value2 = value2;
+
+    DWORD bytes_written{};
+    WriteFile(g_observation_file, &observed, static_cast<DWORD>(sizeof(observed)), &bytes_written,
+              nullptr);
+}
+
 #if defined(ARCHITECTURE_arm64)
+extern "C" __attribute__((noinline)) void* D1GeneratedSaveGetterProbe() {
+    u64 physical_x18_entry{};
+    u64 physical_sp_entry{};
+    asm volatile("mov %0, x18" : "=r"(physical_x18_entry));
+    asm volatile("mov %0, sp" : "=r"(physical_sp_entry));
+    WriteGeneratedSaveGetterRecord(D1GeneratedSaveGetterEnterVersion, 5, physical_x18_entry,
+                                   physical_sp_entry, 0);
+
+    void* const result = Core::NCE::GetCurrentNceContextForGeneratedCode();
+
+    u64 physical_x18_return{};
+    u64 physical_sp_return{};
+    asm volatile("mov %0, x18" : "=r"(physical_x18_return));
+    asm volatile("mov %0, sp" : "=r"(physical_sp_return));
+    WriteGeneratedSaveGetterRecord(D1GeneratedSaveGetterReturnVersion, 6,
+                                   static_cast<u64>(reinterpret_cast<uintptr_t>(result)),
+                                   physical_x18_return, physical_sp_return);
+    return result;
+}
+
 __attribute__((noinline)) void* CallCurrentNceGetterOnGuestStack(u64 guest_stack_pointer) {
     void* result{};
     const auto getter = &Core::NCE::GetCurrentNceContextForGeneratedCode;
@@ -418,6 +462,45 @@ int main() {
         kernel.Shutdown();
         return Fail("IMP008D_D1_RELOCATE");
     }
+
+    if (code_set.memory.size() < image_size_before_relocate + patch_size) {
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008D_D1_PATCH_IMAGE_SIZE");
+    }
+
+    const u64 production_getter = static_cast<u64>(reinterpret_cast<uintptr_t>(
+        &Core::NCE::GetCurrentNceContextForGeneratedCode));
+    const u64 probe_getter =
+        static_cast<u64>(reinterpret_cast<uintptr_t>(&D1GeneratedSaveGetterProbe));
+    std::size_t getter_literal_matches = 0;
+    std::size_t getter_literal_first_offset = 0;
+    const std::size_t patch_end = image_size_before_relocate + patch_size;
+    for (std::size_t offset = image_size_before_relocate; offset + sizeof(u64) <= patch_end;
+         ++offset) {
+        u64 candidate{};
+        std::memcpy(&candidate, code_set.memory.data() + offset, sizeof(candidate));
+        if (candidate != production_getter) {
+            continue;
+        }
+        if (getter_literal_matches == 0) {
+            getter_literal_first_offset = offset - image_size_before_relocate;
+            std::memcpy(code_set.memory.data() + offset, &probe_getter, sizeof(probe_getter));
+        }
+        ++getter_literal_matches;
+    }
+    std::fprintf(stderr,
+                 "IMP008D_D1_GENERATED_GETTER_LITERAL_MATCHES=%zu FIRST_OFFSET=0x%zX\n",
+                 getter_literal_matches, getter_literal_first_offset);
+    std::fflush(stderr);
+    if (getter_literal_matches == 0) {
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008D_D1_GENERATED_GETTER_REDIRECT");
+    }
+    // Patcher emits the shared save-context helper before load-context and module trampolines.
+    // Redirect only the first getter literal, leaving every later generated helper untouched.
+    Trace("IMP008D_D1_GENERATED_SAVE_GETTER_REDIRECT");
 
     auto& patch_segment = code_set.PatchSegment();
     patch_segment.offset = image_size_before_relocate;
