@@ -1,4 +1,4 @@
-name: Probe IMP-008D D1 SVC Pre-Lock Runtime
+name: Probe IMP-008D D1 Post-Resume Exception Runtime
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  d1-svc-prelock-runtime:
+  d1-post-resume-exception-runtime:
     runs-on: windows-11-arm
     timeout-minutes: 120
 
@@ -48,14 +48,12 @@ jobs:
           rm -rf eden/.ci
           cp -a ci/.ci eden/.ci
 
-      - name: Apply checkout-only SVC pre-LockContext marker
+      - name: Apply checkout-only post-resume exception observer
         shell: pwsh
         working-directory: eden
         run: |
           $ErrorActionPreference = 'Stop'
-          $patcherPath = 'src/core/arm/nce/patcher.cpp'
           $probePath = 'probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp'
-          $patcher = [System.IO.File]::ReadAllText($patcherPath).Replace("`r`n", "`n")
           $probe = [System.IO.File]::ReadAllText($probePath).Replace("`r`n", "`n")
 
           function Replace-InText([string]$text, [string]$old, [string]$new, [string]$label) {
@@ -66,19 +64,16 @@ jobs:
             return $text.Replace($old, $new)
           }
 
-          $svcOld = @'
-              // We are about to start saving state, so we need to lock the context.
-              this->LockContext(cg);
+          $atomicOld = @'
+          std::atomic<u32> g_observation_seen{};
+          std::atomic<u32> g_fault_seen{};
           '@.Replace("`r`n", "`n").TrimEnd()
-          $svcNew = @'
-              // We are about to start saving state, so we need to lock the context.
-          #if defined(_WIN32)
-              // IMP-008D D1 checkout-only marker: first executed instruction in SVC trampoline.
-              cg.dw(0xD421A3A0U); // BRK #0xD1D
-          #endif
-              this->LockContext(cg);
+          $atomicNew = @'
+          std::atomic<u32> g_observation_seen{};
+          std::atomic<u32> g_post_resume_exception_seen{};
+          std::atomic<u32> g_fault_seen{};
           '@.Replace("`r`n", "`n").TrimEnd()
-          $patcher = Replace-InText $patcher $svcOld $svcNew 'SVC pre-LockContext marker'
+          $probe = Replace-InText $probe $atomicOld $atomicNew 'post-resume exception atomic'
 
           $constOld = @'
           constexpr u32 D1GeneratedSaveGetterEnterVersion = 7;
@@ -87,76 +82,77 @@ jobs:
           $constNew = @'
           constexpr u32 D1GeneratedSaveGetterEnterVersion = 7;
           constexpr u32 D1GeneratedSaveGetterReturnVersion = 8;
-          constexpr u32 D1SvcPreLockVersion = 12;
-          constexpr u32 D1SvcPreLockInstruction = 0xD421A3A0U;
+          constexpr u32 D1PostResumeExceptionVersion = 13;
           '@.Replace("`r`n", "`n").TrimEnd()
-          $probe = Replace-InText $probe $constOld $constNew 'SVC pre-LockContext constants'
+          $probe = Replace-InText $probe $constOld $constNew 'post-resume exception version'
 
-          $handlerOld = @'
-              const auto& record = *exception->ExceptionRecord;
-
+          $firstOld = @'
               u32 observation_expected = 0;
+              if (g_observation_seen.compare_exchange_strong(observation_expected, 1,
+                                                             std::memory_order_acq_rel)) {
           '@.Replace("`r`n", "`n").TrimEnd()
-          $handlerNew = @'
-              const auto& record = *exception->ExceptionRecord;
-              auto& context = *reinterpret_cast<ARM64_NT_CONTEXT*>(exception->ContextRecord);
+          $firstNew = @'
+              u32 observation_expected = 0;
+              const bool first_observation =
+                  g_observation_seen.compare_exchange_strong(observation_expected, 1,
+                                                             std::memory_order_acq_rel);
+              if (first_observation) {
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $probe = Replace-InText $probe $firstOld $firstNew 'first observation bool'
 
-              if (record.ExceptionCode == EXCEPTION_BREAKPOINT) {
-                  u64 marker_pc = static_cast<u64>(context.Pc);
-                  bool advance_pc = false;
-                  u32 instruction{};
-                  std::memcpy(&instruction, reinterpret_cast<const void*>(marker_pc), sizeof(instruction));
-                  if (instruction == D1SvcPreLockInstruction) {
-                      advance_pc = true;
-                  } else if (marker_pc >= sizeof(u32)) {
-                      const u64 previous_pc = marker_pc - sizeof(u32);
-                      std::memcpy(&instruction, reinterpret_cast<const void*>(previous_pc), sizeof(instruction));
-                      if (instruction == D1SvcPreLockInstruction) {
-                          marker_pc = previous_pc;
-                      } else {
-                          return EXCEPTION_CONTINUE_SEARCH;
-                      }
-                  } else {
-                      return EXCEPTION_CONTINUE_SEARCH;
-                  }
-
-                  u64 physical_x18{};
-                  asm volatile("mov %0, x18" : "=r"(physical_x18));
-                  D1ContinueRegisterRecord marker{};
-                  marker.magic = D1ObservationMagic;
-                  marker.version = D1SvcPreLockVersion;
-                  marker.sequence = 12;
-                  marker.exception_code = static_cast<u32>(record.ExceptionCode);
-                  marker.parameter_count = static_cast<u32>(record.NumberParameters);
-                  marker.value0 = marker_pc;
-                  marker.value1 = static_cast<u64>(context.Sp);
-                  marker.value2 = physical_x18;
-                  marker.value3 = context.X[0];
-                  marker.value4 = context.X[1];
-
-                  DWORD bytes_written{};
-                  WriteFile(g_observation_file, &marker, static_cast<DWORD>(sizeof(marker)),
-                            &bytes_written, nullptr);
-                  if (advance_pc) {
-                      context.Pc += sizeof(u32);
-                  }
-                  return EXCEPTION_CONTINUE_EXECUTION;
+          $secondAnchor = @'
               }
 
-              u32 observation_expected = 0;
+              if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
           '@.Replace("`r`n", "`n").TrimEnd()
-          $probe = Replace-InText $probe $handlerOld $handlerNew 'SVC pre-LockContext observation handler'
+          $secondReplacement = @'
+              }
 
-          [System.IO.File]::WriteAllText($patcherPath, $patcher, [System.Text.UTF8Encoding]::new($false))
+              if (!first_observation) {
+                  u32 second_expected = 0;
+                  if (g_post_resume_exception_seen.compare_exchange_strong(
+                          second_expected, 1, std::memory_order_acq_rel)) {
+                      const auto& context =
+                          *reinterpret_cast<const ARM64_NT_CONTEXT*>(exception->ContextRecord);
+                      D1ContinueRegisterRecord post{};
+                      post.magic = D1ObservationMagic;
+                      post.version = D1PostResumeExceptionVersion;
+                      post.sequence = 13;
+                      post.exception_code = static_cast<u32>(record.ExceptionCode);
+                      post.parameter_count = static_cast<u32>(record.NumberParameters);
+                      post.value0 = reinterpret_cast<u64>(record.ExceptionAddress);
+                      post.value1 = static_cast<u64>(context.Pc);
+                      post.value2 = static_cast<u64>(context.Sp);
+                      post.value3 = record.NumberParameters >= 1
+                                        ? static_cast<u64>(record.ExceptionInformation[0])
+                                        : 0;
+                      post.value4 = record.NumberParameters >= 2
+                                        ? static_cast<u64>(record.ExceptionInformation[1])
+                                        : 0;
+
+                      DWORD bytes_written{};
+                      WriteFile(g_observation_file, &post, static_cast<DWORD>(sizeof(post)),
+                                &bytes_written, nullptr);
+                      FlushFileBuffers(g_observation_file);
+                  }
+              }
+
+              if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $probe = Replace-InText $probe $secondAnchor $secondReplacement 'second exception observer'
+
           [System.IO.File]::WriteAllText($probePath, $probe, [System.Text.UTF8Encoding]::new($false))
 
-          if (-not (Select-String -Path $patcherPath -SimpleMatch 'cg.dw(0xD421A3A0U);' -Quiet)) {
-            throw 'SVC pre-LockContext marker missing'
+          if (-not (Select-String -Path $probePath -SimpleMatch 'D1PostResumeExceptionVersion = 13' -Quiet)) {
+            throw 'post-resume exception version missing'
           }
-          if (-not (Select-String -Path $probePath -SimpleMatch 'D1SvcPreLockVersion = 12' -Quiet)) {
-            throw 'SVC pre-LockContext observation handler missing'
+          if (-not (Select-String -Path $probePath -SimpleMatch 'g_post_resume_exception_seen' -Quiet)) {
+            throw 'post-resume exception observer missing'
           }
-          Write-Host 'IMP008D_D1_SVC_PRELOCK_MARKER=PASS'
+          if (-not (Select-String -Path $probePath -SimpleMatch 'post.sequence = 13;' -Quiet)) {
+            throw 'post-resume exception record missing'
+          }
+          Write-Host 'IMP008D_D1_POST_RESUME_EXCEPTION_OBSERVER=PASS'
 
       - name: Add D1 target to checkout only
         shell: bash
@@ -233,7 +229,7 @@ jobs:
           echo "IMP008D_D1_PROCESS_EXIT=$rc"
           echo 'IMP008D_D1_RUNTIME_CAPTURE=PASS'
 
-      - name: Classify D1 SVC pre-LockContext boundary
+      - name: Classify D1 post-resume exception
         shell: msys2 {0}
         working-directory: eden
         run: |
@@ -242,11 +238,11 @@ jobs:
           echo "IMP008D_D1_CLASSIFY_RC=$rc"
           exit "$rc"
 
-      - name: Persist D1 SVC pre-LockContext logs
+      - name: Persist D1 post-resume exception logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: imp008d-d1-svc-prelock-${{ github.run_id }}
+          name: imp008d-d1-post-resume-exception-${{ github.run_id }}
           path: |
             eden/imp008d-d1-build.log
             eden/imp008d-d1.out.log
