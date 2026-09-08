@@ -350,4 +350,5 @@ jobs:
             eden/imp008d-d1.out.log
             eden/imp008d-d1.err.log
             eden/imp008d-d1.rc
+            eden/imp008d-d1-first-exception.bin
           if-no-files-found: warn
