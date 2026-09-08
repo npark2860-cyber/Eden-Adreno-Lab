@@ -92,6 +92,7 @@ std::size_t PageAlign(std::size_t value) {
 #if defined(_WIN32)
 constexpr u32 D1ContinueRegistersVersionLow = 4;
 constexpr u32 D1ContinueRegistersVersionHigh = 5;
+constexpr u32 D1ContinuePhysicalX18Version = 6;
 
 struct D1ContinueRegisterRecord {
     u64 magic;
@@ -148,10 +149,28 @@ LONG CALLBACK D1ContinueRegisterObservation(EXCEPTION_POINTERS* exception) noexc
     high.value3 = context.X[29];
     high.value4 = static_cast<u64>(context.Cpsr);
 
+    // Windows ARM64 exception CONTEXT does not necessarily expose the live platform-owned x18.
+    // Capture the actual physical x18 in the same VCH callback so the CONTEXT slot can be
+    // distinguished from real TEB ownership without changing any guest/runtime behavior.
+    u64 physical_x18{};
+    asm volatile("mov %0, x18" : "=r"(physical_x18));
+
+    D1ContinueRegisterRecord physical{};
+    physical.magic = D1ObservationMagic;
+    physical.version = D1ContinuePhysicalX18Version;
+    physical.sequence = 4;
+    physical.exception_code = static_cast<u32>(exception_record.ExceptionCode);
+    physical.parameter_count = 0;
+    physical.value0 = physical_x18;
+    physical.value1 = context.X[18];
+
     DWORD bytes_written{};
     WriteFile(g_observation_file, &low, static_cast<DWORD>(sizeof(low)), &bytes_written, nullptr);
     bytes_written = 0;
     WriteFile(g_observation_file, &high, static_cast<DWORD>(sizeof(high)), &bytes_written, nullptr);
+    bytes_written = 0;
+    WriteFile(g_observation_file, &physical, static_cast<DWORD>(sizeof(physical)), &bytes_written,
+              nullptr);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
