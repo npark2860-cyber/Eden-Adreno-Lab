@@ -1,0 +1,336 @@
+name: Probe IMP-008D D1 FastFail Subcode Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008d-windows-nce-data-fault-runtime
+    paths:
+      - '.github/workflows/probe-imp-008d-d1-fastfail-debug-arm64.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  d1-fastfail-subcode-runtime:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout IMP-008D branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Add D1 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008d_d1_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008d_d1_data_fault_skip
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp
+              ${CMAKE_BINARY_DIR}/imp008d_d1_vma.cpp)
+          target_include_directories(imp008d_d1_data_fault_skip PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008d_d1_data_fault_skip PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008d_d1_data_fault_skip PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+          CMAKE
+          echo 'IMP008D_D1_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          echo 'IMP008D_D1_NORMAL_CONFIGURE=PASS'
+
+      - name: Build D1 diagnostic executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008d_d1_data_fault_skip --parallel > imp008d-d1-build.log 2>&1
+          cat imp008d-d1-build.log
+          echo 'IMP008D_D1_BUILD=PASS'
+
+      - name: Build checkout-only Windows debug observer
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cat > imp008d-d1-fastfail-debug.cpp <<'CPP'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+
+          #include <cstdint>
+          #include <cstdio>
+          #include <string>
+          #include <vector>
+
+          namespace {
+
+          std::wstring ReadEnv(const wchar_t* name) {
+              const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+              if (size == 0) {
+                  return {};
+              }
+              std::vector<wchar_t> buffer(size);
+              if (GetEnvironmentVariableW(name, buffer.data(), size) == 0) {
+                  return {};
+              }
+              return std::wstring(buffer.data());
+          }
+
+          void LogException(FILE* log, const EXCEPTION_DEBUG_INFO& info, DWORD pid, DWORD tid,
+                            std::uint64_t index) {
+              const auto& record = info.ExceptionRecord;
+              std::fprintf(log,
+                           "IMP008D_D1_DEBUG_EXCEPTION INDEX=%llu PID=%lu TID=%lu FIRST=%lu "
+                           "CODE=0x%08lX FLAGS=0x%08lX ADDRESS=0x%llX PARAMS=%lu\n",
+                           static_cast<unsigned long long>(index),
+                           static_cast<unsigned long>(pid), static_cast<unsigned long>(tid),
+                           static_cast<unsigned long>(info.dwFirstChance),
+                           static_cast<unsigned long>(record.ExceptionCode),
+                           static_cast<unsigned long>(record.ExceptionFlags),
+                           static_cast<unsigned long long>(
+                               reinterpret_cast<std::uintptr_t>(record.ExceptionAddress)),
+                           static_cast<unsigned long>(record.NumberParameters));
+              for (DWORD i = 0; i < record.NumberParameters && i < EXCEPTION_MAXIMUM_PARAMETERS; ++i) {
+                  std::fprintf(log, "IMP008D_D1_DEBUG_EXCEPTION_PARAM INDEX=%llu N=%lu VALUE=0x%llX\n",
+                               static_cast<unsigned long long>(index),
+                               static_cast<unsigned long>(i),
+                               static_cast<unsigned long long>(record.ExceptionInformation[i]));
+              }
+              if (record.ExceptionCode == 0xC0000409UL) {
+                  const auto subcode = record.NumberParameters >= 1
+                                           ? static_cast<unsigned long long>(
+                                                 record.ExceptionInformation[0])
+                                           : 0ULL;
+                  std::fprintf(log,
+                               "IMP008D_D1_FASTFAIL FIRST=%lu SUBCODE=0x%llX ADDRESS=0x%llX\n",
+                               static_cast<unsigned long>(info.dwFirstChance), subcode,
+                               static_cast<unsigned long long>(
+                                   reinterpret_cast<std::uintptr_t>(record.ExceptionAddress)));
+              }
+              std::fflush(log);
+          }
+
+          } // namespace
+
+          int wmain() {
+              const std::wstring target = ReadEnv(L"D1_TARGET_WIN");
+              const std::wstring workdir = ReadEnv(L"D1_WORKDIR_WIN");
+              if (target.empty() || workdir.empty()) {
+                  std::fprintf(stderr, "IMP008D_D1_DEBUG_ENV=FAIL\n");
+                  return 70;
+              }
+
+              FILE* log = std::fopen("imp008d-d1-debug-events.log", "wb");
+              if (log == nullptr) {
+                  std::fprintf(stderr, "IMP008D_D1_DEBUG_LOG_OPEN=FAIL\n");
+                  return 71;
+              }
+
+              std::wstring command = L"\"" + target + L"\"";
+              std::vector<wchar_t> command_line(command.begin(), command.end());
+              command_line.push_back(L'\0');
+
+              STARTUPINFOW startup{};
+              startup.cb = sizeof(startup);
+              PROCESS_INFORMATION process{};
+              const BOOL created = CreateProcessW(
+                  target.c_str(), command_line.data(), nullptr, nullptr, TRUE,
+                  DEBUG_ONLY_THIS_PROCESS, nullptr, workdir.c_str(), &startup, &process);
+              if (!created) {
+                  std::fprintf(log, "IMP008D_D1_DEBUG_CREATE_PROCESS=FAIL ERROR=%lu\n",
+                               static_cast<unsigned long>(GetLastError()));
+                  std::fclose(log);
+                  return 72;
+              }
+
+              std::fprintf(log, "IMP008D_D1_DEBUG_CREATE_PROCESS=PASS PID=%lu\n",
+                           static_cast<unsigned long>(process.dwProcessId));
+              std::fflush(log);
+
+              bool initial_breakpoint_seen = false;
+              bool exited = false;
+              std::uint64_t exception_index = 0;
+              DWORD observed_exit = 0;
+
+              while (!exited) {
+                  DEBUG_EVENT event{};
+                  if (!WaitForDebugEvent(&event, INFINITE)) {
+                      std::fprintf(log, "IMP008D_D1_DEBUG_WAIT=FAIL ERROR=%lu\n",
+                                   static_cast<unsigned long>(GetLastError()));
+                      std::fflush(log);
+                      TerminateProcess(process.hProcess, 73);
+                      break;
+                  }
+
+                  DWORD disposition = DBG_CONTINUE;
+                  switch (event.dwDebugEventCode) {
+                  case EXCEPTION_DEBUG_EVENT: {
+                      ++exception_index;
+                      LogException(log, event.u.Exception, event.dwProcessId, event.dwThreadId,
+                                   exception_index);
+                      const DWORD code = event.u.Exception.ExceptionRecord.ExceptionCode;
+                      if (code == EXCEPTION_BREAKPOINT && !initial_breakpoint_seen) {
+                          initial_breakpoint_seen = true;
+                          disposition = DBG_CONTINUE;
+                      } else {
+                          disposition = DBG_EXCEPTION_NOT_HANDLED;
+                      }
+                      break;
+                  }
+                  case CREATE_PROCESS_DEBUG_EVENT:
+                      if (event.u.CreateProcessInfo.hFile != nullptr) {
+                          CloseHandle(event.u.CreateProcessInfo.hFile);
+                      }
+                      break;
+                  case CREATE_THREAD_DEBUG_EVENT:
+                      if (event.u.CreateThread.hThread != nullptr) {
+                          CloseHandle(event.u.CreateThread.hThread);
+                      }
+                      break;
+                  case LOAD_DLL_DEBUG_EVENT:
+                      if (event.u.LoadDll.hFile != nullptr) {
+                          CloseHandle(event.u.LoadDll.hFile);
+                      }
+                      break;
+                  case EXIT_PROCESS_DEBUG_EVENT:
+                      observed_exit = event.u.ExitProcess.dwExitCode;
+                      std::fprintf(log, "IMP008D_D1_DEBUG_EXIT CODE=0x%08lX\n",
+                                   static_cast<unsigned long>(observed_exit));
+                      std::fflush(log);
+                      exited = true;
+                      break;
+                  default:
+                      break;
+                  }
+
+                  if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, disposition)) {
+                      std::fprintf(log, "IMP008D_D1_DEBUG_CONTINUE=FAIL ERROR=%lu\n",
+                                   static_cast<unsigned long>(GetLastError()));
+                      std::fflush(log);
+                      TerminateProcess(process.hProcess, 74);
+                      break;
+                  }
+              }
+
+              CloseHandle(process.hThread);
+              CloseHandle(process.hProcess);
+              std::fprintf(log, "IMP008D_D1_DEBUG_OBSERVER_DONE=PASS EXIT=0x%08lX\n",
+                           static_cast<unsigned long>(observed_exit));
+              std::fclose(log);
+              return 0;
+          }
+          CPP
+          clang++ -std=c++20 -O2 -Wall -Wextra -municode imp008d-d1-fastfail-debug.cpp \
+            -o imp008d-d1-fastfail-debug.exe
+          test -f imp008d-d1-fastfail-debug.exe
+          echo 'IMP008D_D1_FASTFAIL_DEBUG_BUILD=PASS'
+
+      - name: Run D1 under Windows debug observer
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          exe="$(find build -type f -name 'imp008d_d1_data_fault_skip.exe' -print -quit)"
+          test -n "$exe"
+          export D1_TARGET_WIN="$(cygpath -aw "$exe")"
+          export D1_WORKDIR_WIN="$(cygpath -aw .)"
+          set +e
+          ./imp008d-d1-fastfail-debug.exe > imp008d-d1.out.log 2> imp008d-d1.err.log
+          observer_rc=$?
+          set -e
+          printf '%s\n' "$observer_rc" > imp008d-d1-debug-observer.rc
+          cat imp008d-d1.out.log || true
+          cat imp008d-d1.err.log >&2 || true
+          cat imp008d-d1-debug-events.log || true
+          echo "IMP008D_D1_DEBUG_OBSERVER_EXIT=$observer_rc"
+          test "$observer_rc" -eq 0
+          echo 'IMP008D_D1_DEBUG_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify D1 fast-fail subcode
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          test -f imp008d-d1-debug-events.log
+          if grep -Fq 'IMP008D_D1_GATE=PASS' imp008d-d1.out.log; then
+            echo 'IMP008D_D1_DEBUG_CLASSIFICATION=GATE_PASS'
+            exit 0
+          fi
+          grep -Fq 'IMP008D_D1_DEBUG_EXIT CODE=0xC0000409' imp008d-d1-debug-events.log
+          fastfail_line="$(grep -F 'IMP008D_D1_FASTFAIL ' imp008d-d1-debug-events.log | tail -n 1)"
+          test -n "$fastfail_line"
+          echo "$fastfail_line"
+          echo 'IMP008D_D1_DEBUG_CLASSIFICATION=FASTFAIL_SUBCODE_CAPTURED'
+          exit 1
+
+      - name: Persist D1 fast-fail debug logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008d-d1-fastfail-debug-${{ github.run_id }}
+          path: |
+            eden/imp008d-d1-build.log
+            eden/imp008d-d1.out.log
+            eden/imp008d-d1.err.log
+            eden/imp008d-d1-debug-events.log
+            eden/imp008d-d1-debug-observer.rc
+            eden/imp008d-d1-first-exception.bin
+          if-no-files-found: warn
