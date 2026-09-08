@@ -218,6 +218,120 @@ jobs:
           }
           Write-Host 'IMP008D_D1_HOSTMEM_CHECKOUT_PATCH=PASS'
 
+      - name: Apply checkout-only post-LockContext marker diagnostic
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $patcherPath = 'src/core/arm/nce/patcher.cpp'
+          $probePath = 'probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp'
+          $patcher = [System.IO.File]::ReadAllText($patcherPath).Replace("`r`n", "`n")
+          $probe = [System.IO.File]::ReadAllText($probePath).Replace("`r`n", "`n")
+
+          function Replace-InText([string]$text, [string]$old, [string]$new, [string]$label) {
+            $count = ([regex]::Matches($text, [regex]::Escape($old))).Count
+            if ($count -ne 1) {
+              throw "$label match count was $count, expected 1"
+            }
+            return $text.Replace($old, $new)
+          }
+
+          $patcherOld = @'
+              // We are about to start saving state, so we need to lock the context.
+              this->LockContext(cg);
+
+              // Store guest X30 to the stack. Then, save the context and restore the stack.
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $patcherNew = @'
+              // We are about to start saving state, so we need to lock the context.
+              this->LockContext(cg);
+          #if defined(_WIN32)
+              // IMP-008D D1 checkout-only marker: BRK #0xD1A immediately after LockContext.
+              cg.dw(0xD421A340U);
+          #endif
+
+              // Store guest X30 to the stack. Then, save the context and restore the stack.
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $patcher = Replace-InText $patcher $patcherOld $patcherNew 'post-LockContext BRK marker'
+
+          $constOld = @'
+          constexpr u32 D1GeneratedSaveGetterEnterVersion = 7;
+          constexpr u32 D1GeneratedSaveGetterReturnVersion = 8;
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $constNew = @'
+          constexpr u32 D1GeneratedSaveGetterEnterVersion = 7;
+          constexpr u32 D1GeneratedSaveGetterReturnVersion = 8;
+          constexpr u32 D1PostLockContextMarkerVersion = 9;
+          constexpr u32 D1PostLockContextMarkerInstruction = 0xD421A340U;
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $probe = Replace-InText $probe $constOld $constNew 'post-LockContext marker constants'
+
+          $handlerOld = @'
+              const auto& record = *exception->ExceptionRecord;
+
+              u32 observation_expected = 0;
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $handlerNew = @'
+              const auto& record = *exception->ExceptionRecord;
+              auto& context = *reinterpret_cast<ARM64_NT_CONTEXT*>(exception->ContextRecord);
+
+              if (record.ExceptionCode == EXCEPTION_BREAKPOINT) {
+                  u64 marker_pc = static_cast<u64>(context.Pc);
+                  bool advance_pc = false;
+                  u32 instruction{};
+                  std::memcpy(&instruction, reinterpret_cast<const void*>(marker_pc), sizeof(instruction));
+                  if (instruction == D1PostLockContextMarkerInstruction) {
+                      advance_pc = true;
+                  } else if (marker_pc >= sizeof(u32)) {
+                      const u64 previous_pc = marker_pc - sizeof(u32);
+                      std::memcpy(&instruction, reinterpret_cast<const void*>(previous_pc), sizeof(instruction));
+                      if (instruction == D1PostLockContextMarkerInstruction) {
+                          marker_pc = previous_pc;
+                      } else {
+                          return EXCEPTION_CONTINUE_SEARCH;
+                      }
+                  } else {
+                      return EXCEPTION_CONTINUE_SEARCH;
+                  }
+
+                  u64 physical_x18{};
+                  asm volatile("mov %0, x18" : "=r"(physical_x18));
+                  D1ContinueRegisterRecord marker{};
+                  marker.magic = D1ObservationMagic;
+                  marker.version = D1PostLockContextMarkerVersion;
+                  marker.sequence = 9;
+                  marker.exception_code = static_cast<u32>(record.ExceptionCode);
+                  marker.parameter_count = static_cast<u32>(record.NumberParameters);
+                  marker.value0 = marker_pc;
+                  marker.value1 = static_cast<u64>(context.Sp);
+                  marker.value2 = physical_x18;
+                  marker.value3 = context.X[0];
+                  marker.value4 = context.X[1];
+
+                  DWORD bytes_written{};
+                  WriteFile(g_observation_file, &marker, static_cast<DWORD>(sizeof(marker)),
+                            &bytes_written, nullptr);
+                  if (advance_pc) {
+                      context.Pc += sizeof(u32);
+                  }
+                  return EXCEPTION_CONTINUE_EXECUTION;
+              }
+
+              u32 observation_expected = 0;
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $probe = Replace-InText $probe $handlerOld $handlerNew 'post-LockContext marker handler'
+
+          [System.IO.File]::WriteAllText($patcherPath, $patcher, [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText($probePath, $probe, [System.Text.UTF8Encoding]::new($false))
+
+          if (-not (Select-String -Path $patcherPath -SimpleMatch 'cg.dw(0xD421A340U);' -Quiet)) {
+            throw 'post-LockContext marker was not installed in patcher'
+          }
+          if (-not (Select-String -Path $probePath -SimpleMatch 'D1PostLockContextMarkerVersion = 9' -Quiet)) {
+            throw 'post-LockContext marker handler was not installed in probe'
+          }
+          Write-Host 'IMP008D_D1_POST_LOCKCONTEXT_MARKER_PATCH=PASS'
+
       - name: Add D1 target to checkout only
         shell: bash
         working-directory: eden
