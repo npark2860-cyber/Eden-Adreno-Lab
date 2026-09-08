@@ -14,6 +14,10 @@
 #include "common/settings_enums.h"
 #include "core/arm/arm_interface.h"
 #include "core/arm/nce/patcher.h"
+#if defined(_WIN32)
+#include "core/arm/nce/current_nce_context.h"
+#include "core/arm/nce/windows_nce_transition.h"
+#endif
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "core/file_sys/program_metadata.h"
@@ -179,6 +183,22 @@ u64 ReadPhysicalX18() {
     asm volatile("mov %0, x18" : "=r"(value));
     return value;
 }
+
+#if defined(ARCHITECTURE_arm64)
+__attribute__((noinline)) void* CallCurrentNceGetterOnGuestStack(u64 guest_stack_pointer) {
+    void* result{};
+    const auto getter = &Core::NCE::GetCurrentNceContextForGeneratedCode;
+    asm volatile("mov x19, sp\n"
+                 "mov sp, %1\n"
+                 "blr %2\n"
+                 "mov %0, x0\n"
+                 "mov sp, x19\n"
+                 : "=r"(result)
+                 : "r"(guest_stack_pointer), "r"(getter)
+                 : "x0", "x19", "x30", "memory", "cc");
+    return result;
+}
+#endif
 
 bool IsReservedPage(u64 address, MEMORY_BASIC_INFORMATION& mbi) {
     if (VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof(mbi)) == 0) {
@@ -550,6 +570,26 @@ int main() {
         return Fail("IMP008D_D1_PHYSICAL_X18_TEB_BEFORE");
     }
     Trace("IMP008D_D1_PHYSICAL_X18_TEB_BEFORE");
+
+    Trace("IMP008D_D1_GUEST_STACK_GETTER_BEFORE");
+    Core::NCE::CurrentNceContext::Install(&native);
+    void* const guest_stack_getter_result = CallCurrentNceGetterOnGuestStack(guest_sp);
+    Core::NCE::CurrentNceContext::Clear();
+    const u64 physical_x18_after_getter = ReadPhysicalX18();
+    std::fprintf(stderr,
+                 "IMP008D_D1_GUEST_STACK_GETTER_RESULT=%p EXPECTED=%p X18=0x%llX TEB=0x%llX\n",
+                 guest_stack_getter_result, static_cast<void*>(&native),
+                 static_cast<unsigned long long>(physical_x18_after_getter),
+                 static_cast<unsigned long long>(teb));
+    std::fflush(stderr);
+    if (guest_stack_getter_result != static_cast<void*>(&native) ||
+        physical_x18_after_getter != teb) {
+        thread->Close(kernel);
+        process->Close(kernel);
+        kernel.Shutdown();
+        return Fail("IMP008D_D1_GUEST_STACK_GETTER_PREFLIGHT");
+    }
+    Trace("IMP008D_D1_GUEST_STACK_GETTER_PREFLIGHT");
 
     g_observation_seen.store(0, std::memory_order_release);
     g_fault_seen.store(0, std::memory_order_release);
