@@ -2,14 +2,6 @@ name: Probe IMP-008D D1 Production NtContinue Integration
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008d-windows-nce-data-fault-runtime
-    paths:
-      - '.github/workflows/probe-imp-008d-d1-production-ntcontinue-arm64.yml'
-      - 'src/core/arm/nce/arm_nce_windows.cpp'
-      - 'src/core/arm/nce/windows_nce_transition.cpp'
-      - 'src/core/arm/nce/windows_nce_transition.h'
 
 permissions:
   contents: read
