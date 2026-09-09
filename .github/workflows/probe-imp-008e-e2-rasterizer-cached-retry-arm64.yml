@@ -98,6 +98,33 @@ jobs:
           CMAKE
           echo 'IMP008E_E2_TARGET_WIRING=PASS'
 
+      - name: Enable E2 renderer diagnostics checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path)
+          $oldInclude = '#include "common/settings.h"'
+          $newInclude = "#include `"common/logging.h`"`r`n#include `"common/settings.h`""
+          if (-not $text.Contains($oldInclude)) { throw 'logging include anchor missing' }
+          $text = $text.Replace($oldInclude, $newInclude)
+
+          $oldMain = '    Trace("IMP008E_E2_MAIN_ENTER");'
+          $newMain = "    Common::Log::Initialize();`r`n    Common::Log::SetColorConsoleBackendEnabled(false);`r`n    Common::Log::Start();`r`n    Trace(`"IMP008E_E2_MAIN_ENTER`" );"
+          if (-not $text.Contains($oldMain)) { throw 'logging main anchor missing' }
+          $text = $text.Replace($oldMain, $newMain)
+
+          $oldLoad = "    const Core::SystemResultStatus load_result =`r`n        system.Load(window, nro_path.string(), load_parameters);"
+          if (-not $text.Contains($oldLoad)) {
+            $oldLoad = "    const Core::SystemResultStatus load_result =`n        system.Load(window, nro_path.string(), load_parameters);"
+          }
+          if (-not $text.Contains($oldLoad)) { throw 'logging stop anchor missing' }
+          $newLoad = $oldLoad + "`r`n    Common::Log::Stop();`r`n    Trace(`"IMP008E_E2_RENDERER_DIAGNOSTICS_FLUSHED`" );"
+          $text = $text.Replace($oldLoad, $newLoad)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_RENDERER_DIAGNOSTICS_PATCH=PASS'
+
       - name: Set up normal Eden CLANGARM64 toolchain
         id: msys2
         uses: msys2/setup-msys2@v2
