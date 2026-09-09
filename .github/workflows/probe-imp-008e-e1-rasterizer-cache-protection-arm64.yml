@@ -2,12 +2,6 @@ name: Probe IMP-008E E1 Rasterizer Cache Protection
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
-    paths:
-      - '.github/workflows/probe-imp-008e-e1-rasterizer-cache-protection-arm64.yml'
-      - 'probes/windows-arm64-nce-rasterizer-e1/cache_protection_cycle.cpp'
 
 permissions:
   contents: read
