@@ -2,12 +2,6 @@ name: Probe IMP-008E Vulkan Capability Preflight
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
-    paths:
-      - .github/workflows/probe-imp-008e-vulkan-preflight-arm64.yml
-      - probes/windows-arm64-vulkan-preflight/vulkan_capability.cpp
 
 permissions:
   contents: read
