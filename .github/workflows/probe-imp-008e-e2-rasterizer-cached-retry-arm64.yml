@@ -1,0 +1,274 @@
+name: Probe IMP-008E E2 Rasterizer Cached Retry
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+
+permissions:
+  contents: read
+
+jobs:
+  e2-rasterizer-cached-retry:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout IMP-008E branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify E2 probe-only scope
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          base='712b8baff2a60ace56ffb11807d346baaec4ceb7'
+          git cat-file -e "$base^{commit}"
+          if ! git diff --quiet "$base" HEAD -- src/common src/core src/video_core CMakeLists.txt; then
+            echo 'IMP008E_E2_PRODUCTION_SCOPE=FAIL' >&2
+            git diff --stat "$base" HEAD -- src/common src/core src/video_core CMakeLists.txt >&2
+            exit 71
+          fi
+          probe='probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          test -f "$probe"
+          grep -Fq 'SystemResultStatus load_result' "$probe"
+          grep -Fq 'system.GPU().Start()' "$probe"
+          grep -Fq 'system.Host1x().MemoryManager()' "$probe"
+          grep -Fq 'InitAddressSpace' "$probe"
+          grep -Fq 'InitChannel' "$probe"
+          grep -Fq 'BindChannel' "$probe"
+          grep -Fq 'AccelerateSurfaceCopy' "$probe"
+          grep -Fq 'PAGE_NOACCESS' "$probe"
+          grep -Fq 'PAGE_READWRITE' "$probe"
+          grep -Fq 'AddVectoredContinueHandler' "$probe"
+          grep -Fq 'RunThread' "$probe"
+          grep -Fq 'IMP008E_E2_GATE' "$probe"
+          if grep -Fq 'UpdatePagesCachedCount' "$probe"; then
+            echo 'IMP008E_E2_MANUAL_CACHED_COUNT=FAIL' >&2
+            exit 72
+          fi
+          echo 'IMP008E_E2_PRODUCTION_SCOPE=PASS'
+          echo 'IMP008E_E2_MANUAL_CACHED_COUNT=ABSENT'
+
+      - name: Add E2 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008e_e2_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008e_e2_rasterizer_cached_retry
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+              ${CMAKE_BINARY_DIR}/imp008e_e2_vma.cpp)
+          target_include_directories(imp008e_e2_rasterizer_cached_retry PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008e_e2_rasterizer_cached_retry PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008e_e2_rasterizer_cached_retry PRIVATE
+              ${PLATFORM_LIBRARIES} Threads::Threads user32)
+          CMAKE
+          echo 'IMP008E_E2_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'gpu_device_memory_manager.cpp' build/compile_commands.json
+          grep -Fq 'vk_rasterizer.cpp' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp' build/compile_commands.json
+          echo 'IMP008E_E2_NORMAL_CONFIGURE=PASS'
+
+      - name: Build E2 production-linked executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008e_e2_rasterizer_cached_retry --parallel > imp008e-e2-build.log 2>&1
+          cat imp008e-e2-build.log
+          echo 'IMP008E_E2_BUILD=PASS'
+
+      - name: Run E2 real cached retry with native exit capture
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workdir = (Get-Location).Path
+          $exe = Get-ChildItem -Path (Join-Path $workdir 'build') -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' |
+              Select-Object -First 1
+          if ($null -eq $exe) {
+            throw 'E2 executable not found'
+          }
+
+          $outPath = Join-Path $workdir 'imp008e-e2.out.log'
+          $errPath = Join-Path $workdir 'imp008e-e2.err.log'
+          $rcPath = Join-Path $workdir 'imp008e-e2.rc'
+          $rcHexPath = Join-Path $workdir 'imp008e-e2.rc.hex'
+
+          Write-Host "IMP008E_E2_NATIVE_EXE=$($exe.FullName)"
+          $p = Start-Process -FilePath $exe.FullName -WorkingDirectory $workdir `
+              -PassThru -NoNewWindow `
+              -RedirectStandardOutput $outPath `
+              -RedirectStandardError $errPath
+
+          $timedOut = -not $p.WaitForExit(300000)
+          if ($timedOut) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            $signed = 124
+            $hex = '0x0000007C'
+            Write-Host 'IMP008E_E2_NATIVE_TIMEOUT=PASS'
+          } else {
+            $signed = [int]$p.ExitCode
+            $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($signed), 0)
+            $hex = '0x{0:X8}' -f $unsigned
+          }
+
+          [System.IO.File]::WriteAllText($rcPath, "$signed`n", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText($rcHexPath, "$hex`n", [System.Text.UTF8Encoding]::new($false))
+
+          if (Test-Path $outPath) { Get-Content $outPath }
+          if (Test-Path $errPath) {
+            Get-Content $errPath | ForEach-Object { [Console]::Error.WriteLine($_) }
+          }
+          Write-Host "IMP008E_E2_NATIVE_EXIT_SIGNED=$signed"
+          Write-Host "IMP008E_E2_NATIVE_EXIT_HEX=$hex"
+          Write-Host 'IMP008E_E2_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify E2 real cached retry
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          hex="$(tr -d '\r\n' < imp008e-e2.rc.hex)"
+          signed="$(tr -d '\r\n' < imp008e-e2.rc)"
+          echo "IMP008E_E2_CLASSIFY_NATIVE_RC=$signed"
+          echo "IMP008E_E2_CLASSIFY_NATIVE_RC_HEX=$hex"
+
+          if [ "$hex" = '0x00000000' ]; then
+            for marker in \
+              IMP008E_E2_REAL_SYSTEM_LOAD=PASS \
+              IMP008E_E2_REAL_HOST1X_GPU=PASS \
+              IMP008E_E2_REAL_RASTERIZER=PASS \
+              IMP008E_E2_DEVICE_PROCESS_REGISTERED=PASS \
+              IMP008E_E2_REAL_GPU_CHANNEL=PASS \
+              IMP008E_E2_GPU_MAPPING=PASS \
+              IMP008E_E2_REAL_CACHE_CREATE=PASS \
+              IMP008E_E2_REAL_CACHE_NOACCESS=PASS \
+              IMP008E_E2_DATA_AV_EXACT=PASS \
+              IMP008E_E2_PRODUCTION_RETRY_STATE=PASS \
+              IMP008E_E2_FAILED_DATA_SKIP_NOT_USED=PASS \
+              IMP008E_E2_POST_RETURN_RW=PASS \
+              IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS \
+              IMP008E_E2_SUPERVISOR_CALL_RETURN=PASS \
+              IMP008E_E2_POST_SVC_PC_EXACT=PASS \
+              IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS \
+              IMP008E_E2_GATE=PASS; do
+              grep -Fq "$marker" imp008e-e2.out.log
+            done
+            grep -Fq 'IMP008E_E2_DATA_AV ' imp008e-e2.err.log
+            grep -Fq 'IMP008E_E2_CONTINUE_STATE' imp008e-e2.err.log
+            grep -Fq 'RW=1 PC_UNCHANGED=1' imp008e-e2.err.log
+            echo 'IMP008E_E2_CLASSIFICATION=GATE_PASS'
+            exit 0
+          fi
+
+          if [ "$signed" = '72' ] && grep -Fq 'IMP008E_E2_RENDERER_ENVIRONMENT_INVALID=PASS' imp008e-e2.out.log; then
+            echo 'IMP008E_E2_CLASSIFICATION=HARNESS_ENVIRONMENT_INVALID_RENDERER'
+            exit 1
+          fi
+
+          cache_ready=0
+          av_ready=0
+          continue_ready=0
+          grep -Fq 'IMP008E_E2_REAL_CACHE_NOACCESS=PASS' imp008e-e2.out.log && cache_ready=1 || true
+          grep -Fq 'IMP008E_E2_DATA_AV ' imp008e-e2.err.log && av_ready=1 || true
+          if grep -Fq 'IMP008E_E2_CONTINUE_STATE' imp008e-e2.err.log && \
+             grep -Fq 'RW=1 PC_UNCHANGED=1' imp008e-e2.err.log; then
+            continue_ready=1
+          fi
+          echo "IMP008E_E2_CLASSIFY_CACHE_READY=$cache_ready"
+          echo "IMP008E_E2_CLASSIFY_AV_READY=$av_ready"
+          echo "IMP008E_E2_CLASSIFY_CONTINUE_READY=$continue_ready"
+
+          if [ "$cache_ready" = 1 ] && [ "$av_ready" = 1 ] && [ "$continue_ready" = 1 ]; then
+            if [ "$hex" = '0xC0000409' ]; then
+              echo 'IMP008E_E2_CLASSIFICATION=VALID_CONTINUATION_FAILURE_C0000409'
+            else
+              echo 'IMP008E_E2_CLASSIFICATION=VALID_RUNTIME_FAILURE_AFTER_CACHE_RECOVERY'
+            fi
+            exit 1
+          fi
+
+          if [ "$cache_ready" = 1 ] && [ "$av_ready" = 1 ]; then
+            echo 'IMP008E_E2_CLASSIFICATION=VALID_RUNTIME_FAILURE_BEFORE_CONTINUE_OBSERVATION'
+            exit 1
+          fi
+
+          echo 'IMP008E_E2_CLASSIFICATION=HARNESS_INVALID_OR_EARLY_FAILURE'
+          exit 1
+
+      - name: Persist IMP-008E E2 logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-rasterizer-cached-retry-${{ github.run_id }}
+          path: |
+            eden/imp008e-e2-build.log
+            eden/imp008e-e2.out.log
+            eden/imp008e-e2.err.log
+            eden/imp008e-e2.rc
+            eden/imp008e-e2.rc.hex
+          if-no-files-found: warn
