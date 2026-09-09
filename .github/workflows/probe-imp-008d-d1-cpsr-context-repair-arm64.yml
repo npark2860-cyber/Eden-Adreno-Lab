@@ -1,0 +1,212 @@
+name: Probe IMP-008D D1 Exception Context CPSR Repair
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008d-windows-nce-data-fault-runtime
+    paths:
+      - '.github/workflows/probe-imp-008d-d1-cpsr-context-repair-arm64.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  d1-cpsr-context-repair-runtime:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout IMP-008D branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Apply checkout-only failed-AV CPSR context repair
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'src/core/arm/nce/arm_nce_windows.cpp'
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+          $old = @'
+                  if (context.Pc != fault_address) {
+                      context.Pc += sizeof(u32);
+                      return EXCEPTION_CONTINUE_EXECUTION;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $new = @'
+                  if (context.Pc != fault_address) {
+                      context.Pc += sizeof(u32);
+                      context.Cpsr = 0;
+                      // IMP008D_D1_CPSR_CONTEXT_REPAIR_CHECKOUT_ONLY
+                      return EXCEPTION_CONTINUE_EXECUTION;
+                  }
+          '@.Replace("`r`n", "`n").TrimEnd()
+          $count = ([regex]::Matches($text, [regex]::Escape($old))).Count
+          if ($count -ne 1) {
+            throw "failed-AV branch match count was $count, expected 1"
+          }
+          $text = $text.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          if (-not (Select-String -Path $path -SimpleMatch 'IMP008D_D1_CPSR_CONTEXT_REPAIR_CHECKOUT_ONLY' -Quiet)) {
+            throw 'CPSR repair marker missing'
+          }
+          Write-Host 'IMP008D_D1_CPSR_CONTEXT_REPAIR_APPLIED=PASS'
+
+      - name: Add D1 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008d_d1_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008d_d1_data_fault_skip
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp
+              ${CMAKE_BINARY_DIR}/imp008d_d1_vma.cpp)
+          target_include_directories(imp008d_d1_data_fault_skip PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008d_d1_data_fault_skip PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008d_d1_data_fault_skip PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+          CMAKE
+          echo 'IMP008D_D1_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          echo 'IMP008D_D1_NORMAL_CONFIGURE=PASS'
+
+      - name: Build D1 diagnostic executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008d_d1_data_fault_skip --parallel > imp008d-d1-build.log 2>&1
+          cat imp008d-d1-build.log
+          echo 'IMP008D_D1_BUILD=PASS'
+
+      - name: Run D1 with native Windows exit capture
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workdir = (Get-Location).Path
+          $exe = Get-ChildItem -Path (Join-Path $workdir 'build') -Recurse -File -Filter 'imp008d_d1_data_fault_skip.exe' |
+              Select-Object -First 1
+          if ($null -eq $exe) {
+            throw 'D1 executable not found'
+          }
+
+          $outPath = Join-Path $workdir 'imp008d-d1.out.log'
+          $errPath = Join-Path $workdir 'imp008d-d1.err.log'
+          $rcPath = Join-Path $workdir 'imp008d-d1.rc'
+          $rcHexPath = Join-Path $workdir 'imp008d-d1.rc.hex'
+
+          Write-Host "IMP008D_D1_CPSR_NATIVE_EXE=$($exe.FullName)"
+          $p = Start-Process -FilePath $exe.FullName -WorkingDirectory $workdir `
+              -Wait -PassThru -NoNewWindow `
+              -RedirectStandardOutput $outPath `
+              -RedirectStandardError $errPath
+
+          $signed = [int]$p.ExitCode
+          $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($signed), 0)
+          $hex = '0x{0:X8}' -f $unsigned
+          [System.IO.File]::WriteAllText($rcPath, "$signed`n", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText($rcHexPath, "$hex`n", [System.Text.UTF8Encoding]::new($false))
+
+          if (Test-Path $outPath) {
+            Get-Content $outPath
+          }
+          if (Test-Path $errPath) {
+            Get-Content $errPath | ForEach-Object { [Console]::Error.WriteLine($_) }
+          }
+          Write-Host "IMP008D_D1_CPSR_NATIVE_EXIT_SIGNED=$signed"
+          Write-Host "IMP008D_D1_CPSR_NATIVE_EXIT_HEX=$hex"
+          Write-Host 'IMP008D_D1_CPSR_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify D1 CPSR context repair
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          signed="$(tr -d '\r\n' < imp008d-d1.rc)"
+          hex="$(tr -d '\r\n' < imp008d-d1.rc.hex)"
+          echo "IMP008D_D1_CPSR_CLASSIFY_NATIVE_RC_SIGNED=$signed"
+          echo "IMP008D_D1_CPSR_CLASSIFY_NATIVE_RC_HEX=$hex"
+          if grep -Fq 'IMP008D_D1_GATE=PASS' imp008d-d1.out.log; then
+            echo 'IMP008D_D1_CPSR_CLASSIFICATION=GATE_PASS'
+            exit 0
+          fi
+          if [ "$hex" = "0xC0000409" ]; then
+            echo 'IMP008D_D1_CPSR_CLASSIFICATION=INVALID_SET_CONTEXT_PERSISTS'
+          else
+            echo 'IMP008D_D1_CPSR_CLASSIFICATION=EXIT_CHANGED'
+          fi
+          exit 1
+
+      - name: Persist D1 CPSR repair logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008d-d1-cpsr-context-repair-${{ github.run_id }}
+          path: |
+            eden/imp008d-d1-build.log
+            eden/imp008d-d1.out.log
+            eden/imp008d-d1.err.log
+            eden/imp008d-d1.rc
+            eden/imp008d-d1.rc.hex
+            eden/imp008d-d1-first-exception.bin
+          if-no-files-found: warn
