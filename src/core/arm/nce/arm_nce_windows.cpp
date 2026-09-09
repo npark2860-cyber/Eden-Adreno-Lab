@@ -132,7 +132,7 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         // instruction; execute/prefetch aborts return to PhysicalCore for debugger/suspend policy.
         if (context.Pc != fault_address) {
             context.Pc += sizeof(u32);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            NCE::WindowsNceTransition::ContinueContext(context);
         }
 
         guest->esr_el1.fetch_or(static_cast<u64>(HaltReason::PrefetchAbort),
