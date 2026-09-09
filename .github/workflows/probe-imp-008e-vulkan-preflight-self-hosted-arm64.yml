@@ -112,7 +112,7 @@ jobs:
           path: preflight
 
       - name: Verify physical Windows ARM64 runner boundary
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:RUNNER_OS -ne 'Windows') {
@@ -137,7 +137,7 @@ jobs:
           Write-Host 'IMP008E_SELFHOSTED_PREFLIGHT_RUNNER_BOUNDARY=PASS'
 
       - name: Run physical-device Vulkan capability preflight
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Get-ChildItem -Path 'preflight' -Recurse -File -Filter 'imp008e_vulkan_preflight.exe' |
@@ -170,7 +170,7 @@ jobs:
           Write-Host 'IMP008E_SELFHOSTED_PREFLIGHT_RUNTIME_CAPTURE=PASS'
 
       - name: Classify physical Vulkan environment
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $signed = [System.IO.File]::ReadAllText('imp008e-selfhosted-preflight.rc').Trim()
