@@ -30,6 +30,11 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
 
 class WindowsNceTransition {
 public:
+    // Resume exactly the supplied Windows ARM64 context through ntdll!NtContinue. A successful
+    // call never returns. Resolution failure or an unexpected NtContinue return is fatal because
+    // there is no safe partially-completed context transition to resume from.
+    [[noreturn]] static void ContinueContext(ARM64_NT_CONTEXT& context) noexcept;
+
     // Convert an externally suspended target back to the saved host ABI continuation. If the
     // interrupted PC/SP is known to be native guest execution, save that guest state first.
     // return_value becomes the x0 result of the Windows guest-entry call.
