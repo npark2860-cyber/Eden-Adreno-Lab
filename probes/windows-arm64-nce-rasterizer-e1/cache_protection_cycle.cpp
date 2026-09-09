@@ -1,7 +1,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
+#include <utility>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -81,8 +83,7 @@ int main() {
     Settings::values.cpu_backend.SetValue(Settings::CpuBackend::Nce);
     Settings::SetNceEnabled(true);
     Settings::values.use_reactive_flushing.SetValue(true);
-    if (!Settings::IsNceEnabled() ||
-        !Settings::values.use_reactive_flushing.GetValue()) {
+    if (!Settings::IsNceEnabled() || !Settings::values.use_reactive_flushing.GetValue()) {
         return Fail("IMP008E_E1_SETTINGS");
     }
     Trace("IMP008E_E1_SETTINGS_READY");
