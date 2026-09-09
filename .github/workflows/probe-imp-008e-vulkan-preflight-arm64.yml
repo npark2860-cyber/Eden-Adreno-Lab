@@ -1,0 +1,180 @@
+name: Probe IMP-008E Vulkan Capability Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008e-vulkan-preflight-arm64.yml
+      - probes/windows-arm64-vulkan-preflight/vulkan_capability.cpp
+
+permissions:
+  contents: read
+
+jobs:
+  vulkan-capability-preflight:
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact IMP-008E state
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+
+      - name: Verify environment-only scope and exact source state
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          base='9add28eb40901acafe98d384f8142485e14a8644'
+          probe='probes/windows-arm64-vulkan-preflight/vulkan_capability.cpp'
+          workflow='.github/workflows/probe-imp-008e-vulkan-preflight-arm64.yml'
+          e2_workflow='.github/workflows/probe-imp-008e-e2-rasterizer-cached-retry-arm64.yml'
+
+          git cat-file -e "$base^{commit}"
+          if ! git diff --quiet "$base" HEAD -- src/common src/core src/video_core CMakeLists.txt; then
+            echo 'IMP008E_VK_PREFLIGHT_PRODUCTION_SCOPE=FAIL' >&2
+            git diff --stat "$base" HEAD -- src/common src/core src/video_core CMakeLists.txt >&2
+            exit 71
+          fi
+
+          expected="$(printf '%s\n' "$e2_workflow" "$workflow" "$probe" | sort)"
+          actual="$(git diff --name-only "$base" HEAD | sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo 'IMP008E_VK_PREFLIGHT_EXACT_SCOPE=FAIL' >&2
+            git diff --name-status "$base" HEAD >&2
+            exit 72
+          fi
+          if grep -Eq '^[[:space:]]+push:' "$e2_workflow"; then
+            echo 'IMP008E_VK_PREFLIGHT_E2_PUSH_TRIGGER=FAIL' >&2
+            exit 73
+          fi
+
+          grep -Fq 'LoadLibraryW(L"vulkan-1.dll")' "$probe"
+          grep -Fq 'vkCreateInstance' "$probe"
+          grep -Fq 'vkEnumeratePhysicalDevices' "$probe"
+          grep -Fq 'VK_KHR_win32_surface' "$probe"
+          grep -Fq 'VK_KHR_swapchain' "$probe"
+          grep -Fq 'IMP008E_VK_PREFLIGHT_CLASSIFICATION' "$probe"
+
+          echo "IMP008E_VK_PREFLIGHT_GITHUB_SHA=${GITHUB_SHA}"
+          echo "IMP008E_VK_PREFLIGHT_CHECKOUT_SHA=$(git rev-parse HEAD)"
+          echo "IMP008E_VK_PREFLIGHT_PROBE_BLOB_SHA=$(git hash-object "$probe")"
+          echo "IMP008E_VK_PREFLIGHT_WORKFLOW_BLOB_SHA=$(git hash-object "$workflow")"
+          echo "IMP008E_VK_PREFLIGHT_RUNNER_OS=${RUNNER_OS}"
+          echo "IMP008E_VK_PREFLIGHT_RUNNER_ARCH=${RUNNER_ARCH}"
+          echo 'IMP008E_VK_PREFLIGHT_PRODUCTION_SCOPE=PASS'
+          echo 'IMP008E_VK_PREFLIGHT_EXACT_SCOPE=PASS'
+          echo 'IMP008E_VK_PREFLIGHT_E2_PUSH_TRIGGER=ABSENT'
+
+      - name: Set up minimal CLANGARM64 Vulkan toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            pactoys
+          pacboy: >-
+            clang:p vulkan-devel:p
+
+      - name: Build standalone native ARM64 preflight
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          mkdir -p build-preflight
+          clang++ -std=c++20 -O2 -Wall -Wextra -Werror \
+            probes/windows-arm64-vulkan-preflight/vulkan_capability.cpp \
+            -o build-preflight/imp008e_vulkan_preflight.exe \
+            > imp008e-vulkan-preflight-build.log 2>&1
+          llvm-readobj --file-headers build-preflight/imp008e_vulkan_preflight.exe \
+            | tee -a imp008e-vulkan-preflight-build.log
+          grep -Fq 'IMAGE_FILE_MACHINE_ARM64' imp008e-vulkan-preflight-build.log
+          cat imp008e-vulkan-preflight-build.log
+          echo 'IMP008E_VK_PREFLIGHT_BUILD=PASS'
+
+      - name: Run Vulkan capability preflight
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workdir = (Get-Location).Path
+          $exe = Join-Path $workdir 'build-preflight/imp008e_vulkan_preflight.exe'
+          $outPath = Join-Path $workdir 'imp008e-vulkan-preflight.out.log'
+          $errPath = Join-Path $workdir 'imp008e-vulkan-preflight.err.log'
+          $rcPath = Join-Path $workdir 'imp008e-vulkan-preflight.rc'
+          $rcHexPath = Join-Path $workdir 'imp008e-vulkan-preflight.rc.hex'
+
+          if (-not (Test-Path $exe)) {
+            throw 'Vulkan preflight executable not found'
+          }
+
+          Write-Host "IMP008E_VK_PREFLIGHT_OS_VERSION=$([Environment]::OSVersion.VersionString)"
+          Write-Host "IMP008E_VK_PREFLIGHT_PROCESS_ARCH_RUNTIME=$([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
+          Write-Host "IMP008E_VK_PREFLIGHT_OS_ARCH_RUNTIME=$([Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+          Write-Host "IMP008E_VK_PREFLIGHT_NATIVE_EXE=$exe"
+
+          $process = Start-Process -FilePath $exe -WorkingDirectory $workdir `
+              -Wait -PassThru -NoNewWindow `
+              -RedirectStandardOutput $outPath `
+              -RedirectStandardError $errPath
+          $signed = [int]$process.ExitCode
+          $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($signed), 0)
+          $hex = '0x{0:X8}' -f $unsigned
+
+          [System.IO.File]::WriteAllText($rcPath, "$signed`n", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText($rcHexPath, "$hex`n", [System.Text.UTF8Encoding]::new($false))
+          if (Test-Path $outPath) { Get-Content $outPath }
+          if (Test-Path $errPath) {
+            Get-Content $errPath | ForEach-Object { [Console]::Error.WriteLine($_) }
+          }
+          Write-Host "IMP008E_VK_PREFLIGHT_NATIVE_EXIT_SIGNED=$signed"
+          Write-Host "IMP008E_VK_PREFLIGHT_NATIVE_EXIT_HEX=$hex"
+          Write-Host 'IMP008E_VK_PREFLIGHT_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify hosted Vulkan environment
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signed = [System.IO.File]::ReadAllText('imp008e-vulkan-preflight.rc').Trim()
+          $hex = [System.IO.File]::ReadAllText('imp008e-vulkan-preflight.rc.hex').Trim()
+          $out = [System.IO.File]::ReadAllText('imp008e-vulkan-preflight.out.log')
+
+          Write-Host "IMP008E_VK_PREFLIGHT_CLASSIFY_NATIVE_RC=$signed"
+          Write-Host "IMP008E_VK_PREFLIGHT_CLASSIFY_NATIVE_RC_HEX=$hex"
+          if ($signed -eq '0' -and $out.Contains('IMP008E_VK_PREFLIGHT_GATE=PASS') -and
+              $out.Contains('IMP008E_VK_PREFLIGHT_CLASSIFICATION=PREFLIGHT_PASS')) {
+            Write-Host 'IMP008E_VK_PREFLIGHT_FINAL=PREFLIGHT_PASS'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## IMP-008E Vulkan preflight: PREFLIGHT_PASS'
+            exit 0
+          }
+          if ($signed -eq '72' -and
+              $out.Contains('IMP008E_VK_PREFLIGHT_CLASSIFICATION=INCONCLUSIVE_ENVIRONMENT')) {
+            $reason = ($out -split "`r?`n" | Where-Object { $_ -like 'IMP008E_VK_PREFLIGHT_REASON=*' } |
+                Select-Object -Last 1)
+            Write-Host 'IMP008E_VK_PREFLIGHT_FINAL=INCONCLUSIVE_ENVIRONMENT'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## IMP-008E Vulkan preflight: INCONCLUSIVE_ENVIRONMENT'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $reason
+            exit 0
+          }
+
+          Write-Host 'IMP008E_VK_PREFLIGHT_FINAL=INFRASTRUCTURE_FAILURE'
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## IMP-008E Vulkan preflight: INFRASTRUCTURE_FAILURE'
+          exit 1
+
+      - name: Persist Vulkan preflight logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-vulkan-preflight-${{ github.run_id }}
+          path: |
+            eden/imp008e-vulkan-preflight-build.log
+            eden/imp008e-vulkan-preflight.out.log
+            eden/imp008e-vulkan-preflight.err.log
+            eden/imp008e-vulkan-preflight.rc
+            eden/imp008e-vulkan-preflight.rc.hex
+          if-no-files-found: warn

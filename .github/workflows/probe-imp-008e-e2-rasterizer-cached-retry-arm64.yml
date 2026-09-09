@@ -2,9 +2,6 @@ name: Probe IMP-008E E2 Rasterizer Cached Retry
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
 
 permissions:
   contents: read
