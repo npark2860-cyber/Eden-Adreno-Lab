@@ -41,6 +41,26 @@ static_assert(offsetof(HostContext, host_saved_regs) == HostContextRegs);
 static_assert(offsetof(HostContext, host_saved_vregs) == HostContextVregs);
 static_assert(offsetof(HostContext, host_sp) == HostContextSpTpidrEl0);
 
+[[noreturn]] void WindowsNceTransition::ContinueContext(ARM64_NT_CONTEXT& context) noexcept {
+    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_continue = ntdll != nullptr
+                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
+                                 : nullptr;
+    if (nt_continue == nullptr) {
+        std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RESOLVE_ERROR=%lu\n",
+                     static_cast<unsigned long>(GetLastError()));
+        std::fflush(stderr);
+        std::abort();
+    }
+
+    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
+    std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RETURN=0x%08lX\n",
+                 static_cast<unsigned long>(status));
+    std::fflush(stderr);
+    std::abort();
+}
+
 extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) noexcept {
     std::fputs("IMP008B_E2_RESTORE_ENTER=PASS\n", stderr);
     std::fflush(stderr);
@@ -85,26 +105,11 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     TraceVirtualMapping("RESTORE_SP", context.Sp);
 
     // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
-    // underlying transition directly for this E2 diagnostic so the exact NTSTATUS is observable.
-    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
-    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    const auto nt_continue = ntdll != nullptr
-                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
-                                 : nullptr;
-    if (nt_continue == nullptr) {
-        std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RESOLVE_ERROR=%lu\n",
-                     static_cast<unsigned long>(GetLastError()));
-        std::fflush(stderr);
-        std::abort();
-    }
-
+    // underlying transition directly so the arbitrary-PC guest restore and exception continuation
+    // share the same Windows context-resume primitive.
     std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\n", stderr);
     std::fflush(stderr);
-    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
-    std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RETURN=0x%08lX\n",
-                 static_cast<unsigned long>(status));
-    std::fflush(stderr);
-    std::abort();
+    WindowsNceTransition::ContinueContext(context);
 }
 
 void WindowsNceTransition::RedirectToHost(ARM64_NT_CONTEXT& interrupted, GuestContext& guest,
