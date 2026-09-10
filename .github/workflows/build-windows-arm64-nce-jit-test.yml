@@ -143,6 +143,7 @@ jobs:
       - name: Write test build manifest
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force test-metadata | Out-Null
           @"
           Windows ARM64 Eden NCE/JIT user test build
           Source branch: $env:GITHUB_REF_NAME
@@ -152,13 +153,31 @@ jobs:
           CPU backend selector is built in.
           Test procedure: stop the running game, select CPU Backend = Nce or Dynarmic, then relaunch the same game.
           This build does not claim live mid-game backend hot switching.
-          "@ | Set-Content -Encoding UTF8 eden/artifacts/NCE_JIT_TEST_BUILD.txt
+          "@ | Set-Content -Encoding UTF8 test-metadata/NCE_JIT_TEST_BUILD.txt
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) {
+            throw "Expected exactly one packaged file in eden/artifacts before upload; found $($files.Count)"
+          }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) {
+            throw "Expected exactly one file in dedicated upload directory; found $($upload.Count)"
+          }
+          Write-Host "NCE_JIT_SINGLE_FILE_UPLOAD_BOUNDARY=PASS"
+          Write-Host "UPLOAD_FILE=$($upload[0].Name)"
 
       - name: Upload Windows ARM64 NCE-JIT test package
         uses: actions/upload-artifact@v7
         with:
           name: Eden-Windows-ARM64-NCE-JIT-${{ github.sha }}
           archive: false
-          path: eden/artifacts/*
+          path: upload/*
           if-no-files-found: error
           retention-days: 14
