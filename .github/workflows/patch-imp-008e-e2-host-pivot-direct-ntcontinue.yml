@@ -25,18 +25,20 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
 
           path = Path('.github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml')
           text = path.read_text(encoding='utf-8')
-          old = '''                  NCE::WindowsNceTransition::RedirectToHost(
-                      context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
-                  return EXCEPTION_CONTINUE_EXECUTION;'''
-          new = '''                  NCE::WindowsNceTransition::RedirectToHost(
-                      context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
-                  NCE::WindowsNceTransition::ContinueContext(context);'''
-          if text.count(old) != 1:
-              raise SystemExit(f'host-pivot continuation anchor mismatch: {text.count(old)}')
-          text = text.replace(old, new)
+          pattern = re.compile(
+              r'(?m)(^[ \t]*NCE::WindowsNceTransition::RedirectToHost\(\n'
+              r'^[ \t]*context, \*guest, true, static_cast<u64>\(HaltReason::PrefetchAbort\)\);\n)'
+              r'^[ \t]*return EXCEPTION_CONTINUE_EXECUTION;'
+          )
+          matches = list(pattern.finditer(text))
+          if len(matches) != 1:
+              raise SystemExit(f'host-pivot continuation anchor mismatch: {len(matches)}')
+          indent = re.match(r'^[ \t]*', matches[0].group(0).splitlines()[-1]).group(0)
+          text = pattern.sub(r'\1' + indent + 'NCE::WindowsNceTransition::ContinueContext(context);', text, count=1)
 
           old_guard = "grep -Fq 'static_cast<u64>(HaltReason::PrefetchAbort));' /tmp/pivot-production.diff"
           new_guard = "grep -Fq 'NCE::WindowsNceTransition::ContinueContext(context);' /tmp/pivot-production.diff"
