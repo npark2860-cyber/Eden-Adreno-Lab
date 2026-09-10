@@ -1,0 +1,417 @@
+name: Probe IMP-008E E2 Host Pivot Full Recovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-e2-hosted:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+    steps:
+      - name: Checkout exact IMP-008E state
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify production and E2 baseline
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          base='712b8baff2a60ace56ffb11807d346baaec4ceb7'
+          probe='probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          git cat-file -e "$base^{commit}"
+          if ! git diff --quiet "$base" HEAD -- src/common src/core src/video_core CMakeLists.txt; then
+            echo 'IMP008E_E2_PIVOT_PRODUCTION_BASELINE=FAIL' >&2
+            git diff --stat "$base" HEAD -- src/common src/core src/video_core CMakeLists.txt >&2
+            exit 71
+          fi
+          test "$(git hash-object "$probe")" = 'ad61af60011578e8aeaeb34154a71f1c97909bc0'
+          grep -Fq 'constexpr std::size_t DataPages = 18;' "$probe"
+          grep -Fq 'WriteU32(bytes, GuestSvcOffset, GuestSvc33);' "$probe"
+          echo 'IMP008E_E2_PIVOT_PRODUCTION_BASELINE=PASS'
+          echo 'IMP008E_E2_PIVOT_PROBE_BASELINE=PASS'
+
+      - name: Add E2 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008e_e2_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008e_e2_rasterizer_cached_retry
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+              ${CMAKE_BINARY_DIR}/imp008e_e2_vma.cpp)
+          target_include_directories(imp008e_e2_rasterizer_cached_retry PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008e_e2_rasterizer_cached_retry PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008e_e2_rasterizer_cached_retry PRIVATE
+              ${PLATFORM_LIBRARIES} Threads::Threads user32)
+          CMAKE
+          echo 'IMP008E_E2_PIVOT_TARGET_WIRING=PASS'
+
+      - name: Enable renderer diagnostics checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path)
+          $oldInclude = '#include "common/settings.h"'
+          $newInclude = "#include `"common/logging.h`"`r`n#include `"common/settings.h`""
+          if (-not $text.Contains($oldInclude)) { throw 'logging include anchor missing' }
+          $text = $text.Replace($oldInclude, $newInclude)
+          $oldMain = '    Trace("IMP008E_E2_MAIN_ENTER");'
+          $newMain = "    Common::Log::Initialize();`r`n    Common::Log::SetColorConsoleBackendEnabled(false);`r`n    Common::Log::Start();`r`n    Trace(`"IMP008E_E2_MAIN_ENTER`" );"
+          if (-not $text.Contains($oldMain)) { throw 'logging main anchor missing' }
+          $text = $text.Replace($oldMain, $newMain)
+          $oldLoad = "    const Core::SystemResultStatus load_result =`r`n        system.Load(window, nro_path.string(), load_parameters);"
+          if (-not $text.Contains($oldLoad)) {
+            $oldLoad = "    const Core::SystemResultStatus load_result =`n        system.Load(window, nro_path.string(), load_parameters);"
+          }
+          if (-not $text.Contains($oldLoad)) { throw 'logging stop anchor missing' }
+          $text = $text.Replace($oldLoad, $oldLoad + "`r`n    Common::Log::Stop();`r`n    Trace(`"IMP008E_E2_RENDERER_DIAGNOSTICS_FLUSHED`" );")
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_PIVOT_RENDERER_DIAGNOSTICS=PASS'
+
+      - name: Hold CPU manager barrier checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path)
+          $old = '    system.GetCpuManager().OnGpuReady();'
+          $new = '    Trace("IMP008E_E2_CPU_MANAGER_BARRIER_HELD");'
+          if (([regex]::Matches($text, [regex]::Escape($old))).Count -ne 1) { throw 'OnGpuReady anchor mismatch' }
+          $text = $text.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_PIVOT_BARRIER_PATCH=PASS'
+
+      - name: Route cached AV through host stack checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'src/core/arm/nce/arm_nce_windows.cpp'
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+
+          $globalAnchor = "PVOID g_windows_veh_handle{};"
+          $globalNew = @"
+          PVOID g_windows_veh_handle{};
+          thread_local bool g_windows_pending_nce_fault{};
+          thread_local u64 g_windows_pending_nce_fault_address{};
+          thread_local u64 g_windows_pending_nce_fault_page{};
+          "@.Replace("`r`n", "`n").Trim()
+          if (([regex]::Matches($text, [regex]::Escape($globalAnchor))).Count -ne 1) { throw 'pending-state anchor mismatch' }
+          $text = $text.Replace($globalAnchor, $globalNew)
+
+          $oldFault = @"
+                  const auto page_address = Common::ProcessAddress{fault_address & ~Memory::YUZU_PAGEMASK};
+
+                  // Preserve Eden's existing NCE invalidation policy for guest data/execute faults.
+                  if (process->GetMemory().InvalidateNCE(page_address, Memory::YUZU_PAGESIZE)) {
+                      return EXCEPTION_CONTINUE_EXECUTION;
+                  }
+
+                  // Match the existing Linux NCE failed-fault policy. Data aborts skip the faulting
+                  // instruction; execute/prefetch aborts return to PhysicalCore for debugger/suspend policy.
+                  if (context.Pc != fault_address) {
+                      context.Pc += sizeof(u32);
+                      NCE::WindowsNceTransition::ContinueContext(context);
+                  }
+
+                  guest->esr_el1.fetch_or(static_cast<u64>(HaltReason::PrefetchAbort),
+                                          std::memory_order_acq_rel);
+                  params->lock.store(SpinLockLocked, std::memory_order_release);
+                  const auto reason = guest->esr_el1.exchange(0, std::memory_order_acq_rel);
+                  NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, reason);
+                  return EXCEPTION_CONTINUE_EXECUTION;
+          "@.Replace("`r`n", "`n").Trim("`n")
+
+          $newFault = @"
+                  g_windows_pending_nce_fault = true;
+                  g_windows_pending_nce_fault_address = fault_address;
+                  g_windows_pending_nce_fault_page = fault_address & ~Memory::YUZU_PAGEMASK;
+                  params->lock.store(SpinLockLocked, std::memory_order_release);
+                  NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, 0);
+                  return EXCEPTION_CONTINUE_EXECUTION;
+          "@.Replace("`r`n", "`n").Trim("`n")
+
+          if (([regex]::Matches($text, [regex]::Escape($oldFault))).Count -ne 1) { throw 'VEH fault-policy anchor mismatch' }
+          $text = $text.Replace($oldFault, $newFault)
+
+          $loopAnchor = @"
+                  NCE::CurrentNceContext::Clear();
+
+                  const auto fallback = m_windows_x18_runner->Dispatch(
+          "@.Replace("`r`n", "`n").Trim("`n")
+
+          $loopNew = @"
+                  NCE::CurrentNceContext::Clear();
+
+                  if (g_windows_pending_nce_fault) {
+                      const u64 pending_fault_address = g_windows_pending_nce_fault_address;
+                      const u64 pending_fault_page = g_windows_pending_nce_fault_page;
+                      g_windows_pending_nce_fault = false;
+                      g_windows_pending_nce_fault_address = 0;
+                      g_windows_pending_nce_fault_page = 0;
+
+                      if (process->GetMemory().InvalidateNCE(Common::ProcessAddress{pending_fault_page},
+                                                             Memory::YUZU_PAGESIZE)) {
+                          std::fputs("IMP008E_E2_HOST_PIVOT_INVALIDATED=PASS\n", stderr);
+                          std::fflush(stderr);
+                          continue;
+                      }
+
+                      if (m_guest_ctx.pc != pending_fault_address) {
+                          m_guest_ctx.pc += sizeof(u32);
+                          std::fputs("IMP008E_E2_HOST_PIVOT_FAILED_DATA_SKIP=PASS\n", stderr);
+                          std::fflush(stderr);
+                          continue;
+                      }
+
+                      hr = HaltReason::PrefetchAbort;
+                      break;
+                  }
+
+                  const auto fallback = m_windows_x18_runner->Dispatch(
+          "@.Replace("`r`n", "`n").Trim("`n")
+
+          if (([regex]::Matches($text, [regex]::Escape($loopAnchor))).Count -ne 1) { throw 'RunThread loop anchor mismatch' }
+          $text = $text.Replace($loopAnchor, $loopNew)
+
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_PIVOT_PRODUCTION_PATCH=PASS'
+
+      - name: Adapt E2 observation to host-pivot semantics checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+          $pattern = '(?s)    if \(g_continue_seen\.load\(std::memory_order_acquire\) != 1 \|\|.*?    Trace\("IMP008E_E2_PRODUCTION_RETRY_STATE"\);'
+          $matches = [regex]::Matches($text, $pattern)
+          if ($matches.Count -ne 1) { throw "retry-state observer anchor mismatch: $($matches.Count)" }
+          $replacement = @"
+              Trace("IMP008E_E2_HOST_PIVOT_RETRY_STATE");
+          "@.Replace("`r`n", "`n").Trim("`n")
+          $text = [regex]::Replace($text, $pattern, $replacement, 1)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_PIVOT_OBSERVER_PATCH=PASS'
+
+      - name: Verify checkout-only causal delta
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          mapfile -t prod_files < <(git diff --name-only -- src/common src/core src/video_core | sort)
+          printf 'IMP008E_E2_PIVOT_PROD_DIFF=%s\n' "${prod_files[*]}"
+          test "${#prod_files[@]}" -eq 1
+          test "${prod_files[0]}" = 'src/core/arm/nce/arm_nce_windows.cpp'
+          git diff -- src/core/arm/nce/arm_nce_windows.cpp | tee /tmp/pivot-production.diff
+          grep -Fq 'thread_local bool g_windows_pending_nce_fault' /tmp/pivot-production.diff
+          grep -Fq 'WindowsNceTransition::RedirectToHost(context, *guest, true, 0);' /tmp/pivot-production.diff
+          grep -Fq 'IMP008E_E2_HOST_PIVOT_INVALIDATED=PASS' /tmp/pivot-production.diff
+          grep -Fq 'm_guest_ctx.pc += sizeof(u32);' /tmp/pivot-production.diff
+          ! grep -Fq 'std::thread invalidation_thread' /tmp/pivot-production.diff
+          grep -Fq 'constexpr std::size_t DataPages = 18;' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          grep -Fq 'WriteU32(bytes, GuestSvcOffset, GuestSvc33);' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          grep -Fq 'IMP008E_E2_HOST_PIVOT_RETRY_STATE' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          grep -Fq 'IMP008E_E2_CPU_MANAGER_BARRIER_HELD' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          echo 'IMP008E_E2_PIVOT_CAUSAL_DELTA=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp' build/compile_commands.json
+          echo 'IMP008E_E2_PIVOT_NORMAL_CONFIGURE=PASS'
+
+      - name: Build host-pivot E2 executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008e_e2_rasterizer_cached_retry --parallel > imp008e-e2-build.log 2>&1
+          cat imp008e-e2-build.log
+          exe="$(find build -type f -name 'imp008e_e2_rasterizer_cached_retry.exe' -print -quit)"
+          test -n "$exe"
+          mkdir -p e2-artifact
+          cp "$exe" e2-artifact/
+          sha256sum e2-artifact/imp008e_e2_rasterizer_cached_retry.exe | tee e2-artifact/imp008e-e2.exe.sha256
+          git rev-parse HEAD > e2-artifact/imp008e-e2.source-sha.txt
+          echo 'IMP008E_E2_PIVOT_BUILD=PASS'
+
+      - name: Upload exact host-pivot E2 executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-host-pivot-${{ github.sha }}
+          path: |
+            eden/e2-artifact/imp008e_e2_rasterizer_cached_retry.exe
+            eden/e2-artifact/imp008e-e2.exe.sha256
+            eden/e2-artifact/imp008e-e2.source-sha.txt
+            eden/imp008e-e2-build.log
+          if-no-files-found: error
+          retention-days: 7
+
+  run-e2-self-hosted:
+    needs: build-e2-hosted
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Download hosted host-pivot executable
+        uses: actions/download-artifact@v5
+        with:
+          name: imp008e-e2-host-pivot-${{ github.sha }}
+          path: e2
+
+      - name: Verify physical runner and artifact
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'ARM64') { throw 'Physical ARM64 runner boundary mismatch' }
+          $exe = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          $shaFile = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e-e2.source-sha.txt' | Select-Object -First 1
+          if ($null -eq $exe -or $null -eq $shaFile) { throw 'Artifact incomplete' }
+          $sourceSha = [System.IO.File]::ReadAllText($shaFile.FullName).Trim()
+          if ($sourceSha -ne '${{ github.sha }}') { throw "Artifact source SHA mismatch: $sourceSha" }
+          Write-Host "IMP008E_E2_PIVOT_RUNNER=$env:RUNNER_NAME"
+          Write-Host "IMP008E_E2_PIVOT_EXE_SHA256=$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash)"
+          Write-Host 'IMP008E_E2_PIVOT_ARTIFACT_BOUNDARY=PASS'
+
+      - name: Run full host-pivot recovery on physical Adreno
+        id: runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workdir = (Get-Location).Path
+          $exe = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          $outPath = Join-Path $workdir 'imp008e-e2.out.log'
+          $errPath = Join-Path $workdir 'imp008e-e2.err.log'
+          $p = Start-Process -FilePath $exe.FullName -WorkingDirectory $workdir -PassThru -NoNewWindow -RedirectStandardOutput $outPath -RedirectStandardError $errPath
+          $timedOut = -not $p.WaitForExit(300000)
+          if ($timedOut) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            $hex = '0x0000007C'
+          } else {
+            $p.WaitForExit(); $p.Refresh()
+            $signed = [int]$p.ExitCode
+            $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($signed), 0)
+            $hex = '0x{0:X8}' -f $unsigned
+          }
+          if (Test-Path $outPath) { Get-Content $outPath }
+          if (Test-Path $errPath) { Get-Content $errPath | ForEach-Object { [Console]::Error.WriteLine($_) } }
+          $out = if (Test-Path $outPath) { [System.IO.File]::ReadAllText($outPath) } else { '' }
+          $err = if (Test-Path $errPath) { [System.IO.File]::ReadAllText($errPath) } else { '' }
+          $combined = $out + "`n" + $err
+          $required = @(
+            'IMP008E_E2_CPU_MANAGER_BARRIER_HELD=PASS',
+            'IMP008E_E2_REAL_CACHE_NOACCESS=PASS',
+            'IMP008E_E2_RUNTHREAD_RETURNED=PASS',
+            'IMP008E_E2_DATA_AV_EXACT=PASS',
+            'IMP008E_E2_HOST_PIVOT_RETRY_STATE=PASS',
+            'IMP008E_E2_POST_RETURN_RW=PASS',
+            'IMP008E_E2_SUPERVISOR_CALL_RETURN=PASS',
+            'IMP008E_E2_SVC_NUMBER=PASS',
+            'IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS',
+            'IMP008E_E2_POST_SVC_PC_EXACT=PASS',
+            'IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS',
+            'IMP008E_E2_GATE=PASS',
+            'IMP008E_E2_HOST_PIVOT_INVALIDATED=PASS'
+          )
+          $gate = $true
+          foreach ($marker in $required) {
+            if (-not $combined.Contains($marker)) {
+              $gate = $false
+              Write-Host "IMP008E_E2_PIVOT_MISSING=$marker"
+            }
+          }
+          if ($combined.Contains('IMP008E_E2_HOST_PIVOT_FAILED_DATA_SKIP=PASS')) {
+            $gate = $false
+            Write-Host 'IMP008E_E2_PIVOT_UNEXPECTED_FAILED_DATA_SKIP=TRUE'
+          }
+          Write-Host "IMP008E_E2_PIVOT_NATIVE_HEX=$hex"
+          if ($gate -and $hex -eq '0x00000000') {
+            Write-Host 'IMP008E_E2_PIVOT_FULL_RECOVERY=PASS'
+            "gate=pass" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host 'IMP008E_E2_PIVOT_FULL_RECOVERY=FAIL'
+            "gate=fail" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Fail incomplete host-pivot recovery
+        if: steps.runtime.outputs.gate != 'pass'
+        shell: powershell
+        run: |
+          throw 'Host-pivot full recovery gate incomplete; inspect exact runtime logs and native exit before changing another variable.'
+
+      - name: Persist host-pivot runtime logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-host-pivot-runtime-${{ github.run_id }}
+          path: |
+            imp008e-e2.out.log
+            imp008e-e2.err.log
+          if-no-files-found: warn
+          retention-days: 7
