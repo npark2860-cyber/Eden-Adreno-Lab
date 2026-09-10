@@ -1,0 +1,154 @@
+name: Probe IMP-008 Windows NCE Integrated Smoke
+
+on:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008-windows-nce-integrated-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: imp-008-windows-nce-integrated-smoke
+  cancel-in-progress: false
+
+jobs:
+  integrated-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+      E2_WORKFLOW: probe-imp-008e-e2-production-teardown-ownership.yml
+      D1_RUN_ID: '34452032846'
+      C1_RUN_ID: '34454375680'
+    steps:
+      - name: Checkout integrated validation head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify accepted production source boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe='probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          git diff --name-only "$PROD_SHA" HEAD | tee /tmp/imp008-integrated-delta.txt
+          if grep -Ev '^\.github/workflows/' /tmp/imp008-integrated-delta.txt | grep -q .; then
+            echo 'IMP008_INTEGRATED_SOURCE_BOUNDARY=FAIL'
+            exit 81
+          fi
+          test "$(git hash-object "$probe")" = 'ad61af60011578e8aeaeb34154a71f1c97909bc0'
+          grep -Fq 'InstallGuestTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'RestoreHostTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_windows_pending_nce_fault' src/core/arm/nce/arm_nce.h
+          echo "IMP008_INTEGRATED_VALIDATION_SHA=$(git rev-parse HEAD)"
+          echo "IMP008_INTEGRATED_PRODUCTION_SHA=$PROD_SHA"
+          echo 'IMP008_INTEGRATED_SOURCE_BOUNDARY=PASS'
+
+      - name: Verify accepted D1 and C1 closure anchors without rerun
+        shell: bash
+        run: |
+          set -euo pipefail
+          for run_id in "$D1_RUN_ID" "$C1_RUN_ID"; do
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.conclusion')"
+            status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status')"
+            test "$status" = 'completed'
+            test "$conclusion" = 'success'
+          done
+          echo "IMP008_INTEGRATED_D1_ANCHOR_RUN=$D1_RUN_ID"
+          echo "IMP008_INTEGRATED_C1_ANCHOR_RUN=$C1_RUN_ID"
+          echo 'IMP008_INTEGRATED_REGRESSION_ANCHORS=PASS'
+
+      - name: Refuse duplicate active E2 validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          active="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$E2_WORKFLOW" --branch "$GITHUB_REF_NAME" --limit 20 --json databaseId,status --jq '[.[] | select(.status != "completed")] | length')"
+          if [ "$active" != '0' ]; then
+            echo "IMP008_INTEGRATED_DUPLICATE_GUARD=FAIL active=$active"
+            exit 82
+          fi
+          echo 'IMP008_INTEGRATED_DUPLICATE_GUARD=PASS'
+
+      - name: Dispatch accepted production E2 full-path validation
+        id: e2
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$E2_WORKFLOW" --branch "$GITHUB_REF_NAME" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          gh workflow run "$E2_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+          run_id=''
+          for i in $(seq 1 30); do
+            latest="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$E2_WORKFLOW" --branch "$GITHUB_REF_NAME" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+            if [ "$latest" != '0' ] && [ "$latest" != "$before" ]; then
+              run_id="$latest"
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_id"
+          child_sha="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json headSha --jq '.headSha')"
+          test "$child_sha" = "$GITHUB_SHA"
+          echo "IMP008_INTEGRATED_E2_RUN_ID=$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          conclusion="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion')"
+          test "$conclusion" = 'success'
+          echo 'IMP008_INTEGRATED_E2_CHILD=PASS'
+
+      - name: Verify physical runner artifact and exact native runtime evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id='${{ steps.e2.outputs.run_id }}'
+          gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log > /tmp/imp008-e2.log
+
+          runner="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" --jq '.jobs[] | select(.name == "run-e2-self-hosted") | .runner_name' | head -n 1)"
+          test "$runner" = 'DREAMPAINTER'
+
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" --jq '.artifacts[0].id // 0')"
+          artifact_name="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" --jq '.artifacts[0].name // ""')"
+          test "$artifact_id" != '0'
+          test "$artifact_name" = "imp008e-e2-teardown-$GITHUB_SHA"
+
+          required=(
+            'IMP008E_E2_TEARDOWN_SOURCE_BOUNDARY=PASS'
+            'IMP008E_E2_TEARDOWN_ARTIFACT_BOUNDARY=PASS'
+            'IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS'
+            'IMP008E_E2_SUPERVISOR_CALL_RETURN=PASS'
+            'IMP008E_E2_POST_SVC_PC_EXACT=PASS'
+            'IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS'
+            'IMP008E_E2_PENDING_PROCESS_FINALIZED=PASS'
+            'IMP008E_E2_GATE=PASS'
+            'IMP008E_E2_TEARDOWN_NATIVE_EXIT=0x00000000'
+            'IMP008E_E2_TEARDOWN_NATIVE_EXIT_ZERO=PASS'
+            'IMP008E_E2_TEARDOWN_CAUSE_CONFIRMED=PASS'
+          )
+          for marker in "${required[@]}"; do
+            grep -Fq "$marker" /tmp/imp008-e2.log || {
+              echo "Missing required runtime marker: $marker"
+              exit 83
+            }
+          done
+
+          exe_hash="$(grep -F 'IMP008E_E2_TEARDOWN_EXE_SHA256=' /tmp/imp008-e2.log | tail -n 1 | sed 's/.*IMP008E_E2_TEARDOWN_EXE_SHA256=//')"
+          test -n "$exe_hash"
+          echo "IMP008_INTEGRATED_RUNNER=$runner"
+          echo "IMP008_INTEGRATED_ARTIFACT_ID=$artifact_id"
+          echo "IMP008_INTEGRATED_ARTIFACT_NAME=$artifact_name"
+          echo "IMP008_INTEGRATED_EXE_SHA256=$exe_hash"
+          echo 'IMP008_INTEGRATED_NATIVE_EXIT=0x00000000'
+          echo 'IMP008_INTEGRATED_RUNTIME_EVIDENCE=PASS'
+
+      - name: Final IMP-008 integrated gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'IMP008_WINDOWS_NCE_INTEGRATED_SMOKE=PASS'
