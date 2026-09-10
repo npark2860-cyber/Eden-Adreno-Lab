@@ -1,0 +1,243 @@
+name: Prepare IMP-008E production host-pivot recovery
+
+on:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/prepare-imp-008e-production-host-pivot.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-production:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply minimal Windows NCE production recovery
+        shell: python
+        run: |
+          from pathlib import Path
+
+          header = Path('src/core/arm/nce/arm_nce.h')
+          h = header.read_text(encoding='utf-8')
+          old = '''#if defined(_WIN32)
+              std::unique_ptr<NCE::WindowsCrossThreadBreak> m_windows_break{};
+              std::unique_ptr<NCE::WindowsX18FallbackRunner> m_windows_x18_runner{};
+          #else'''
+          new = '''#if defined(_WIN32)
+              std::unique_ptr<NCE::WindowsCrossThreadBreak> m_windows_break{};
+              std::unique_ptr<NCE::WindowsX18FallbackRunner> m_windows_x18_runner{};
+              bool m_windows_pending_nce_fault{};
+              u64 m_windows_pending_nce_fault_address{};
+              u64 m_windows_pending_nce_fault_page{};
+          #else'''
+          if h.count(old) != 1:
+              raise SystemExit(f'arm_nce.h Windows member anchor mismatch: {h.count(old)}')
+          h = h.replace(old, new, 1)
+          header.write_text(h, encoding='utf-8', newline='\n')
+
+          source = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          s = source.read_text(encoding='utf-8')
+
+          inc_old = '#include <atomic>\n#include <memory>'
+          inc_new = '#include <atomic>\n#include <cstdint>\n#include <memory>'
+          if s.count(inc_old) != 1:
+              raise SystemExit(f'include anchor mismatch: {s.count(inc_old)}')
+          s = s.replace(inc_old, inc_new, 1)
+
+          global_old = '''std::once_flag g_windows_veh_once;
+          PVOID g_windows_veh_handle{};
+
+          struct BreakTransformState {'''
+          global_new = '''std::once_flag g_windows_veh_once;
+          PVOID g_windows_veh_handle{};
+
+          struct WindowsTebStackBounds {
+              NT_TIB* tib{};
+              void* host_stack_base{};
+              void* host_stack_limit{};
+          };
+
+          [[nodiscard]] bool InstallGuestTebStackBounds(u64 guest_sp,
+                                                        WindowsTebStackBounds& bounds) noexcept {
+              if (guest_sp == 0) {
+                  return false;
+              }
+
+              MEMORY_BASIC_INFORMATION stack_mbi{};
+              if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi,
+                               sizeof(stack_mbi)) == 0 ||
+                  stack_mbi.AllocationBase == nullptr) {
+                  return false;
+              }
+
+              const auto allocation_base =
+                  reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase);
+              std::uintptr_t allocation_end = allocation_base;
+              for (std::uintptr_t cursor = allocation_base;;) {
+                  MEMORY_BASIC_INFORMATION region{};
+                  if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||
+                      region.AllocationBase != stack_mbi.AllocationBase) {
+                      break;
+                  }
+
+                  const auto region_end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) +
+                                          static_cast<std::uintptr_t>(region.RegionSize);
+                  if (region_end <= cursor) {
+                      break;
+                  }
+                  allocation_end = region_end;
+                  cursor = region_end;
+              }
+
+              const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);
+              if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {
+                  return false;
+              }
+
+              auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+              bounds.tib = tib;
+              bounds.host_stack_base = tib->StackBase;
+              bounds.host_stack_limit = tib->StackLimit;
+              tib->StackLimit = reinterpret_cast<void*>(allocation_base);
+              tib->StackBase = reinterpret_cast<void*>(allocation_end);
+              return true;
+          }
+
+          void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
+              if (bounds.tib == nullptr) {
+                  return;
+              }
+              bounds.tib->StackBase = bounds.host_stack_base;
+              bounds.tib->StackLimit = bounds.host_stack_limit;
+              bounds.tib = nullptr;
+          }
+
+          struct BreakTransformState {'''
+          if s.count(global_old) != 1:
+              raise SystemExit(f'TEB helper anchor mismatch: {s.count(global_old)}')
+          s = s.replace(global_old, global_new, 1)
+
+          fault_old = '''        const auto page_address = Common::ProcessAddress{fault_address & ~Memory::YUZU_PAGEMASK};
+
+                  // Preserve Eden's existing NCE invalidation policy for guest data/execute faults.
+                  if (process->GetMemory().InvalidateNCE(page_address, Memory::YUZU_PAGESIZE)) {
+                      return EXCEPTION_CONTINUE_EXECUTION;
+                  }
+
+                  // Match the existing Linux NCE failed-fault policy. Data aborts skip the faulting
+                  // instruction; execute/prefetch aborts return to PhysicalCore for debugger/suspend policy.
+                  if (context.Pc != fault_address) {
+                      context.Pc += sizeof(u32);
+                      NCE::WindowsNceTransition::ContinueContext(context);
+                  }
+
+                  guest->esr_el1.fetch_or(static_cast<u64>(HaltReason::PrefetchAbort),
+                                          std::memory_order_acq_rel);
+                  params->lock.store(SpinLockLocked, std::memory_order_release);
+                  const auto reason = guest->esr_el1.exchange(0, std::memory_order_acq_rel);
+                  NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, reason);
+                  return EXCEPTION_CONTINUE_EXECUTION;'''
+          fault_new = '''        nce->m_windows_pending_nce_fault = true;
+                  nce->m_windows_pending_nce_fault_address = fault_address;
+                  nce->m_windows_pending_nce_fault_page = fault_address & ~Memory::YUZU_PAGEMASK;
+                  params->lock.store(SpinLockLocked, std::memory_order_release);
+                  NCE::WindowsNceTransition::RedirectToHost(
+                      context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
+                  NCE::WindowsNceTransition::ContinueContext(context);'''
+          if s.count(fault_old) != 1:
+              raise SystemExit(f'VEH fault-policy anchor mismatch: {s.count(fault_old)}')
+          s = s.replace(fault_old, fault_new, 1)
+
+          loop_old = '''    for (;;) {
+              NCE::CurrentNceContext::Install(thread_params);
+              if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
+                  hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
+                      &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
+              } else {
+                  hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
+              }
+              NCE::CurrentNceContext::Clear();
+
+              const auto fallback = m_windows_x18_runner->Dispatch('''
+          loop_new = '''    for (;;) {
+              NCE::CurrentNceContext::Install(thread_params);
+
+              WindowsTebStackBounds teb_stack_bounds{};
+              if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
+                  NCE::CurrentNceContext::Clear();
+                  hr = HaltReason::PrefetchAbort;
+                  break;
+              }
+
+              if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
+                  hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
+                      &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
+              } else {
+                  hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
+              }
+
+              RestoreHostTebStackBounds(teb_stack_bounds);
+              NCE::CurrentNceContext::Clear();
+
+              if (m_windows_pending_nce_fault) {
+                  const u64 pending_fault_address = m_windows_pending_nce_fault_address;
+                  const u64 pending_fault_page = m_windows_pending_nce_fault_page;
+                  m_windows_pending_nce_fault = false;
+                  m_windows_pending_nce_fault_address = 0;
+                  m_windows_pending_nce_fault_page = 0;
+
+                  if (process->GetMemory().InvalidateNCE(Common::ProcessAddress{pending_fault_page},
+                                                         Memory::YUZU_PAGESIZE)) {
+                      continue;
+                  }
+
+                  if (m_guest_ctx.pc != pending_fault_address) {
+                      m_guest_ctx.pc += sizeof(u32);
+                      continue;
+                  }
+
+                  hr = HaltReason::PrefetchAbort;
+                  break;
+              }
+
+              const auto fallback = m_windows_x18_runner->Dispatch('''
+          if s.count(loop_old) != 1:
+              raise SystemExit(f'RunThread loop anchor mismatch: {s.count(loop_old)}')
+          s = s.replace(loop_old, loop_new, 1)
+
+          source.write_text(s, encoding='utf-8', newline='\n')
+          print('IMP008E_PRODUCTION_HOST_PIVOT_PATCH=PASS')
+
+      - name: Verify production delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only -- src/core/arm/nce | sort)
+          printf 'IMP008E_PRODUCTION_CHANGED=%s\n' "${changed[*]}"
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = 'src/core/arm/nce/arm_nce.h'
+          test "${changed[1]}" = 'src/core/arm/nce/arm_nce_windows.cpp'
+          git diff --check
+          git diff -- src/core/arm/nce/arm_nce.h src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'InstallGuestTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'RestoreHostTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_windows_pending_nce_fault' src/core/arm/nce/arm_nce.h
+          ! grep -Fq 'IMP008E_E2_HOST_PIVOT_INVALIDATED' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'IMP008E_PRODUCTION_DELTA=PASS'
+
+      - name: Commit production recovery on experiment branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/core/arm/nce/arm_nce.h src/core/arm/nce/arm_nce_windows.cpp
+          git commit -m 'IMP-008E: recover cached NCE faults on Windows host stack'
+          git push origin HEAD:exp/imp-008e-windows-nce-rasterizer-recovery-runtime
