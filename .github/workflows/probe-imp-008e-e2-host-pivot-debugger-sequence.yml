@@ -21,10 +21,10 @@ jobs:
       - name: Reuse exact failed host-pivot artifact
         uses: actions/download-artifact@v5
         with:
-          name: imp008e-e2-host-pivot-9f08bf316589c3a026d63e1c4139cb88a73dde55
+          name: imp008e-e2-host-pivot-8fd5eb35084576fa87524e273133ab8284d75494
           path: e2
           repository: npark2860-cyber/Eden-Adreno-Lab
-          run-id: 34433075103
+          run-id: 34435183862
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify physical runner and exact artifact
@@ -38,11 +38,11 @@ jobs:
           $shaFile = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e-e2.source-sha.txt' | Select-Object -First 1
           if ($null -eq $exe -or $null -eq $shaFile) { throw 'Host-pivot artifact incomplete' }
           $sourceSha = [System.IO.File]::ReadAllText($shaFile.FullName).Trim()
-          if ($sourceSha -ne '9f08bf316589c3a026d63e1c4139cb88a73dde55') {
+          if ($sourceSha -ne '8fd5eb35084576fa87524e273133ab8284d75494') {
             throw "Unexpected artifact source SHA: $sourceSha"
           }
           $exeSha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
-          if ($exeSha -ne 'F8BF15B586F51A8213FA1EBD06D45697DCE9E4D7FB114C62BCAE79369103C407') {
+          if ($exeSha -ne '76685085AD2564510D29B9941F8C23469A28902A3663DCB6B84AF2E8838DC89D') {
             throw "Unexpected executable SHA256: $exeSha"
           }
           Write-Host "IMP008E_E2_PIVOT_DEBUGGER_RUNNER=$env:RUNNER_NAME"
@@ -167,10 +167,8 @@ jobs:
                                   avCount++;
                                   Console.WriteLine("IMP008E_E2_PIVOT_DEBUGGER_AV_INDEX=" + avCount +
                                                     " PC=0x" + address.ToString("X"));
-                                  // Let the application's own VEH handle the guest NCE AV.
                                   continueStatus = DBG_EXCEPTION_NOT_HANDLED;
                               } else if (code == EXCEPTION_BREAKPOINT) {
-                                  // Consume normal debugger/loader breakpoints only.
                                   continueStatus = DBG_CONTINUE;
                               } else {
                                   continueStatus = DBG_EXCEPTION_NOT_HANDLED;
