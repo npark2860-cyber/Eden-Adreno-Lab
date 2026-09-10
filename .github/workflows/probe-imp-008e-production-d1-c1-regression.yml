@@ -1,0 +1,98 @@
+name: Probe IMP-008E Production D1 C1 Regression
+
+on:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008e-production-d1-c1-regression.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  sequential-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+      D1_WORKFLOW: probe-imp-008d-d1-production-ntcontinue-arm64.yml
+      C1_WORKFLOW: probe-imp-008c-c1-prefetch-fault-runtime-arm64.yml
+    steps:
+      - name: Checkout regression head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify production source boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          git diff --name-only "$PROD_SHA" HEAD | tee /tmp/imp008e-regression-delta.txt
+          if grep -Ev '^\.github/workflows/' /tmp/imp008e-regression-delta.txt | grep -q .; then
+            echo 'IMP008E_REGRESSION_SOURCE_BOUNDARY=FAIL'
+            exit 81
+          fi
+          grep -Fq 'InstallGuestTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'RestoreHostTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_windows_pending_nce_fault' src/core/arm/nce/arm_nce.h
+          echo 'IMP008E_REGRESSION_SOURCE_BOUNDARY=PASS'
+
+      - name: Dispatch and require D1 PASS
+        id: d1
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$D1_WORKFLOW" --branch "$GITHUB_REF_NAME" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          gh workflow run "$D1_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+          run_id=''
+          for i in $(seq 1 30); do
+            latest="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$D1_WORKFLOW" --branch "$GITHUB_REF_NAME" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+            if [ "$latest" != '0' ] && [ "$latest" != "$before" ]; then
+              run_id="$latest"
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_id"
+          echo "IMP008E_REGRESSION_D1_RUN_ID=$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          conclusion="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion')"
+          test "$conclusion" = 'success'
+          echo 'IMP008E_REGRESSION_D1=PASS'
+
+      - name: Dispatch and require C1 PASS
+        id: c1
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$C1_WORKFLOW" --branch "$GITHUB_REF_NAME" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          gh workflow run "$C1_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+          run_id=''
+          for i in $(seq 1 30); do
+            latest="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$C1_WORKFLOW" --branch "$GITHUB_REF_NAME" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+            if [ "$latest" != '0' ] && [ "$latest" != "$before" ]; then
+              run_id="$latest"
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_id"
+          echo "IMP008E_REGRESSION_C1_RUN_ID=$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          conclusion="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion')"
+          test "$conclusion" = 'success'
+          echo 'IMP008E_REGRESSION_C1=PASS'
+
+      - name: Final regression gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'IMP008E_PRODUCTION_D1_C1_REGRESSION_GATE=PASS'
