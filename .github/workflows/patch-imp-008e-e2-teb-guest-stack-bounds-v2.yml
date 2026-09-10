@@ -1,0 +1,74 @@
+name: Fix IMP-008E E2 TEB Guest Stack Bounds Compile
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/patch-imp-008e-e2-teb-guest-stack-bounds-v2.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  fix-teb-stack-bounds-compile:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Replace hidden TEB field access with NT_TIB view only
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('.github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '''              auto* const teb_for_stack = NtCurrentTeb();\n              void* const original_stack_base = teb_for_stack->NtTib.StackBase;\n              void* const original_stack_limit = teb_for_stack->NtTib.StackLimit;'''
+          new = '''              auto* const teb_for_stack = NtCurrentTeb();\n              auto* const teb_tib = reinterpret_cast<NT_TIB*>(teb_for_stack);\n              void* const original_stack_base = teb_tib->StackBase;\n              void* const original_stack_limit = teb_tib->StackLimit;'''
+          if text.count(old) != 1:
+              raise SystemExit(f'TEB declaration anchor mismatch: {text.count(old)}')
+          text = text.replace(old, new, 1)
+          replacements = {
+              '              teb_for_stack->NtTib.StackLimit = reinterpret_cast<void*>(guest_allocation_base);':
+                  '              teb_tib->StackLimit = reinterpret_cast<void*>(guest_allocation_base);',
+              '              teb_for_stack->NtTib.StackBase = reinterpret_cast<void*>(guest_allocation_end);':
+                  '              teb_tib->StackBase = reinterpret_cast<void*>(guest_allocation_end);',
+              '              teb_for_stack->NtTib.StackBase = original_stack_base;':
+                  '              teb_tib->StackBase = original_stack_base;',
+              '              teb_for_stack->NtTib.StackLimit = original_stack_limit;':
+                  '              teb_tib->StackLimit = original_stack_limit;',
+          }
+          for src, dst in replacements.items():
+              if text.count(src) != 1:
+                  raise SystemExit(f'TEB assignment anchor mismatch for {src}: {text.count(src)}')
+              text = text.replace(src, dst, 1)
+          path.write_text(text, encoding='utf-8', newline='\n')
+          print('IMP008E_E2_TEB_NT_TIB_COMPILE_FIX=PASS')
+
+      - name: Verify compile-fix-only workflow delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- .github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml | tee /tmp/teb-v2.diff
+          test "$(git diff --name-only | wc -l)" -eq 1
+          test "$(git diff --name-only)" = '.github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml'
+          grep -Fq 'reinterpret_cast<NT_TIB*>(teb_for_stack)' /tmp/teb-v2.diff
+          grep -Fq 'teb_tib->StackBase' /tmp/teb-v2.diff
+          grep -Fq 'teb_tib->StackLimit' /tmp/teb-v2.diff
+          ! grep -Fq 'DataPages = 1024' /tmp/teb-v2.diff
+          echo 'IMP008E_E2_TEB_NT_TIB_WORKFLOW_DELTA=PASS'
+
+      - name: Commit compile-fix-only workflow delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml
+          git commit -m 'IMP-008E: use NT_TIB view for guest stack bounds'
+          echo "IMP008E_E2_TEB_NT_TIB_HEAD=$(git rev-parse HEAD)"
+          git push origin HEAD:exp/imp-008e-windows-nce-rasterizer-recovery-runtime
