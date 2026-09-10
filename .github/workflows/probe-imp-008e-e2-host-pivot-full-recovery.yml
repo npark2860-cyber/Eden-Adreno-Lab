@@ -168,7 +168,8 @@ jobs:
                   g_windows_pending_nce_fault_address = fault_address;
                   g_windows_pending_nce_fault_page = fault_address & ~Memory::YUZU_PAGEMASK;
                   params->lock.store(SpinLockLocked, std::memory_order_release);
-                  NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, 0);
+                  NCE::WindowsNceTransition::RedirectToHost(
+                      context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
                   return EXCEPTION_CONTINUE_EXECUTION;
           "@.Replace("`r`n", "`n").Trim("`n")
 
@@ -246,7 +247,7 @@ jobs:
           test "${prod_files[0]}" = 'src/core/arm/nce/arm_nce_windows.cpp'
           git diff -- src/core/arm/nce/arm_nce_windows.cpp | tee /tmp/pivot-production.diff
           grep -Fq 'thread_local bool g_windows_pending_nce_fault' /tmp/pivot-production.diff
-          grep -Fq 'WindowsNceTransition::RedirectToHost(context, *guest, true, 0);' /tmp/pivot-production.diff
+          grep -Fq 'static_cast<u64>(HaltReason::PrefetchAbort));' /tmp/pivot-production.diff
           grep -Fq 'IMP008E_E2_HOST_PIVOT_INVALIDATED=PASS' /tmp/pivot-production.diff
           grep -Fq 'm_guest_ctx.pc += sizeof(u32);' /tmp/pivot-production.diff
           ! grep -Fq 'std::thread invalidation_thread' /tmp/pivot-production.diff
