@@ -1,0 +1,81 @@
+name: Prepare IMP-008E E2 Host Pivot Reason Isolation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/patch-imp-008e-e2-host-pivot-reason-isolation.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare-and-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Change only host-pivot return reason
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('.github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml')
+          text = path.read_text(encoding='utf-8')
+
+          old_call = 'NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, 0);'
+          new_call = ('NCE::WindowsNceTransition::RedirectToHost(\n'
+                      '                      context, *guest, true, '\
+                      'static_cast<u64>(HaltReason::PrefetchAbort));')
+          if text.count(old_call) != 1:
+              raise SystemExit(f'redirect call anchor mismatch: {text.count(old_call)}')
+          text = text.replace(old_call, new_call)
+
+          old_guard = "grep -Fq 'WindowsNceTransition::RedirectToHost(context, *guest, true, 0);' /tmp/pivot-production.diff"
+          new_guard = "grep -Fq 'static_cast<u64>(HaltReason::PrefetchAbort));' /tmp/pivot-production.diff"
+          if text.count(old_guard) != 1:
+              raise SystemExit(f'causal guard anchor mismatch: {text.count(old_guard)}')
+          text = text.replace(old_guard, new_guard)
+
+          path.write_text(text, encoding='utf-8', newline='\n')
+          print('IMP008E_E2_PIVOT_REASON_ONLY_PATCH=PASS')
+
+      - name: Verify one-variable workflow delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- .github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml | tee /tmp/reason.diff
+          grep -Fq 'static_cast<u64>(HaltReason::PrefetchAbort));' /tmp/reason.diff
+          grep -Fq -- '-                  NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, 0);' /tmp/reason.diff
+          test "$(git diff --name-only | wc -l)" -eq 1
+          test "$(git diff --name-only)" = '.github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml'
+          echo 'IMP008E_E2_PIVOT_REASON_WORKFLOW_DELTA=PASS'
+
+      - name: Commit diagnostic workflow delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml
+          git commit -m 'IMP-008E: retry host pivot with proven PrefetchAbort reason'
+          git push origin HEAD:exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+          echo "IMP008E_E2_PIVOT_REASON_HEAD=$(git rev-parse HEAD)"
+
+      - name: Dispatch updated full-recovery workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api \
+            --method POST \
+            repos/${{ github.repository }}/actions/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml/dispatches \
+            -f ref=exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+          echo 'IMP008E_E2_PIVOT_REASON_DISPATCH=PASS'
