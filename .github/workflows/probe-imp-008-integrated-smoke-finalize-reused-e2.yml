@@ -1,0 +1,145 @@
+name: Probe IMP-008 Integrated Smoke Finalize Reused E2
+
+on:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008-integrated-smoke-finalize-reused-e2.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: imp-008-integrated-smoke-finalize-reused-e2
+  cancel-in-progress: false
+
+jobs:
+  finalize-integrated-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+      E2_RUN_ID: '34468479437'
+      E2_SOURCE_SHA: b4c3eafae035e1fc53211cc0d255324824b8e7a0
+      D1_RUN_ID: '34452032846'
+      C1_RUN_ID: '34454375680'
+    steps:
+      - name: Checkout closure validation head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify production and reused-E2 source equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git cat-file -e "$E2_SOURCE_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          git diff --quiet "$E2_SOURCE_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          git diff --name-only "$E2_SOURCE_SHA" HEAD | tee /tmp/imp008-finalize-delta.txt
+          if grep -Ev '^\.github/workflows/' /tmp/imp008-finalize-delta.txt | grep -q .; then
+            echo 'IMP008_FINALIZE_SOURCE_EQUIVALENCE=FAIL'
+            exit 91
+          fi
+          grep -Fq 'InstallGuestTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'RestoreHostTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_windows_pending_nce_fault' src/core/arm/nce/arm_nce.h
+          echo "IMP008_FINALIZE_VALIDATION_SHA=$(git rev-parse HEAD)"
+          echo "IMP008_FINALIZE_PRODUCTION_SHA=$PROD_SHA"
+          echo "IMP008_FINALIZE_E2_SOURCE_SHA=$E2_SOURCE_SHA"
+          echo 'IMP008_FINALIZE_SOURCE_EQUIVALENCE=PASS'
+
+      - name: Verify accepted D1 and C1 anchors
+        shell: bash
+        run: |
+          set -euo pipefail
+          for run_id in "$D1_RUN_ID" "$C1_RUN_ID"; do
+            status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status')"
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.conclusion')"
+            test "$status" = 'completed'
+            test "$conclusion" = 'success'
+          done
+          echo "IMP008_FINALIZE_D1_RUN=$D1_RUN_ID"
+          echo "IMP008_FINALIZE_C1_RUN=$C1_RUN_ID"
+          echo 'IMP008_FINALIZE_REGRESSION_ANCHORS=PASS'
+
+      - name: Verify reused E2 run identity and successful retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID" --jq '.status')"
+          conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID" --jq '.conclusion')"
+          head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID" --jq '.head_sha')"
+          attempt="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID" --jq '.run_attempt')"
+          event="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID" --jq '.event')"
+          test "$status" = 'completed'
+          test "$conclusion" = 'success'
+          test "$head_sha" = "$E2_SOURCE_SHA"
+          test "$attempt" = '2'
+          test "$event" = 'workflow_dispatch'
+          echo "IMP008_FINALIZE_E2_RUN=$E2_RUN_ID"
+          echo "IMP008_FINALIZE_E2_ATTEMPT=$attempt"
+          echo 'IMP008_FINALIZE_E2_IDENTITY=PASS'
+
+      - name: Verify DREAMPAINTER artifact and exact native runtime evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run view "$E2_RUN_ID" --repo "$GITHUB_REPOSITORY" --log > /tmp/imp008-finalize-e2.log
+
+          runner="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID/jobs?per_page=100" --jq '.jobs[] | select(.name == "run-e2-self-hosted" and .conclusion == "success") | .runner_name' | head -n 1)"
+          test "$runner" = 'DREAMPAINTER'
+
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID/artifacts" --jq '.artifacts[0].id // 0')"
+          artifact_name="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID/artifacts" --jq '.artifacts[0].name // ""')"
+          artifact_digest="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2_RUN_ID/artifacts" --jq '.artifacts[0].digest // ""')"
+          test "$artifact_id" = '10149329849'
+          test "$artifact_name" = "imp008e-e2-teardown-$E2_SOURCE_SHA"
+          test "$artifact_digest" = 'sha256:dc9876878d20bd3f8d2c77c7b8c0623397ed40a097f5d550759157f6562a4660'
+
+          required=(
+            'IMP008E_E2_TEARDOWN_ARTIFACT_BOUNDARY=PASS'
+            'IMP008B_E2_RESTORE_ENTER=PASS'
+            'IMP008E_E2_DATA_AV_EXACT=PASS'
+            'IMP008E_E2_RUNTHREAD_RETURNED=PASS'
+            'IMP008E_E2_HOST_PIVOT_RETRY_STATE=PASS'
+            'IMP008E_E2_FAILED_DATA_SKIP_NOT_USED=PASS'
+            'IMP008E_E2_POST_RETURN_RW=PASS'
+            'IMP008E_E2_SUPERVISOR_CALL_RETURN=PASS'
+            'IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS'
+            'IMP008E_E2_POST_SVC_PC_EXACT=PASS'
+            'IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS'
+            'IMP008E_E2_PENDING_PROCESS_FINALIZED=PASS'
+            'IMP008E_E2_GATE=PASS'
+            'IMP008E_E2_TEARDOWN_NATIVE_EXIT=0x00000000'
+            'IMP008E_E2_TEARDOWN_NATIVE_EXIT_ZERO=PASS'
+            'IMP008E_E2_TEARDOWN_CAUSE_CONFIRMED=PASS'
+          )
+          for marker in "${required[@]}"; do
+            grep -Fq "$marker" /tmp/imp008-finalize-e2.log || {
+              echo "Missing required E2 marker: $marker"
+              exit 92
+            }
+          done
+
+          exe_hash="$(grep -F 'IMP008E_E2_TEARDOWN_EXE_SHA256=' /tmp/imp008-finalize-e2.log | tail -n 1 | sed 's/.*IMP008E_E2_TEARDOWN_EXE_SHA256=//')"
+          test "$exe_hash" = '3D70F821CFB5CEBC85629DD932EDD39D7662892C827D04CA7ABD7C65673A8793'
+
+          echo "IMP008_FINALIZE_RUNNER=$runner"
+          echo "IMP008_FINALIZE_ARTIFACT_ID=$artifact_id"
+          echo "IMP008_FINALIZE_ARTIFACT_NAME=$artifact_name"
+          echo "IMP008_FINALIZE_ARTIFACT_DIGEST=$artifact_digest"
+          echo "IMP008_FINALIZE_EXE_SHA256=$exe_hash"
+          echo 'IMP008_FINALIZE_NATIVE_EXIT=0x00000000'
+          echo 'IMP008_FINALIZE_RUNTIME_EVIDENCE=PASS'
+
+      - name: Final IMP-008 Windows NCE integrated smoke gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'IMP008_WINDOWS_NCE_INTEGRATED_SMOKE=PASS'
