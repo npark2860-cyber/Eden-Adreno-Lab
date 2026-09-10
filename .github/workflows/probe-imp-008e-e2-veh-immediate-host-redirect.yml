@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - exp/imp-008e-windows-nce-integration
       - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
     paths:
       - .github/workflows/probe-imp-008e-e2-veh-immediate-host-redirect.yml
@@ -126,22 +125,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $path = 'src/core/arm/nce/arm_nce_windows.cpp'
           $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
-          $old = @'
-        // Preserve Eden's existing NCE invalidation policy for guest data/execute faults.
-        if (process->GetMemory().InvalidateNCE(page_address, Memory::YUZU_PAGESIZE)) {
-            return EXCEPTION_CONTINUE_EXECUTION;
-        }
-'@.Replace("`r`n", "`n").Trim("`n")
-          $new = @'
-        // IMP-008E diagnostic only: leave the guest-stack VEH immediately using the already
-        // proven saved host continuation. Do not invalidate or retry in this experiment.
-        guest->esr_el1.fetch_or(static_cast<u64>(HaltReason::PrefetchAbort),
-                                std::memory_order_acq_rel);
-        params->lock.store(SpinLockLocked, std::memory_order_release);
-        const auto redirect_reason = guest->esr_el1.exchange(0, std::memory_order_acq_rel);
-        NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, redirect_reason);
-        return EXCEPTION_CONTINUE_EXECUTION;
-'@.Replace("`r`n", "`n").Trim("`n")
+          $old = "        // Preserve Eden's existing NCE invalidation policy for guest data/execute faults.`n        if (process->GetMemory().InvalidateNCE(page_address, Memory::YUZU_PAGESIZE)) {`n            return EXCEPTION_CONTINUE_EXECUTION;`n        }"
+          $new = "        // IMP-008E diagnostic only: immediately redirect the AV to the saved host stack.`n        guest->esr_el1.fetch_or(static_cast<u64>(HaltReason::PrefetchAbort),`n                                std::memory_order_acq_rel);`n        params->lock.store(SpinLockLocked, std::memory_order_release);`n        const auto redirect_reason = guest->esr_el1.exchange(0, std::memory_order_acq_rel);`n        NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, redirect_reason);`n        return EXCEPTION_CONTINUE_EXECUTION;"
           if (([regex]::Matches($text, [regex]::Escape($old))).Count -ne 1) { throw 'successful AV anchor mismatch' }
           $text = $text.Replace($old, $new)
           [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
