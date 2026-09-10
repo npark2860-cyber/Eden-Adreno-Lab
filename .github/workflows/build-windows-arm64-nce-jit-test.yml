@@ -1,4 +1,4 @@
-name: Build Windows ARM64 NCE-JIT User Test
+name: Build Windows ARM64 NCE Real-Game Diagnostics
 
 on:
   workflow_dispatch:
@@ -12,12 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-arm64-nce-jit-user-test
+  group: windows-arm64-nce-realgame-diag
   cancel-in-progress: false
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE-JIT GUI package
+    name: Windows ARM64 NCE real-game diagnostic package
     runs-on: windows-11-arm
     timeout-minutes: 180
 
@@ -74,9 +74,9 @@ jobs:
           grep -Fq 'std::make_unique<Core::ArmNce>' src/core/hle/kernel/k_process.cpp
           grep -Fq 'std::make_unique<Core::ArmDynarmic64>' src/core/hle/kernel/k_process.cpp
 
-          echo "NCE_JIT_TEST_SOURCE_SHA=$(git rev-parse HEAD)"
-          echo "NCE_JIT_TEST_PRODUCTION_SHA=$PROD_SHA"
-          echo 'NCE_JIT_SELECTOR_SOURCE=PASS'
+          echo "NCE_REALGAME_DIAG_SOURCE_SHA=$(git rev-parse HEAD)"
+          echo "NCE_REALGAME_DIAG_PRODUCTION_SHA=$PROD_SHA"
+          echo 'NCE_REALGAME_DIAG_SOURCE_GUARD=PASS'
 
       - name: Set up normal Eden CLANGARM64 toolchain
         id: msys2
@@ -96,6 +96,180 @@ jobs:
             jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
             libwebp:p libtiff:p brotli:p
 
+      - name: Inject validation-only NCE prefetch diagnostics
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = []
+
+          replacements.append((
+          '''HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
+              HaltReason hr = static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0));
+              if (True(hr)) {
+                  return hr;
+              }
+          ''',
+          '''HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
+              HaltReason hr = static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0));
+              if (True(hr)) {
+                  if (True(hr & HaltReason::PrefetchAbort)) {
+                      LOG_ERROR(Core_ARM,
+                                "IMP008_REALGAME_DIAG PREEXISTING_PREFETCH core={} hr=0x{:X} pc=0x{:016X} sp=0x{:016X}",
+                                m_core_index, static_cast<u64>(hr), m_guest_ctx.pc, m_guest_ctx.sp);
+                  }
+                  return hr;
+              }
+          '''))
+
+          replacements.append((
+          '''        WindowsTebStackBounds teb_stack_bounds{};
+                  if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
+                      NCE::CurrentNceContext::Clear();
+                      hr = HaltReason::PrefetchAbort;
+                      break;
+                  }
+          ''',
+          '''        WindowsTebStackBounds teb_stack_bounds{};
+                  if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
+                      LOG_ERROR(Core_ARM,
+                                "IMP008_REALGAME_DIAG TEB_FAIL core={} pc=0x{:016X} sp=0x{:016X}",
+                                m_core_index, m_guest_ctx.pc, m_guest_ctx.sp);
+                      NCE::CurrentNceContext::Clear();
+                      hr = HaltReason::PrefetchAbort;
+                      break;
+                  }
+          '''))
+
+          replacements.append((
+          '''        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
+                      hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
+                          &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
+                  } else {
+                      hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
+                  }
+
+                  RestoreHostTebStackBounds(teb_stack_bounds);
+                  NCE::CurrentNceContext::Clear();
+          ''',
+          '''        const u64 diag_entry_pc = m_guest_ctx.pc;
+                  const u64 diag_entry_sp = m_guest_ctx.sp;
+                  const bool diag_post_handler = post_handlers.find(m_guest_ctx.pc) != post_handlers.end();
+                  if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
+                      hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
+                          &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
+                  } else {
+                      hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
+                  }
+
+                  RestoreHostTebStackBounds(teb_stack_bounds);
+                  NCE::CurrentNceContext::Clear();
+
+                  if (True(hr & HaltReason::PrefetchAbort) || m_windows_pending_nce_fault) {
+                      LOG_ERROR(Core_ARM,
+                                "IMP008_REALGAME_DIAG GUEST_RETURN core={} route={} hr=0x{:X} pending={} entry_pc=0x{:016X} entry_sp=0x{:016X} return_pc=0x{:016X} return_sp=0x{:016X}",
+                                m_core_index, diag_post_handler ? "post_handler" : "context",
+                                static_cast<u64>(hr), m_windows_pending_nce_fault ? 1 : 0,
+                                diag_entry_pc, diag_entry_sp, m_guest_ctx.pc, m_guest_ctx.sp);
+                  }
+          '''))
+
+          replacements.append((
+          '''            if (process->GetMemory().InvalidateNCE(Common::ProcessAddress{pending_fault_page},
+                                                           Memory::YUZU_PAGESIZE)) {
+                          continue;
+                      }
+
+                      if (m_guest_ctx.pc != pending_fault_address) {
+                          m_guest_ctx.pc += sizeof(u32);
+                          continue;
+                      }
+
+                      hr = HaltReason::PrefetchAbort;
+                      break;
+          ''',
+          '''            const bool invalidated = process->GetMemory().InvalidateNCE(
+                          Common::ProcessAddress{pending_fault_page}, Memory::YUZU_PAGESIZE);
+                      LOG_ERROR(Core_ARM,
+                                "IMP008_REALGAME_DIAG PENDING_FAULT core={} fault=0x{:016X} page=0x{:016X} guest_pc=0x{:016X} invalidate={}",
+                                m_core_index, pending_fault_address, pending_fault_page,
+                                m_guest_ctx.pc, invalidated ? 1 : 0);
+                      if (invalidated) {
+                          continue;
+                      }
+
+                      if (m_guest_ctx.pc != pending_fault_address) {
+                          LOG_ERROR(Core_ARM,
+                                    "IMP008_REALGAME_DIAG FAILED_DATA_SKIP core={} guest_pc=0x{:016X} fault=0x{:016X} next_pc=0x{:016X}",
+                                    m_core_index, m_guest_ctx.pc, pending_fault_address,
+                                    m_guest_ctx.pc + sizeof(u32));
+                          m_guest_ctx.pc += sizeof(u32);
+                          continue;
+                      }
+
+                      LOG_ERROR(Core_ARM,
+                                "IMP008_REALGAME_DIAG PENDING_FAULT_FATAL core={} pc=0x{:016X} fault=0x{:016X}",
+                                m_core_index, m_guest_ctx.pc, pending_fault_address);
+                      hr = HaltReason::PrefetchAbort;
+                      break;
+          '''))
+
+          replacements.append((
+          '''        if (!fallback.handled) {
+                      break;
+                  }
+          ''',
+          '''        if (!fallback.handled) {
+                      if (True(hr & HaltReason::PrefetchAbort)) {
+                          LOG_ERROR(Core_ARM,
+                                    "IMP008_REALGAME_DIAG UNHANDLED_PREFETCH core={} hr=0x{:X} pc=0x{:016X} sp=0x{:016X}",
+                                    m_core_index, static_cast<u64>(hr), m_guest_ctx.pc,
+                                    m_guest_ctx.sp);
+                      }
+                      break;
+                  }
+          '''))
+
+          replacements.append((
+          '''    m_guest_ctx.tpidr_el0 = final_tpidr_el0;
+
+              return hr;
+          }
+          ''',
+          '''    m_guest_ctx.tpidr_el0 = final_tpidr_el0;
+
+              if (True(hr & HaltReason::PrefetchAbort)) {
+                  LOG_ERROR(Core_ARM,
+                            "IMP008_REALGAME_DIAG FINAL_PREFETCH core={} hr=0x{:X} pc=0x{:016X} sp=0x{:016X}",
+                            m_core_index, static_cast<u64>(hr), m_guest_ctx.pc, m_guest_ctx.sp);
+              }
+              return hr;
+          }
+          '''))
+
+          for index, (old, new) in enumerate(replacements, 1):
+              if old not in text:
+                  raise SystemExit(f'diagnostic injection guard {index} did not match source')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          print('NCE_REALGAME_DIAG_INJECTION=PASS')
+          PY
+
+          grep -Fq 'IMP008_REALGAME_DIAG TEB_FAIL' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_REALGAME_DIAG GUEST_RETURN' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_REALGAME_DIAG PENDING_FAULT' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_REALGAME_DIAG UNHANDLED_PREFETCH' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_REALGAME_DIAG FINAL_PREFETCH' src/core/arm/nce/arm_nce_windows.cpp
+          git diff --check
+          echo 'NCE_REALGAME_DIAG_PATCH=PASS'
+
       - name: Configure Windows ARM64 GUI build
         shell: msys2 {0}
         working-directory: eden
@@ -112,7 +286,7 @@ jobs:
             echo 'Linux arm_nce.cpp selected in Windows build' >&2
             exit 31
           fi
-          echo 'NCE_JIT_GUI_CONFIGURE=PASS'
+          echo 'NCE_REALGAME_DIAG_CONFIGURE=PASS'
 
       - name: Build full Windows ARM64 Eden GUI
         shell: msys2 {0}
@@ -125,35 +299,36 @@ jobs:
             find build -maxdepth 4 -iname '*.exe' -print
             exit 41
           }
-          echo 'NCE_JIT_GUI_BUILD=PASS'
+          echo 'NCE_REALGAME_DIAG_BUILD=PASS'
 
       - name: Package Windows ARM64 Eden
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: nce-jit-${{ github.sha }}
+          ARTIFACT_REF: nce-realgame-diag-${{ github.sha }}
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
           find artifacts -maxdepth 2 -type f -print
-          echo 'NCE_JIT_GUI_PACKAGE=PASS'
+          echo 'NCE_REALGAME_DIAG_PACKAGE=PASS'
 
-      - name: Write test build manifest
+      - name: Write diagnostic build manifest
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force test-metadata | Out-Null
           @"
-          Windows ARM64 Eden NCE/JIT user test build
+          Windows ARM64 Eden NCE real-game diagnostic build
           Source branch: $env:GITHUB_REF_NAME
-          Source SHA: $env:GITHUB_SHA
+          Workflow/source SHA: $env:GITHUB_SHA
           Accepted NCE production implementation: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
 
-          CPU backend selector is built in.
-          Test procedure: stop the running game, select CPU Backend = Nce or Dynarmic, then relaunch the same game.
-          This build does not claim live mid-game backend hot switching.
-          "@ | Set-Content -Encoding UTF8 test-metadata/NCE_JIT_TEST_BUILD.txt
+          Git source remains production-equivalent before build-time diagnostic injection.
+          Diagnostic markers are prefixed IMP008_REALGAME_DIAG.
+          Relevant markers: PREEXISTING_PREFETCH, TEB_FAIL, GUEST_RETURN, PENDING_FAULT,
+          FAILED_DATA_SKIP, PENDING_FAULT_FATAL, UNHANDLED_PREFETCH, FINAL_PREFETCH.
+          "@ | Set-Content -Encoding UTF8 test-metadata/NCE_REALGAME_DIAG_BUILD.txt
 
       - name: Verify single-file package upload boundary
         shell: pwsh
@@ -170,13 +345,13 @@ jobs:
           if ($upload.Count -ne 1) {
             throw "Expected exactly one file in dedicated upload directory; found $($upload.Count)"
           }
-          Write-Host "NCE_JIT_SINGLE_FILE_UPLOAD_BOUNDARY=PASS"
+          Write-Host 'NCE_REALGAME_DIAG_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
           Write-Host "UPLOAD_FILE=$($upload[0].Name)"
 
-      - name: Upload Windows ARM64 NCE-JIT test package
+      - name: Upload Windows ARM64 NCE real-game diagnostic package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-JIT-${{ github.sha }}
+          name: Eden-Windows-ARM64-NCE-REALGAME-DIAG-${{ github.sha }}
           archive: false
           path: upload/*
           if-no-files-found: error
