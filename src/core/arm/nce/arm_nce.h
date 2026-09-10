@@ -97,6 +97,9 @@ public:
 #if defined(_WIN32)
     std::unique_ptr<NCE::WindowsCrossThreadBreak> m_windows_break{};
     std::unique_ptr<NCE::WindowsX18FallbackRunner> m_windows_x18_runner{};
+    bool m_windows_pending_nce_fault{};
+    u64 m_windows_pending_nce_fault_address{};
+    u64 m_windows_pending_nce_fault_page{};
 #else
     pid_t m_thread_id{-1};
 #endif

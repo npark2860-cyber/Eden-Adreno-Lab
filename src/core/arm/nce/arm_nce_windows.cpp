@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -40,6 +41,66 @@ static_assert(offsetof(NativeExecutionParameters, magic) == TpidrEl0TlsMagic);
 std::once_flag g_windows_veh_once;
 PVOID g_windows_veh_handle{};
 
+struct WindowsTebStackBounds {
+    NT_TIB* tib{};
+    void* host_stack_base{};
+    void* host_stack_limit{};
+};
+
+[[nodiscard]] bool InstallGuestTebStackBounds(u64 guest_sp,
+                                              WindowsTebStackBounds& bounds) noexcept {
+    if (guest_sp == 0) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION stack_mbi{};
+    if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi,
+                     sizeof(stack_mbi)) == 0 ||
+        stack_mbi.AllocationBase == nullptr) {
+        return false;
+    }
+
+    const auto allocation_base =
+        reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase);
+    std::uintptr_t allocation_end = allocation_base;
+    for (std::uintptr_t cursor = allocation_base;;) {
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||
+            region.AllocationBase != stack_mbi.AllocationBase) {
+            break;
+        }
+
+        const auto region_end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) +
+                                static_cast<std::uintptr_t>(region.RegionSize);
+        if (region_end <= cursor) {
+            break;
+        }
+        allocation_end = region_end;
+        cursor = region_end;
+    }
+
+    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);
+    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {
+        return false;
+    }
+
+    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+    bounds.tib = tib;
+    bounds.host_stack_base = tib->StackBase;
+    bounds.host_stack_limit = tib->StackLimit;
+    tib->StackLimit = reinterpret_cast<void*>(allocation_base);
+    tib->StackBase = reinterpret_cast<void*>(allocation_end);
+    return true;
+}
+
+void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
+    if (bounds.tib == nullptr) {
+        return;
+    }
+    bounds.tib->StackBase = bounds.host_stack_base;
+    bounds.tib->StackLimit = bounds.host_stack_limit;
+    bounds.tib = nullptr;
+}
 struct BreakTransformState {
     ArmNce* nce{};
     bool transformed{};
@@ -121,26 +182,13 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
     if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {
         const auto fault_address = reinterpret_cast<u64>(
             NCE::WindowsExceptionContext::GetFaultAddress(*exception->ExceptionRecord));
-        const auto page_address = Common::ProcessAddress{fault_address & ~Memory::YUZU_PAGEMASK};
-
-        // Preserve Eden's existing NCE invalidation policy for guest data/execute faults.
-        if (process->GetMemory().InvalidateNCE(page_address, Memory::YUZU_PAGESIZE)) {
-            return EXCEPTION_CONTINUE_EXECUTION;
-        }
-
-        // Match the existing Linux NCE failed-fault policy. Data aborts skip the faulting
-        // instruction; execute/prefetch aborts return to PhysicalCore for debugger/suspend policy.
-        if (context.Pc != fault_address) {
-            context.Pc += sizeof(u32);
-            NCE::WindowsNceTransition::ContinueContext(context);
-        }
-
-        guest->esr_el1.fetch_or(static_cast<u64>(HaltReason::PrefetchAbort),
-                                std::memory_order_acq_rel);
+        nce->m_windows_pending_nce_fault = true;
+        nce->m_windows_pending_nce_fault_address = fault_address;
+        nce->m_windows_pending_nce_fault_page = fault_address & ~Memory::YUZU_PAGEMASK;
         params->lock.store(SpinLockLocked, std::memory_order_release);
-        const auto reason = guest->esr_el1.exchange(0, std::memory_order_acq_rel);
-        NCE::WindowsNceTransition::RedirectToHost(context, *guest, true, reason);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        NCE::WindowsNceTransition::RedirectToHost(
+            context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
+        NCE::WindowsNceTransition::ContinueContext(context);
     }
 
     // IMP-008A does not claim complete game fault compatibility. Unknown host/guest exception
@@ -230,13 +278,44 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
     for (;;) {
         NCE::CurrentNceContext::Install(thread_params);
+
+        WindowsTebStackBounds teb_stack_bounds{};
+        if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
+            NCE::CurrentNceContext::Clear();
+            hr = HaltReason::PrefetchAbort;
+            break;
+        }
+
         if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
             hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
                 &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
         } else {
             hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
         }
+
+        RestoreHostTebStackBounds(teb_stack_bounds);
         NCE::CurrentNceContext::Clear();
+
+        if (m_windows_pending_nce_fault) {
+            const u64 pending_fault_address = m_windows_pending_nce_fault_address;
+            const u64 pending_fault_page = m_windows_pending_nce_fault_page;
+            m_windows_pending_nce_fault = false;
+            m_windows_pending_nce_fault_address = 0;
+            m_windows_pending_nce_fault_page = 0;
+
+            if (process->GetMemory().InvalidateNCE(Common::ProcessAddress{pending_fault_page},
+                                                   Memory::YUZU_PAGESIZE)) {
+                continue;
+            }
+
+            if (m_guest_ctx.pc != pending_fault_address) {
+                m_guest_ctx.pc += sizeof(u32);
+                continue;
+            }
+
+            hr = HaltReason::PrefetchAbort;
+            break;
+        }
 
         const auto fallback = m_windows_x18_runner->Dispatch(
             static_cast<u64>(hr), thread, m_guest_ctx, post_handlers);
