@@ -1,0 +1,307 @@
+name: Probe IMP-008E E2 Production Host Pivot
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008e-e2-production-host-pivot.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-e2-hosted:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+    steps:
+      - name: Checkout production candidate
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify exact production candidate and E2 baseline
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          prod='1572c8c55508d67d4423e025ec30ad7f3d2f9291'
+          probe='probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          git cat-file -e "$prod^{commit}"
+          git diff --quiet "$prod" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test "$(git hash-object "$probe")" = 'ad61af60011578e8aeaeb34154a71f1c97909bc0'
+          grep -Fq 'constexpr std::size_t DataPages = 18;' "$probe"
+          grep -Fq 'WriteU32(bytes, GuestSvcOffset, GuestSvc33);' "$probe"
+          grep -Fq 'InstallGuestTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'RestoreHostTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_windows_pending_nce_fault' src/core/arm/nce/arm_nce.h
+          echo 'IMP008E_E2_PRODUCTION_SOURCE_BOUNDARY=PASS'
+          echo 'IMP008E_E2_PRODUCTION_PROBE_BASELINE=PASS'
+
+      - name: Add E2 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008e_e2_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008e_e2_rasterizer_cached_retry
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+              ${CMAKE_BINARY_DIR}/imp008e_e2_vma.cpp)
+          target_include_directories(imp008e_e2_rasterizer_cached_retry PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008e_e2_rasterizer_cached_retry PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008e_e2_rasterizer_cached_retry PRIVATE
+              ${PLATFORM_LIBRARIES} Threads::Threads user32)
+          CMAKE
+          echo 'IMP008E_E2_PRODUCTION_TARGET_WIRING=PASS'
+
+      - name: Enable renderer diagnostics checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path)
+          $oldInclude = '#include "common/settings.h"'
+          $newInclude = "#include `"common/logging.h`"`r`n#include `"common/settings.h`""
+          if (-not $text.Contains($oldInclude)) { throw 'logging include anchor missing' }
+          $text = $text.Replace($oldInclude, $newInclude)
+          $oldMain = '    Trace("IMP008E_E2_MAIN_ENTER");'
+          $newMain = "    Common::Log::Initialize();`r`n    Common::Log::SetColorConsoleBackendEnabled(false);`r`n    Common::Log::Start();`r`n    Trace(`"IMP008E_E2_MAIN_ENTER`" );"
+          if (-not $text.Contains($oldMain)) { throw 'logging main anchor missing' }
+          $text = $text.Replace($oldMain, $newMain)
+          $oldLoad = "    const Core::SystemResultStatus load_result =`r`n        system.Load(window, nro_path.string(), load_parameters);"
+          if (-not $text.Contains($oldLoad)) {
+            $oldLoad = "    const Core::SystemResultStatus load_result =`n        system.Load(window, nro_path.string(), load_parameters);"
+          }
+          if (-not $text.Contains($oldLoad)) { throw 'logging stop anchor missing' }
+          $text = $text.Replace($oldLoad, $oldLoad + "`r`n    Common::Log::Stop();`r`n    Trace(`"IMP008E_E2_RENDERER_DIAGNOSTICS_FLUSHED`" );")
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_PRODUCTION_RENDERER_DIAGNOSTICS=PASS'
+
+      - name: Hold CPU manager barrier checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path)
+          $old = '    system.GetCpuManager().OnGpuReady();'
+          $new = '    Trace("IMP008E_E2_CPU_MANAGER_BARRIER_HELD");'
+          if (([regex]::Matches($text, [regex]::Escape($old))).Count -ne 1) { throw 'OnGpuReady anchor mismatch' }
+          $text = $text.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_PRODUCTION_BARRIER_PATCH=PASS'
+
+      - name: Adapt E2 observation to production host-pivot semantics checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+          $pattern = '(?s)    if \(g_continue_seen\.load\(std::memory_order_acquire\) != 1 \|\|.*?    Trace\("IMP008E_E2_PRODUCTION_RETRY_STATE"\);'
+          $matches = [regex]::Matches($text, $pattern)
+          if ($matches.Count -ne 1) { throw "retry-state observer anchor mismatch: $($matches.Count)" }
+          $text = [regex]::Replace($text, $pattern, '    Trace("IMP008E_E2_HOST_PIVOT_RETRY_STATE");', 1)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_PRODUCTION_OBSERVER_PATCH=PASS'
+
+      - name: Verify checkout-only diagnostic delta
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          prod='1572c8c55508d67d4423e025ec30ad7f3d2f9291'
+          git diff --quiet "$prod" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'constexpr std::size_t DataPages = 18;' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          grep -Fq 'WriteU32(bytes, GuestSvcOffset, GuestSvc33);' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          grep -Fq 'IMP008E_E2_CPU_MANAGER_BARRIER_HELD' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          grep -Fq 'IMP008E_E2_HOST_PIVOT_RETRY_STATE' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          ! grep -Fq 'IMP008E_E2_TEB_GUEST_STACK_BOUNDS=PASS' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          ! grep -Fq 'IMP008E_E2_HOST_PIVOT_INVALIDATED=PASS' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'IMP008E_E2_PRODUCTION_CAUSAL_BOUNDARY=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp' build/compile_commands.json
+          echo 'IMP008E_E2_PRODUCTION_CONFIGURE=PASS'
+
+      - name: Build production E2 executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build --target imp008e_e2_rasterizer_cached_retry --parallel > imp008e-e2-production-build.log 2>&1
+          rc=$?
+          cat imp008e-e2-production-build.log
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          set -euo pipefail
+          exe="$(find build -type f -name 'imp008e_e2_rasterizer_cached_retry.exe' -print -quit)"
+          test -n "$exe"
+          mkdir -p e2-artifact
+          cp "$exe" e2-artifact/
+          sha256sum e2-artifact/imp008e_e2_rasterizer_cached_retry.exe | tee e2-artifact/imp008e-e2.exe.sha256
+          git rev-parse HEAD > e2-artifact/imp008e-e2.source-sha.txt
+          echo '1572c8c55508d67d4423e025ec30ad7f3d2f9291' > e2-artifact/imp008e-e2.production-sha.txt
+          echo 'IMP008E_E2_PRODUCTION_BUILD=PASS'
+
+      - name: Upload exact production E2 executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-production-${{ github.sha }}
+          path: |
+            eden/e2-artifact/imp008e_e2_rasterizer_cached_retry.exe
+            eden/e2-artifact/imp008e-e2.exe.sha256
+            eden/e2-artifact/imp008e-e2.source-sha.txt
+            eden/e2-artifact/imp008e-e2.production-sha.txt
+            eden/imp008e-e2-production-build.log
+          if-no-files-found: error
+          retention-days: 7
+
+  run-e2-self-hosted:
+    needs: build-e2-hosted
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Download hosted production executable
+        uses: actions/download-artifact@v5
+        with:
+          name: imp008e-e2-production-${{ github.sha }}
+          path: e2
+
+      - name: Verify physical runner and production artifact
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'ARM64') { throw 'Physical ARM64 runner boundary mismatch' }
+          $exe = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          $source = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e-e2.source-sha.txt' | Select-Object -First 1
+          $prod = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e-e2.production-sha.txt' | Select-Object -First 1
+          if ($null -eq $exe -or $null -eq $source -or $null -eq $prod) { throw 'Artifact incomplete' }
+          if ([System.IO.File]::ReadAllText($source.FullName).Trim() -ne '${{ github.sha }}') { throw 'Artifact source SHA mismatch' }
+          if ([System.IO.File]::ReadAllText($prod.FullName).Trim() -ne '1572c8c55508d67d4423e025ec30ad7f3d2f9291') { throw 'Production source SHA mismatch' }
+          Write-Host "IMP008E_E2_PRODUCTION_RUNNER=$env:RUNNER_NAME"
+          Write-Host "IMP008E_E2_PRODUCTION_EXE_SHA256=$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash)"
+          Write-Host 'IMP008E_E2_PRODUCTION_ARTIFACT_BOUNDARY=PASS'
+
+      - name: Run production recovery via native CreateProcessW
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          $cwd = (Get-Location).Path
+          if ($null -eq $exe) { throw 'E2 executable missing' }
+
+          Add-Type -Language CSharp -TypeDefinition @'
+          using System;
+          using System.ComponentModel;
+          using System.Runtime.InteropServices;
+          using System.Text;
+
+          public static class NativeProcessRun {
+              const uint WAIT_OBJECT_0 = 0;
+              const uint WAIT_TIMEOUT = 258;
+
+              [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+              struct STARTUPINFO {
+                  public uint cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+                  public uint dwX; public uint dwY; public uint dwXSize; public uint dwYSize;
+                  public uint dwXCountChars; public uint dwYCountChars; public uint dwFillAttribute;
+                  public uint dwFlags; public ushort wShowWindow; public ushort cbReserved2;
+                  public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError;
+              }
+              [StructLayout(LayoutKind.Sequential)]
+              struct PROCESS_INFORMATION {
+                  public IntPtr hProcess; public IntPtr hThread; public uint dwProcessId; public uint dwThreadId;
+              }
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta,
+                  bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+              [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+              [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+              [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr h, uint code);
+              [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+
+              public static uint Run(string exePath, string cwd) {
+                  STARTUPINFO si = new STARTUPINFO();
+                  si.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
+                  PROCESS_INFORMATION pi;
+                  var cmd = new StringBuilder("\"" + exePath + "\"");
+                  if (!CreateProcessW(exePath, cmd, IntPtr.Zero, IntPtr.Zero, true, 0, IntPtr.Zero, cwd, ref si, out pi))
+                      throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessW failed");
+                  try {
+                      uint wait = WaitForSingleObject(pi.hProcess, 300000);
+                      if (wait == WAIT_TIMEOUT) { TerminateProcess(pi.hProcess, 124); return 124; }
+                      if (wait != WAIT_OBJECT_0) throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject failed");
+                      uint exitCode;
+                      if (!GetExitCodeProcess(pi.hProcess, out exitCode))
+                          throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed");
+                      return exitCode;
+                  } finally {
+                      if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+                      if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+                  }
+              }
+          }
+          '@
+
+          [uint32]$native = [NativeProcessRun]::Run($exe.FullName, $cwd)
+          $hex = '0x{0:X8}' -f $native
+          Write-Host "IMP008E_E2_PRODUCTION_NATIVE_EXIT=$hex"
+          if ($native -ne 0) { throw "Production E2 native exit was $hex" }
+          Write-Host 'IMP008E_E2_PRODUCTION_FULL_RECOVERY=PASS'
