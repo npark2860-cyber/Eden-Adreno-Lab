@@ -25,82 +25,16 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import base64
 
           path = Path('.github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml')
           text = path.read_text(encoding='utf-8')
-          anchor = '''      - name: Route cached AV through host stack checkout only\n'''
+          anchor = '      - name: Route cached AV through host stack checkout only\n'
           if text.count(anchor) != 1:
               raise SystemExit(f'host-pivot step anchor mismatch: {text.count(anchor)}')
 
-          step = r'''      - name: Register guest allocation as TEB stack bounds checkout only
-        shell: pwsh
-        working-directory: eden
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
-          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
-          $old = @"
-              Trace("IMP008E_E2_PRE_RUNTHREAD");
-              arm->LockThread(thread);
-              const Core::HaltReason halt_reason = arm->RunThread(thread);
-              arm->UnlockThread(thread);
-          "@.Replace("`r`n", "`n").Trim("`n")
-          $new = @"
-              Trace("IMP008E_E2_PRE_RUNTHREAD");
-
-              auto* const teb_for_stack = NtCurrentTeb();
-              void* const original_stack_base = teb_for_stack->NtTib.StackBase;
-              void* const original_stack_limit = teb_for_stack->NtTib.StackLimit;
-              MEMORY_BASIC_INFORMATION guest_stack_mbi{};
-              if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &guest_stack_mbi,
-                               sizeof(guest_stack_mbi)) == 0 ||
-                  guest_stack_mbi.AllocationBase == nullptr) {
-                  Fatal("IMP008E_E2_TEB_GUEST_STACK_QUERY", 101);
-              }
-              const u64 guest_allocation_base =
-                  reinterpret_cast<u64>(guest_stack_mbi.AllocationBase);
-              u64 guest_allocation_end = guest_allocation_base;
-              for (u64 cursor = guest_allocation_base;;) {
-                  MEMORY_BASIC_INFORMATION region{};
-                  if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||
-                      region.AllocationBase != guest_stack_mbi.AllocationBase) {
-                      break;
-                  }
-                  const u64 region_end = reinterpret_cast<u64>(region.BaseAddress) + region.RegionSize;
-                  if (region_end <= cursor) {
-                      break;
-                  }
-                  guest_allocation_end = region_end;
-                  cursor = region_end;
-              }
-              if (guest_sp <= guest_allocation_base || guest_sp >= guest_allocation_end) {
-                  Fatal("IMP008E_E2_TEB_GUEST_STACK_RANGE", 102);
-              }
-
-              teb_for_stack->NtTib.StackLimit = reinterpret_cast<void*>(guest_allocation_base);
-              teb_for_stack->NtTib.StackBase = reinterpret_cast<void*>(guest_allocation_end);
-              std::fprintf(stderr,
-                           "IMP008E_E2_TEB_GUEST_STACK_BOUNDS=PASS ORIGINAL_LIMIT=%p ORIGINAL_BASE=%p GUEST_LIMIT=0x%llX GUEST_BASE=0x%llX SP=0x%llX\n",
-                           original_stack_limit, original_stack_base,
-                           static_cast<unsigned long long>(guest_allocation_base),
-                           static_cast<unsigned long long>(guest_allocation_end),
-                           static_cast<unsigned long long>(guest_sp));
-              std::fflush(stderr);
-
-              arm->LockThread(thread);
-              const Core::HaltReason halt_reason = arm->RunThread(thread);
-              arm->UnlockThread(thread);
-
-              teb_for_stack->NtTib.StackBase = original_stack_base;
-              teb_for_stack->NtTib.StackLimit = original_stack_limit;
-              Trace("IMP008E_E2_TEB_STACK_BOUNDS_RESTORED");
-          "@.Replace("`r`n", "`n").Trim("`n")
-          if (([regex]::Matches($text, [regex]::Escape($old))).Count -ne 1) { throw 'TEB stack-bounds source anchor mismatch' }
-          $text = $text.Replace($old, $new)
-          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
-          Write-Host 'IMP008E_E2_TEB_GUEST_STACK_PATCH=PASS'
-
-'''
+          step_b64 = 'ICAgICAgLSBuYW1lOiBSZWdpc3RlciBndWVzdCBhbGxvY2F0aW9uIGFzIFRFQiBzdGFjayBib3VuZHMgY2hlY2tvdXQgb25seQogICAgICAgIHNoZWxsOiBwd3NoCiAgICAgICAgd29ya2luZy1kaXJlY3Rvcnk6IGVkZW4KICAgICAgICBydW46IHwKICAgICAgICAgICRFcnJvckFjdGlvblByZWZlcmVuY2UgPSAnU3RvcCcKICAgICAgICAgICRwYXRoID0gJ3Byb2Jlcy93aW5kb3dzLWFybTY0LW5jZS1yYXN0ZXJpemVyLWUyL3Jhc3Rlcml6ZXJfY2FjaGVkX3JldHJ5LmNwcCcKICAgICAgICAgICR0ZXh0ID0gW1N5c3RlbS5JTy5GaWxlXTo6UmVhZEFsbFRleHQoJHBhdGgpLlJlcGxhY2UoImByYG4iLCAiYG4iKQogICAgICAgICAgJG9sZCA9IEAiCiAgICAgICAgICAgICAgVHJhY2UoIklNUDAwOEVfRTJfUFJFX1JVTlRIUkVBRCIpOwogICAgICAgICAgICAgIGFybS0+TG9ja1RocmVhZCh0aHJlYWQpOwogICAgICAgICAgICAgIGNvbnN0IENvcmU6OkhhbHRSZWFzb24gaGFsdF9yZWFzb24gPSBhcm0tPlJ1blRocmVhZCh0aHJlYWQpOwogICAgICAgICAgICAgIGFybS0+VW5sb2NrVGhyZWFkKHRocmVhZCk7CiAgICAgICAgICAiQC5SZXBsYWNlKCJgcmBuIiwgImBuIikuVHJpbSgiYG4iKQogICAgICAgICAgJG5ldyA9IEAiCiAgICAgICAgICAgICAgVHJhY2UoIklNUDAwOEVfRTJfUFJFX1JVTlRIUkVBRCIpOwoKICAgICAgICAgICAgICBhdXRvKiBjb25zdCB0ZWJfZm9yX3N0YWNrID0gTnRDdXJyZW50VGViKCk7CiAgICAgICAgICAgICAgdm9pZCogY29uc3Qgb3JpZ2luYWxfc3RhY2tfYmFzZSA9IHRlYl9mb3Jfc3RhY2stPk50VGliLlN0YWNrQmFzZTsKICAgICAgICAgICAgICB2b2lkKiBjb25zdCBvcmlnaW5hbF9zdGFja19saW1pdCA9IHRlYl9mb3Jfc3RhY2stPk50VGliLlN0YWNrTGltaXQ7CiAgICAgICAgICAgICAgTUVNT1JZX0JBU0lDX0lORk9STUFUSU9OIGd1ZXN0X3N0YWNrX21iaXt9OwogICAgICAgICAgICAgIGlmIChWaXJ0dWFsUXVlcnkocmVpbnRlcnByZXRfY2FzdDxjb25zdCB2b2lkKj4oZ3Vlc3Rfc3AgLSAxKSwgJmd1ZXN0X3N0YWNrX21iaSwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNpemVvZihndWVzdF9zdGFja19tYmkpKSA9PSAwIHx8CiAgICAgICAgICAgICAgICAgIGd1ZXN0X3N0YWNrX21iaS5BbGxvY2F0aW9uQmFzZSA9PSBudWxscHRyKSB7CiAgICAgICAgICAgICAgICAgIEZhdGFsKCJJTVAwMDhFX0UyX1RFQl9HVUVTVF9TVEFDS19RVUVSWSIsIDEwMSk7CiAgICAgICAgICAgICAgfQogICAgICAgICAgICAgIGNvbnN0IHU2NCBndWVzdF9hbGxvY2F0aW9uX2Jhc2UgPQogICAgICAgICAgICAgICAgICByZWludGVycHJldF9jYXN0PHU2ND4oZ3Vlc3Rfc3RhY2tfbWJpLkFsbG9jYXRpb25CYXNlKTsKICAgICAgICAgICAgICB1NjQgZ3Vlc3RfYWxsb2NhdGlvbl9lbmQgPSBndWVzdF9hbGxvY2F0aW9uX2Jhc2U7CiAgICAgICAgICAgICAgZm9yICh1NjQgY3Vyc29yID0gZ3Vlc3RfYWxsb2NhdGlvbl9iYXNlOzspIHsKICAgICAgICAgICAgICAgICAgTUVNT1JZX0JBU0lDX0lORk9STUFUSU9OIHJlZ2lvbnt9OwogICAgICAgICAgICAgICAgICBpZiAoVmlydHVhbFF1ZXJ5KHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3Qgdm9pZCo+KGN1cnNvciksICZyZWdpb24sIHNpemVvZihyZWdpb24pKSA9PSAwIHx8CiAgICAgICAgICAgICAgICAgICAgICByZWdpb24uQWxsb2NhdGlvbkJhc2UgIT0gZ3Vlc3Rfc3RhY2tfbWJpLkFsbG9jYXRpb25CYXNlKSB7CiAgICAgICAgICAgICAgICAgICAgICBicmVhazsKICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICBjb25zdCB1NjQgcmVnaW9uX2VuZCA9IHJlaW50ZXJwcmV0X2Nhc3Q8dTY0PihyZWdpb24uQmFzZUFkZHJlc3MpICsgcmVnaW9uLlJlZ2lvblNpemU7CiAgICAgICAgICAgICAgICAgIGlmIChyZWdpb25fZW5kIDw9IGN1cnNvcikgewogICAgICAgICAgICAgICAgICAgICAgYnJlYWs7CiAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgZ3Vlc3RfYWxsb2NhdGlvbl9lbmQgPSByZWdpb25fZW5kOwogICAgICAgICAgICAgICAgICBjdXJzb3IgPSByZWdpb25fZW5kOwogICAgICAgICAgICAgIH0KICAgICAgICAgICAgICBpZiAoZ3Vlc3Rfc3AgPD0gZ3Vlc3RfYWxsb2NhdGlvbl9iYXNlIHx8IGd1ZXN0X3NwID49IGd1ZXN0X2FsbG9jYXRpb25fZW5kKSB7CiAgICAgICAgICAgICAgICAgIEZhdGFsKCJJTVAwMDhFX0UyX1RFQl9HVUVTVF9TVEFDS19SQU5HRSIsIDEwMik7CiAgICAgICAgICAgICAgfQoKICAgICAgICAgICAgICB0ZWJfZm9yX3N0YWNrLT5OdFRpYi5TdGFja0xpbWl0ID0gcmVpbnRlcnByZXRfY2FzdDx2b2lkKj4oZ3Vlc3RfYWxsb2NhdGlvbl9iYXNlKTsKICAgICAgICAgICAgICB0ZWJfZm9yX3N0YWNrLT5OdFRpYi5TdGFja0Jhc2UgPSByZWludGVycHJldF9jYXN0PHZvaWQqPihndWVzdF9hbGxvY2F0aW9uX2VuZCk7CiAgICAgICAgICAgICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwKICAgICAgICAgICAgICAgICAgICAgICAgICAgIklNUDAwOEVfRTJfVEVCX0dVRVNUX1NUQUNLX0JPVU5EUz1QQVNTIE9SSUdJTkFMX0xJTUlUPSVwIE9SSUdJTkFMX0JBU0U9JXAgR1VFU1RfTElNSVQ9MHglbGxYIEdVRVNUX0JBU0U9MHglbGxYIFNQPTB4JWxsWFxuIiwKICAgICAgICAgICAgICAgICAgICAgICAgICAgb3JpZ2luYWxfc3RhY2tfbGltaXQsIG9yaWdpbmFsX3N0YWNrX2Jhc2UsCiAgICAgICAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oZ3Vlc3RfYWxsb2NhdGlvbl9iYXNlKSwKICAgICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihndWVzdF9hbGxvY2F0aW9uX2VuZCksCiAgICAgICAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oZ3Vlc3Rfc3ApKTsKICAgICAgICAgICAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwoKICAgICAgICAgICAgICBhcm0tPkxvY2tUaHJlYWQodGhyZWFkKTsKICAgICAgICAgICAgICBjb25zdCBDb3JlOjpIYWx0UmVhc29uIGhhbHRfcmVhc29uID0gYXJtLT5SdW5UaHJlYWQodGhyZWFkKTsKICAgICAgICAgICAgICBhcm0tPlVubG9ja1RocmVhZCh0aHJlYWQpOwoKICAgICAgICAgICAgICB0ZWJfZm9yX3N0YWNrLT5OdFRpYi5TdGFja0Jhc2UgPSBvcmlnaW5hbF9zdGFja19iYXNlOwogICAgICAgICAgICAgIHRlYl9mb3Jfc3RhY2stPk50VGliLlN0YWNrTGltaXQgPSBvcmlnaW5hbF9zdGFja19saW1pdDsKICAgICAgICAgICAgICBUcmFjZSgiSU1QMDA4RV9FMl9URUJfU1RBQ0tfQk9VTkRTX1JFU1RPUkVEIik7CiAgICAgICAgICAiQC5SZXBsYWNlKCJgcmBuIiwgImBuIikuVHJpbSgiYG4iKQogICAgICAgICAgaWYgKChbcmVnZXhdOjpNYXRjaGVzKCR0ZXh0LCBbcmVnZXhdOjpFc2NhcGUoJG9sZCkpKS5Db3VudCAtbmUgMSkgeyB0aHJvdyAnVEVCIHN0YWNrLWJvdW5kcyBzb3VyY2UgYW5jaG9yIG1pc21hdGNoJyB9CiAgICAgICAgICAkdGV4dCA9ICR0ZXh0LlJlcGxhY2UoJG9sZCwgJG5ldykKICAgICAgICAgIFtTeXN0ZW0uSU8uRmlsZV06OldyaXRlQWxsVGV4dCgkcGF0aCwgJHRleHQsIFtTeXN0ZW0uVGV4dC5VVEY4RW5jb2RpbmddOjpuZXcoJGZhbHNlKSkKICAgICAgICAgIFdyaXRlLUhvc3QgJ0lNUDAwOEVfRTJfVEVCX0dVRVNUX1NUQUNLX1BBVENIPVBBU1MnCgo='
+          step = base64.b64decode(step_b64).decode('utf-8')
           text = text.replace(anchor, step + anchor, 1)
 
           guard_anchor = "          grep -Fq 'IMP008E_E2_CPU_MANAGER_BARRIER_HELD' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp\n"
