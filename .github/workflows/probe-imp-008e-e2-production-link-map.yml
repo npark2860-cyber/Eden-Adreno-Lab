@@ -1,0 +1,235 @@
+name: Probe IMP-008E E2 Production Link Map
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008e-e2-production-link-map.yml
+
+permissions:
+  contents: read
+
+jobs:
+  map-e2-hosted:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+    steps:
+      - name: Checkout exact production-equivalent source
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify production source boundary
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          prod='1572c8c55508d67d4423e025ec30ad7f3d2f9291'
+          probe='probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          git cat-file -e "$prod^{commit}"
+          git diff --quiet "$prod" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test "$(git hash-object "$probe")" = 'ad61af60011578e8aeaeb34154a71f1c97909bc0'
+          grep -Fq 'InstallGuestTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_windows_pending_nce_fault' src/core/arm/nce/arm_nce.h
+          echo 'IMP008E_E2_LINK_MAP_SOURCE_BOUNDARY=PASS'
+
+      - name: Add exact E2 target plus observation-only linker map
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008e_e2_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008e_e2_rasterizer_cached_retry
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+              ${CMAKE_BINARY_DIR}/imp008e_e2_vma.cpp)
+          target_include_directories(imp008e_e2_rasterizer_cached_retry PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008e_e2_rasterizer_cached_retry PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008e_e2_rasterizer_cached_retry PRIVATE
+              ${PLATFORM_LIBRARIES} Threads::Threads user32)
+          target_link_options(imp008e_e2_rasterizer_cached_retry PRIVATE
+              "-Wl,-Map,${CMAKE_BINARY_DIR}/imp008e-e2-production.map")
+          CMAKE
+          echo 'IMP008E_E2_LINK_MAP_TARGET=PASS'
+
+      - name: Apply identical renderer diagnostics checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path)
+          $oldInclude = '#include "common/settings.h"'
+          $newInclude = "#include `"common/logging.h`"`r`n#include `"common/settings.h`""
+          if (-not $text.Contains($oldInclude)) { throw 'logging include anchor missing' }
+          $text = $text.Replace($oldInclude, $newInclude)
+          $oldMain = '    Trace("IMP008E_E2_MAIN_ENTER");'
+          $newMain = "    Common::Log::Initialize();`r`n    Common::Log::SetColorConsoleBackendEnabled(false);`r`n    Common::Log::Start();`r`n    Trace(`"IMP008E_E2_MAIN_ENTER`" );"
+          if (-not $text.Contains($oldMain)) { throw 'logging main anchor missing' }
+          $text = $text.Replace($oldMain, $newMain)
+          $oldLoad = "    const Core::SystemResultStatus load_result =`r`n        system.Load(window, nro_path.string(), load_parameters);"
+          if (-not $text.Contains($oldLoad)) { $oldLoad = "    const Core::SystemResultStatus load_result =`n        system.Load(window, nro_path.string(), load_parameters);" }
+          if (-not $text.Contains($oldLoad)) { throw 'logging stop anchor missing' }
+          $text = $text.Replace($oldLoad, $oldLoad + "`r`n    Common::Log::Stop();`r`n    Trace(`"IMP008E_E2_RENDERER_DIAGNOSTICS_FLUSHED`" );")
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_LINK_MAP_RENDERER_PATCH=PASS'
+
+      - name: Apply identical CPU barrier checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path)
+          $old = '    system.GetCpuManager().OnGpuReady();'
+          $new = '    Trace("IMP008E_E2_CPU_MANAGER_BARRIER_HELD");'
+          if (([regex]::Matches($text, [regex]::Escape($old))).Count -ne 1) { throw 'OnGpuReady anchor mismatch' }
+          $text = $text.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_LINK_MAP_BARRIER_PATCH=PASS'
+
+      - name: Apply identical host-pivot observer adaptation checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+          $pattern = '(?s)    if \(g_continue_seen\.load\(std::memory_order_acquire\) != 1 \|\|.*?    Trace\("IMP008E_E2_PRODUCTION_RETRY_STATE"\);'
+          $matches = [regex]::Matches($text, $pattern)
+          if ($matches.Count -ne 1) { throw "retry-state observer anchor mismatch: $($matches.Count)" }
+          $text = [regex]::Replace($text, $pattern, '    Trace("IMP008E_E2_HOST_PIVOT_RETRY_STATE");', 1)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_LINK_MAP_OBSERVER_PATCH=PASS'
+
+      - name: Verify observation-only delta
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          prod='1572c8c55508d67d4423e025ec30ad7f3d2f9291'
+          git diff --quiet "$prod" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'IMP008E_E2_CPU_MANAGER_BARRIER_HELD' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          grep -Fq 'IMP008E_E2_HOST_PIVOT_RETRY_STATE' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          ! grep -Fq 'IMP008E_E2_TEB_GUEST_STACK_BOUNDS=PASS' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp
+          echo 'IMP008E_E2_LINK_MAP_CAUSAL_BOUNDARY=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure identical Windows ARM64 build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp' build/compile_commands.json
+          echo 'IMP008E_E2_LINK_MAP_CONFIGURE=PASS'
+
+      - name: Build and resolve crash symbol from map
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008e_e2_rasterizer_cached_retry --parallel
+          map='build/imp008e-e2-production.map'
+          test -s "$map"
+          exe="$(find build -type f -name 'imp008e_e2_rasterizer_cached_retry.exe' -print -quit)"
+          test -n "$exe"
+          echo "IMP008E_E2_LINK_MAP_EXE_SHA256=$(sha256sum "$exe" | awk '{print toupper($1)}')"
+          echo 'IMP008E_E2_LINK_MAP_FILE=PASS'
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          p = Path('build/imp008e-e2-production.map')
+          lines = p.read_text(encoding='utf-8', errors='replace').splitlines()
+          target_abs = 0x1401D6408
+          target_rva = 0x1D6408
+          candidates = []
+          for i, line in enumerate(lines):
+              for token in re.findall(r'(?<![0-9A-Fa-f])(?:0x)?[0-9A-Fa-f]{6,16}(?![0-9A-Fa-f])', line):
+                  try:
+                      value = int(token, 16)
+                  except ValueError:
+                      continue
+                  for target in (target_abs, target_rva):
+                      if value <= target and target - value <= 0x2000:
+                          candidates.append((target - value, i, value, line))
+          candidates.sort(key=lambda x: (x[0], x[1]))
+          print('IMP008E_E2_LINK_MAP_TARGET_ABS=0x%X' % target_abs)
+          print('IMP008E_E2_LINK_MAP_TARGET_RVA=0x%X' % target_rva)
+          if not candidates:
+              print('IMP008E_E2_LINK_MAP_NEAREST=NOT_FOUND')
+              for i, line in enumerate(lines):
+                  if '1d64' in line.lower() or '1401d64' in line.lower():
+                      print(f'MAP[{i+1}]={line}')
+              raise SystemExit(71)
+          seen = set()
+          emitted = 0
+          for delta, i, value, line in candidates:
+              key = (i, line)
+              if key in seen:
+                  continue
+              seen.add(key)
+              lo=max(0,i-3); hi=min(len(lines),i+4)
+              print(f'IMP008E_E2_LINK_MAP_CANDIDATE delta=0x{delta:X} line={i+1} value=0x{value:X}')
+              for j in range(lo,hi): print(f'MAP[{j+1}]={lines[j]}')
+              emitted += 1
+              if emitted >= 8: break
+          print('IMP008E_E2_LINK_MAP_RESOLUTION=PASS')
+          PY
+
+      - name: Upload linker map
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-production-link-map-${{ github.sha }}
+          path: eden/build/imp008e-e2-production.map
+          if-no-files-found: error
+          retention-days: 7
