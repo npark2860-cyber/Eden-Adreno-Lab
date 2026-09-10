@@ -1,0 +1,138 @@
+name: Prepare IMP-008E E2 TEB Guest Stack Bounds
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/patch-imp-008e-e2-teb-guest-stack-bounds.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare-teb-stack-bounds:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Add only guest TEB stack-bounds probe variable
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('.github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml')
+          text = path.read_text(encoding='utf-8')
+          anchor = '''      - name: Route cached AV through host stack checkout only\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'host-pivot step anchor mismatch: {text.count(anchor)}')
+
+          step = r'''      - name: Register guest allocation as TEB stack bounds checkout only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp'
+          $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+          $old = @"
+              Trace("IMP008E_E2_PRE_RUNTHREAD");
+              arm->LockThread(thread);
+              const Core::HaltReason halt_reason = arm->RunThread(thread);
+              arm->UnlockThread(thread);
+          "@.Replace("`r`n", "`n").Trim("`n")
+          $new = @"
+              Trace("IMP008E_E2_PRE_RUNTHREAD");
+
+              auto* const teb_for_stack = NtCurrentTeb();
+              void* const original_stack_base = teb_for_stack->NtTib.StackBase;
+              void* const original_stack_limit = teb_for_stack->NtTib.StackLimit;
+              MEMORY_BASIC_INFORMATION guest_stack_mbi{};
+              if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &guest_stack_mbi,
+                               sizeof(guest_stack_mbi)) == 0 ||
+                  guest_stack_mbi.AllocationBase == nullptr) {
+                  Fatal("IMP008E_E2_TEB_GUEST_STACK_QUERY", 101);
+              }
+              const u64 guest_allocation_base =
+                  reinterpret_cast<u64>(guest_stack_mbi.AllocationBase);
+              u64 guest_allocation_end = guest_allocation_base;
+              for (u64 cursor = guest_allocation_base;;) {
+                  MEMORY_BASIC_INFORMATION region{};
+                  if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||
+                      region.AllocationBase != guest_stack_mbi.AllocationBase) {
+                      break;
+                  }
+                  const u64 region_end = reinterpret_cast<u64>(region.BaseAddress) + region.RegionSize;
+                  if (region_end <= cursor) {
+                      break;
+                  }
+                  guest_allocation_end = region_end;
+                  cursor = region_end;
+              }
+              if (guest_sp <= guest_allocation_base || guest_sp >= guest_allocation_end) {
+                  Fatal("IMP008E_E2_TEB_GUEST_STACK_RANGE", 102);
+              }
+
+              teb_for_stack->NtTib.StackLimit = reinterpret_cast<void*>(guest_allocation_base);
+              teb_for_stack->NtTib.StackBase = reinterpret_cast<void*>(guest_allocation_end);
+              std::fprintf(stderr,
+                           "IMP008E_E2_TEB_GUEST_STACK_BOUNDS=PASS ORIGINAL_LIMIT=%p ORIGINAL_BASE=%p GUEST_LIMIT=0x%llX GUEST_BASE=0x%llX SP=0x%llX\n",
+                           original_stack_limit, original_stack_base,
+                           static_cast<unsigned long long>(guest_allocation_base),
+                           static_cast<unsigned long long>(guest_allocation_end),
+                           static_cast<unsigned long long>(guest_sp));
+              std::fflush(stderr);
+
+              arm->LockThread(thread);
+              const Core::HaltReason halt_reason = arm->RunThread(thread);
+              arm->UnlockThread(thread);
+
+              teb_for_stack->NtTib.StackBase = original_stack_base;
+              teb_for_stack->NtTib.StackLimit = original_stack_limit;
+              Trace("IMP008E_E2_TEB_STACK_BOUNDS_RESTORED");
+          "@.Replace("`r`n", "`n").Trim("`n")
+          if (([regex]::Matches($text, [regex]::Escape($old))).Count -ne 1) { throw 'TEB stack-bounds source anchor mismatch' }
+          $text = $text.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_E2_TEB_GUEST_STACK_PATCH=PASS'
+
+'''
+          text = text.replace(anchor, step + anchor, 1)
+
+          guard_anchor = "          grep -Fq 'IMP008E_E2_CPU_MANAGER_BARRIER_HELD' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp\n"
+          guard_new = guard_anchor + "          grep -Fq 'IMP008E_E2_TEB_GUEST_STACK_BOUNDS=PASS' probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp\n"
+          if text.count(guard_anchor) != 1:
+              raise SystemExit(f'causal guard anchor mismatch: {text.count(guard_anchor)}')
+          text = text.replace(guard_anchor, guard_new, 1)
+          path.write_text(text, encoding='utf-8', newline='\n')
+          print('IMP008E_E2_TEB_GUEST_STACK_WORKFLOW_PATCH=PASS')
+
+      - name: Verify one-variable workflow delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- .github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml | tee /tmp/teb-stack.diff
+          test "$(git diff --name-only | wc -l)" -eq 1
+          test "$(git diff --name-only)" = '.github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml'
+          grep -Fq 'Register guest allocation as TEB stack bounds checkout only' /tmp/teb-stack.diff
+          grep -Fq 'teb_for_stack->NtTib.StackLimit' /tmp/teb-stack.diff
+          grep -Fq 'teb_for_stack->NtTib.StackBase' /tmp/teb-stack.diff
+          grep -Fq 'IMP008E_E2_TEB_GUEST_STACK_BOUNDS=PASS' /tmp/teb-stack.diff
+          grep -Fq 'IMP008E_E2_TEB_STACK_BOUNDS_RESTORED' /tmp/teb-stack.diff
+          ! grep -Fq 'DataPages = 1024' /tmp/teb-stack.diff
+          echo 'IMP008E_E2_TEB_GUEST_STACK_WORKFLOW_DELTA=PASS'
+
+      - name: Commit diagnostic workflow delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/probe-imp-008e-e2-host-pivot-full-recovery.yml
+          git commit -m 'IMP-008E: register guest stack bounds in TEB probe'
+          echo "IMP008E_E2_TEB_GUEST_STACK_HEAD=$(git rev-parse HEAD)"
+          git push origin HEAD:exp/imp-008e-windows-nce-rasterizer-recovery-runtime
