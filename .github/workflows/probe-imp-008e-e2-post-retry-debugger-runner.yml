@@ -1,0 +1,214 @@
+name: Probe IMP-008E E2 Post-Retry Debugger Runner
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008e-e2-post-retry-debugger-runner.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  debug-e2-self-hosted:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Reuse exact BRK diagnostic artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: imp008e-e2-postretry-brk-bcf679f7e9dfe446302973e8598484b92e952c9d
+          path: e2
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          run-id: 34391149049
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify physical runner and reused artifact
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'ARM64') {
+            throw "Expected physical Windows ARM64 runner, got $env:RUNNER_OS/$env:RUNNER_ARCH"
+          }
+          $exe = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          $shaFile = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e-e2.source-sha.txt' | Select-Object -First 1
+          if ($null -eq $exe -or $null -eq $shaFile) { throw 'Reused BRK artifact incomplete' }
+          $sourceSha = [System.IO.File]::ReadAllText($shaFile.FullName).Trim()
+          if ($sourceSha -ne 'bcf679f7e9dfe446302973e8598484b92e952c9d') {
+            throw "Unexpected artifact source SHA: $sourceSha"
+          }
+          Write-Host "IMP008E_E2_DEBUGGER_RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Host "IMP008E_E2_DEBUGGER_SOURCE_SHA=$sourceSha"
+          Write-Host "IMP008E_E2_DEBUGGER_EXE_SHA256=$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash)"
+          Write-Host 'IMP008E_E2_DEBUGGER_ARTIFACT_BOUNDARY=PASS'
+
+      - name: Observe AV retry and next PC with Windows debugger
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          if ($null -eq $exe) { throw 'E2 executable missing' }
+
+          Add-Type -Language CSharp -TypeDefinition @'
+          using System;
+          using System.ComponentModel;
+          using System.Runtime.InteropServices;
+          using System.Text;
+
+          public static class NativeDebug {
+              const uint DEBUG_ONLY_THIS_PROCESS = 0x00000002;
+              const uint EXCEPTION_DEBUG_EVENT = 1;
+              const uint EXIT_PROCESS_DEBUG_EVENT = 5;
+              const uint DBG_CONTINUE = 0x00010002;
+              const uint DBG_EXCEPTION_NOT_HANDLED = 0x80010001;
+              const uint EXCEPTION_ACCESS_VIOLATION = 0xC0000005;
+              const uint EXCEPTION_BREAKPOINT = 0x80000003;
+
+              [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+              struct STARTUPINFO {
+                  public uint cb;
+                  public string lpReserved;
+                  public string lpDesktop;
+                  public string lpTitle;
+                  public uint dwX;
+                  public uint dwY;
+                  public uint dwXSize;
+                  public uint dwYSize;
+                  public uint dwXCountChars;
+                  public uint dwYCountChars;
+                  public uint dwFillAttribute;
+                  public uint dwFlags;
+                  public ushort wShowWindow;
+                  public ushort cbReserved2;
+                  public IntPtr lpReserved2;
+                  public IntPtr hStdInput;
+                  public IntPtr hStdOutput;
+                  public IntPtr hStdError;
+              }
+
+              [StructLayout(LayoutKind.Sequential)]
+              struct PROCESS_INFORMATION {
+                  public IntPtr hProcess;
+                  public IntPtr hThread;
+                  public uint dwProcessId;
+                  public uint dwThreadId;
+              }
+
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              static extern bool CreateProcessW(
+                  string lpApplicationName,
+                  StringBuilder lpCommandLine,
+                  IntPtr lpProcessAttributes,
+                  IntPtr lpThreadAttributes,
+                  bool bInheritHandles,
+                  uint dwCreationFlags,
+                  IntPtr lpEnvironment,
+                  string lpCurrentDirectory,
+                  ref STARTUPINFO lpStartupInfo,
+                  out PROCESS_INFORMATION lpProcessInformation);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              static extern bool WaitForDebugEvent(IntPtr lpDebugEvent, uint dwMilliseconds);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              static extern bool ContinueDebugEvent(uint dwProcessId, uint dwThreadId, uint dwContinueStatus);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+              [DllImport("kernel32.dll")]
+              static extern bool CloseHandle(IntPtr hObject);
+
+              public static int Run(string exePath) {
+                  STARTUPINFO si = new STARTUPINFO();
+                  si.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
+                  PROCESS_INFORMATION pi;
+                  var command = new StringBuilder("\"" + exePath + "\"");
+                  string cwd = System.IO.Path.GetDirectoryName(exePath);
+                  if (!CreateProcessW(exePath, command, IntPtr.Zero, IntPtr.Zero, false,
+                                      DEBUG_ONLY_THIS_PROCESS, IntPtr.Zero, cwd, ref si, out pi)) {
+                      throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessW failed");
+                  }
+
+                  IntPtr ev = Marshal.AllocHGlobal(512);
+                  long avPc = 0;
+                  bool nextReached = false;
+                  try {
+                      for (;;) {
+                          for (int i = 0; i < 512; i++) Marshal.WriteByte(ev, i, 0);
+                          if (!WaitForDebugEvent(ev, 300000)) {
+                              Console.WriteLine("IMP008E_E2_DEBUGGER_WAIT=FAIL ERROR=" + Marshal.GetLastWin32Error());
+                              TerminateProcess(pi.hProcess, 124);
+                              return 2;
+                          }
+
+                          uint eventCode = unchecked((uint)Marshal.ReadInt32(ev, 0));
+                          uint pid = unchecked((uint)Marshal.ReadInt32(ev, 4));
+                          uint tid = unchecked((uint)Marshal.ReadInt32(ev, 8));
+                          uint continueStatus = DBG_CONTINUE;
+
+                          if (eventCode == EXCEPTION_DEBUG_EVENT) {
+                              // DEBUG_EVENT union is 8-byte aligned on Windows ARM64 and starts at +16.
+                              // EXCEPTION_RECORD.ExceptionAddress is +16 inside that union record.
+                              uint code = unchecked((uint)Marshal.ReadInt32(ev, 16));
+                              long address = Marshal.ReadInt64(ev, 32);
+                              Console.WriteLine("IMP008E_E2_DEBUGGER_EXCEPTION CODE=0x" + code.ToString("X8") +
+                                                " ADDRESS=0x" + address.ToString("X"));
+
+                              if (code == EXCEPTION_ACCESS_VIOLATION) {
+                                  if (avPc == 0) {
+                                      avPc = address;
+                                      Console.WriteLine("IMP008E_E2_DEBUGGER_AV_PC=0x" + avPc.ToString("X"));
+                                  }
+                                  // Let the application's production NCE VEH own invalidation/retry.
+                                  continueStatus = DBG_EXCEPTION_NOT_HANDLED;
+                              } else if (code == EXCEPTION_BREAKPOINT) {
+                                  if (avPc != 0 && address == avPc + 4) {
+                                      nextReached = true;
+                                      Console.WriteLine("IMP008E_E2_DEBUGGER_POSTRETRY_BRK_PC=0x" + address.ToString("X"));
+                                      Console.WriteLine("IMP008E_E2_DEBUGGER_NEXT_INSTRUCTION_REACHED=PASS");
+                                      ContinueDebugEvent(pid, tid, DBG_CONTINUE);
+                                      TerminateProcess(pi.hProcess, 0);
+                                      continue;
+                                  }
+                                  // Consume loader/debugger initialization breakpoints.
+                                  continueStatus = DBG_CONTINUE;
+                              } else {
+                                  continueStatus = DBG_EXCEPTION_NOT_HANDLED;
+                              }
+                          } else if (eventCode == EXIT_PROCESS_DEBUG_EVENT) {
+                              uint exitCode = unchecked((uint)Marshal.ReadInt32(ev, 16));
+                              Console.WriteLine("IMP008E_E2_DEBUGGER_PROCESS_EXIT=0x" + exitCode.ToString("X8"));
+                              ContinueDebugEvent(pid, tid, DBG_CONTINUE);
+                              break;
+                          }
+
+                          if (!ContinueDebugEvent(pid, tid, continueStatus)) {
+                              Console.WriteLine("IMP008E_E2_DEBUGGER_CONTINUE=FAIL ERROR=" + Marshal.GetLastWin32Error());
+                              TerminateProcess(pi.hProcess, 125);
+                              return 3;
+                          }
+                      }
+                  } finally {
+                      Marshal.FreeHGlobal(ev);
+                      if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+                      if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+                  }
+
+                  if (nextReached) {
+                      Console.WriteLine("IMP008E_E2_DEBUGGER_GATE=PASS");
+                      return 0;
+                  }
+                  Console.WriteLine("IMP008E_E2_DEBUGGER_GATE=FAIL");
+                  return 1;
+              }
+          }
+          '@
+
+          $rc = [NativeDebug]::Run($exe.FullName)
+          Write-Host "IMP008E_E2_DEBUGGER_WRAPPER_RC=$rc"
+          if ($rc -ne 0) { throw "Debugger reachability probe failed with RC=$rc" }
