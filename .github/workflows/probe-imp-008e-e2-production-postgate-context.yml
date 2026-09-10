@@ -1,0 +1,106 @@
+name: Probe IMP-008E E2 Production Post-Gate Context
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008e-e2-production-postgate-context.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  capture-postgate-context:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Reuse exact failed production artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: imp008e-e2-production-a66a475839e8faf6bce6f0cb735faac73acd69de
+          path: e2
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          run-id: 34442800469
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Capture post-gate ARM64 register context
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem e2 -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          if ($null -eq $exe) { throw 'E2 executable missing' }
+          if ((Get-FileHash $exe.FullName -Algorithm SHA256).Hash -ne 'AEE5876C2FB601E19E990A2DCF3BAEAB645E15320D2D63DE235FA3EBF53D5FD5') { throw 'EXE SHA mismatch' }
+
+          Add-Type -Language CSharp -TypeDefinition @'
+          using System;
+          using System.ComponentModel;
+          using System.Runtime.InteropServices;
+          using System.Text;
+
+          public static class PostGateArm64Context {
+              const uint DEBUG_ONLY_THIS_PROCESS=2, EXCEPTION_DEBUG_EVENT=1, CREATE_PROCESS_DEBUG_EVENT=3, EXIT_PROCESS_DEBUG_EVENT=5;
+              const uint DBG_CONTINUE=0x00010002, DBG_EXCEPTION_NOT_HANDLED=0x80010001, AV=0xC0000005, BP=0x80000003;
+              const uint THREAD_GET_CONTEXT=0x0008, THREAD_QUERY_INFORMATION=0x0040;
+              const uint CONTEXT_ARM64_CONTROL_INTEGER=0x00400003;
+              [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct STARTUPINFO { public uint cb; public string a,b,c; public uint d,e,f,g,h,i,j,k; public ushort l,m; public IntPtr n,o,p,q; }
+              [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess,hThread; public uint pid,tid; }
+              [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string app,StringBuilder cmd,IntPtr pa,IntPtr ta,bool inherit,uint flags,IntPtr env,string cwd,ref STARTUPINFO si,out PROCESS_INFORMATION pi);
+              [DllImport("kernel32.dll",SetLastError=true)] static extern bool WaitForDebugEvent(IntPtr e,uint ms);
+              [DllImport("kernel32.dll",SetLastError=true)] static extern bool ContinueDebugEvent(uint p,uint t,uint s);
+              [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenThread(uint access,bool inherit,uint tid);
+              [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetThreadContext(IntPtr thread,IntPtr context);
+              [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+
+              static ulong U64(IntPtr p,int offset) { return unchecked((ulong)Marshal.ReadInt64(p,offset)); }
+              static void Capture(uint tid, ulong imageBase) {
+                  IntPtr th=OpenThread(THREAD_GET_CONTEXT|THREAD_QUERY_INFORMATION,false,tid);
+                  if(th==IntPtr.Zero) { Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_OPEN_THREAD=FAIL ERROR="+Marshal.GetLastWin32Error()); return; }
+                  IntPtr raw=Marshal.AllocHGlobal(0x500+0x10);
+                  long a=raw.ToInt64(); IntPtr ctx=new IntPtr((a+15)&~15L);
+                  try {
+                      for(int i=0;i<0x500;i++) Marshal.WriteByte(ctx,i,0);
+                      Marshal.WriteInt32(ctx,0,unchecked((int)CONTEXT_ARM64_CONTROL_INTEGER));
+                      if(!GetThreadContext(th,ctx)) { Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_GET=FAIL ERROR="+Marshal.GetLastWin32Error()); return; }
+                      ulong x0=U64(ctx,8), x19=U64(ctx,8+19*8), fp=U64(ctx,8+29*8), lr=U64(ctx,8+30*8), sp=U64(ctx,256), pc=U64(ctx,264);
+                      Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_X0=0x"+x0.ToString("X"));
+                      Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_X19=0x"+x19.ToString("X"));
+                      Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_FP=0x"+fp.ToString("X"));
+                      Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_LR=0x"+lr.ToString("X"));
+                      Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_SP=0x"+sp.ToString("X"));
+                      Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_PC=0x"+pc.ToString("X"));
+                      if(imageBase!=0) {
+                          Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_PC_RVA=0x"+(pc-imageBase).ToString("X"));
+                          Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_LR_RVA=0x"+(lr-imageBase).ToString("X"));
+                      }
+                      Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_CAPTURE=PASS");
+                  } finally { Marshal.FreeHGlobal(raw); CloseHandle(th); }
+              }
+
+              public static int Run(string path) {
+                  var si=new STARTUPINFO(); si.cb=(uint)Marshal.SizeOf(typeof(STARTUPINFO)); PROCESS_INFORMATION pi;
+                  var cmd=new StringBuilder("\""+path+"\"");
+                  if(!CreateProcessW(path,cmd,IntPtr.Zero,IntPtr.Zero,false,DEBUG_ONLY_THIS_PROCESS,IntPtr.Zero,System.IO.Path.GetDirectoryName(path),ref si,out pi)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                  IntPtr ev=Marshal.AllocHGlobal(512); ulong imageBase=0; bool captured=false;
+                  try { for(;;) { for(int i=0;i<512;i++) Marshal.WriteByte(ev,i,0); if(!WaitForDebugEvent(ev,300000)) return 2;
+                      uint ec=(uint)Marshal.ReadInt32(ev,0), pid=(uint)Marshal.ReadInt32(ev,4), tid=(uint)Marshal.ReadInt32(ev,8), st=DBG_CONTINUE;
+                      if(ec==CREATE_PROCESS_DEBUG_EVENT) { imageBase=unchecked((ulong)Marshal.ReadInt64(ev,40)); Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_IMAGE_BASE=0x"+imageBase.ToString("X")); }
+                      else if(ec==EXCEPTION_DEBUG_EVENT) { uint code=(uint)Marshal.ReadInt32(ev,16); ulong pc=unchecked((ulong)Marshal.ReadInt64(ev,32)); uint first=(uint)Marshal.ReadInt32(ev,168);
+                          if(code==AV) { ulong fault=unchecked((ulong)Marshal.ReadInt64(ev,56)); ulong rva=imageBase==0?0:pc-imageBase;
+                              Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_AV FIRST_CHANCE="+first+" PC_RVA=0x"+rva.ToString("X")+" FAULT=0x"+fault.ToString("X"));
+                              if(!captured && rva==0x1D6408) { Capture(tid,imageBase); captured=true; }
+                              st=DBG_EXCEPTION_NOT_HANDLED;
+                          } else if(code==BP) st=DBG_CONTINUE; else st=DBG_EXCEPTION_NOT_HANDLED;
+                      } else if(ec==EXIT_PROCESS_DEBUG_EVENT) { uint code=(uint)Marshal.ReadInt32(ev,16); Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_EXIT=0x"+code.ToString("X8")); ContinueDebugEvent(pid,tid,DBG_CONTINUE); break; }
+                      if(!ContinueDebugEvent(pid,tid,st)) return 3;
+                  }} finally { Marshal.FreeHGlobal(ev); if(pi.hThread!=IntPtr.Zero) CloseHandle(pi.hThread); if(pi.hProcess!=IntPtr.Zero) CloseHandle(pi.hProcess); }
+                  Console.WriteLine("IMP008E_E2_POSTGATE_CONTEXT_FINAL="+(captured?"PASS":"FAIL"));
+                  return captured?0:4;
+              }
+          }
+          '@
+          $rc=[PostGateArm64Context]::Run($exe.FullName)
+          Write-Host "IMP008E_E2_POSTGATE_CONTEXT_WRAPPER_RC=$rc"
+          if($rc -ne 0){ throw "Context capture failed RC=$rc" }
