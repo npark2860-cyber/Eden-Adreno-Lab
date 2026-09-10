@@ -1,0 +1,183 @@
+name: Probe IMP-008E E2 Production Post-Gate Debugger
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008e-e2-production-postgate-debugger.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  debug-production-postgate-self-hosted:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Reuse exact failed production artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: imp008e-e2-production-a66a475839e8faf6bce6f0cb735faac73acd69de
+          path: e2
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          run-id: 34442800469
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify exact artifact boundary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'ARM64') { throw 'Physical ARM64 runner boundary mismatch' }
+          $exe = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          $source = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e-e2.source-sha.txt' | Select-Object -First 1
+          $prod = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e-e2.production-sha.txt' | Select-Object -First 1
+          if ($null -eq $exe -or $null -eq $source -or $null -eq $prod) { throw 'Artifact incomplete' }
+          $sourceSha = [System.IO.File]::ReadAllText($source.FullName).Trim()
+          $prodSha = [System.IO.File]::ReadAllText($prod.FullName).Trim()
+          $exeSha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          if ($sourceSha -ne 'a66a475839e8faf6bce6f0cb735faac73acd69de') { throw "Unexpected artifact source SHA: $sourceSha" }
+          if ($prodSha -ne '1572c8c55508d67d4423e025ec30ad7f3d2f9291') { throw "Unexpected production SHA: $prodSha" }
+          if ($exeSha -ne 'AEE5876C2FB601E19E990A2DCF3BAEAB645E15320D2D63DE235FA3EBF53D5FD5') { throw "Unexpected exe SHA256: $exeSha" }
+          Write-Host "IMP008E_E2_POSTGATE_DEBUG_RUNNER=$env:RUNNER_NAME"
+          Write-Host "IMP008E_E2_POSTGATE_DEBUG_SOURCE_SHA=$sourceSha"
+          Write-Host "IMP008E_E2_POSTGATE_DEBUG_PRODUCTION_SHA=$prodSha"
+          Write-Host "IMP008E_E2_POSTGATE_DEBUG_EXE_SHA256=$exeSha"
+          Write-Host 'IMP008E_E2_POSTGATE_DEBUG_ARTIFACT_BOUNDARY=PASS'
+
+      - name: Capture first and second chance exception sequence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -Path 'e2' -Recurse -File -Filter 'imp008e_e2_rasterizer_cached_retry.exe' | Select-Object -First 1
+          if ($null -eq $exe) { throw 'E2 executable missing' }
+
+          Add-Type -Language CSharp -TypeDefinition @'
+          using System;
+          using System.ComponentModel;
+          using System.Runtime.InteropServices;
+          using System.Text;
+
+          public static class ProductionPostGateDebug {
+              const uint DEBUG_ONLY_THIS_PROCESS = 0x00000002;
+              const uint EXCEPTION_DEBUG_EVENT = 1;
+              const uint EXIT_PROCESS_DEBUG_EVENT = 5;
+              const uint DBG_CONTINUE = 0x00010002;
+              const uint DBG_EXCEPTION_NOT_HANDLED = 0x80010001;
+              const uint EXCEPTION_ACCESS_VIOLATION = 0xC0000005;
+              const uint EXCEPTION_BREAKPOINT = 0x80000003;
+              const uint WAIT_TIMEOUT = 258;
+
+              [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+              struct STARTUPINFO {
+                  public uint cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+                  public uint dwX; public uint dwY; public uint dwXSize; public uint dwYSize;
+                  public uint dwXCountChars; public uint dwYCountChars; public uint dwFillAttribute;
+                  public uint dwFlags; public ushort wShowWindow; public ushort cbReserved2;
+                  public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError;
+              }
+              [StructLayout(LayoutKind.Sequential)]
+              struct PROCESS_INFORMATION {
+                  public IntPtr hProcess; public IntPtr hThread; public uint dwProcessId; public uint dwThreadId;
+              }
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta,
+                  bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+              [DllImport("kernel32.dll", SetLastError = true)] static extern bool WaitForDebugEvent(IntPtr ev, uint ms);
+              [DllImport("kernel32.dll", SetLastError = true)] static extern bool ContinueDebugEvent(uint pid, uint tid, uint status);
+              [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr h, uint code);
+              [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+              [DllImport("psapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              static extern uint GetMappedFileNameW(IntPtr process, IntPtr address, StringBuilder filename, uint size);
+
+              static string MappedName(IntPtr process, ulong address) {
+                  var sb = new StringBuilder(1024);
+                  uint n = GetMappedFileNameW(process, new IntPtr(unchecked((long)address)), sb, (uint)sb.Capacity);
+                  return n == 0 ? "<unmapped>" : sb.ToString();
+              }
+
+              public static int Run(string exePath) {
+                  STARTUPINFO si = new STARTUPINFO();
+                  si.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
+                  PROCESS_INFORMATION pi;
+                  var cmd = new StringBuilder("\"" + exePath + "\"");
+                  string cwd = System.IO.Path.GetDirectoryName(exePath);
+                  if (!CreateProcessW(exePath, cmd, IntPtr.Zero, IntPtr.Zero, false, DEBUG_ONLY_THIS_PROCESS,
+                                      IntPtr.Zero, cwd, ref si, out pi))
+                      throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessW failed");
+
+                  IntPtr ev = Marshal.AllocHGlobal(512);
+                  int exceptionCount = 0;
+                  int avCount = 0;
+                  try {
+                      for (;;) {
+                          for (int i = 0; i < 512; ++i) Marshal.WriteByte(ev, i, 0);
+                          if (!WaitForDebugEvent(ev, 300000)) {
+                              int error = Marshal.GetLastWin32Error();
+                              Console.WriteLine("IMP008E_E2_POSTGATE_DEBUG_WAIT=FAIL ERROR=" + error);
+                              TerminateProcess(pi.hProcess, 124);
+                              return 2;
+                          }
+                          uint eventCode = unchecked((uint)Marshal.ReadInt32(ev, 0));
+                          uint pid = unchecked((uint)Marshal.ReadInt32(ev, 4));
+                          uint tid = unchecked((uint)Marshal.ReadInt32(ev, 8));
+                          uint status = DBG_CONTINUE;
+
+                          if (eventCode == EXCEPTION_DEBUG_EVENT) {
+                              uint code = unchecked((uint)Marshal.ReadInt32(ev, 16));
+                              ulong address = unchecked((ulong)Marshal.ReadInt64(ev, 32));
+                              uint firstChance = unchecked((uint)Marshal.ReadInt32(ev, 168));
+                              exceptionCount++;
+                              Console.WriteLine("IMP008E_E2_POSTGATE_EXCEPTION_INDEX=" + exceptionCount +
+                                                " FIRST_CHANCE=" + firstChance +
+                                                " CODE=0x" + code.ToString("X8") +
+                                                " PC=0x" + address.ToString("X") +
+                                                " MODULE=" + MappedName(pi.hProcess, address));
+                              if (code == EXCEPTION_ACCESS_VIOLATION) {
+                                  avCount++;
+                                  uint parameterCount = unchecked((uint)Marshal.ReadInt32(ev, 40));
+                                  ulong access = parameterCount >= 1 ? unchecked((ulong)Marshal.ReadInt64(ev, 48)) : ulong.MaxValue;
+                                  ulong fault = parameterCount >= 2 ? unchecked((ulong)Marshal.ReadInt64(ev, 56)) : 0;
+                                  Console.WriteLine("IMP008E_E2_POSTGATE_AV_INDEX=" + avCount +
+                                                    " FIRST_CHANCE=" + firstChance +
+                                                    " ACCESS=" + access +
+                                                    " FAULT=0x" + fault.ToString("X") +
+                                                    " FAULT_MODULE=" + MappedName(pi.hProcess, fault));
+                                  status = DBG_EXCEPTION_NOT_HANDLED;
+                              } else if (code == EXCEPTION_BREAKPOINT) {
+                                  status = DBG_CONTINUE;
+                              } else {
+                                  status = DBG_EXCEPTION_NOT_HANDLED;
+                              }
+                          } else if (eventCode == EXIT_PROCESS_DEBUG_EVENT) {
+                              uint exitCode = unchecked((uint)Marshal.ReadInt32(ev, 16));
+                              Console.WriteLine("IMP008E_E2_POSTGATE_PROCESS_EXIT=0x" + exitCode.ToString("X8"));
+                              Console.WriteLine("IMP008E_E2_POSTGATE_EXCEPTION_COUNT=" + exceptionCount);
+                              Console.WriteLine("IMP008E_E2_POSTGATE_AV_COUNT=" + avCount);
+                              ContinueDebugEvent(pid, tid, DBG_CONTINUE);
+                              break;
+                          }
+
+                          if (!ContinueDebugEvent(pid, tid, status)) {
+                              int error = Marshal.GetLastWin32Error();
+                              Console.WriteLine("IMP008E_E2_POSTGATE_DEBUG_CONTINUE=FAIL ERROR=" + error);
+                              TerminateProcess(pi.hProcess, 125);
+                              return 3;
+                          }
+                      }
+                  } finally {
+                      Marshal.FreeHGlobal(ev);
+                      if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+                      if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+                  }
+                  Console.WriteLine("IMP008E_E2_POSTGATE_DEBUG_SEQUENCE_CAPTURED=PASS");
+                  return 0;
+              }
+          }
+          '@
+
+          $rc = [ProductionPostGateDebug]::Run($exe.FullName)
+          Write-Host "IMP008E_E2_POSTGATE_DEBUG_WRAPPER_RC=$rc"
+          if ($rc -ne 0) { throw "Post-gate debugger capture failed with RC=$rc" }
