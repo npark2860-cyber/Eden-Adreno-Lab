@@ -139,8 +139,9 @@ jobs:
               Trace("IMP008E_E2_PRE_RUNTHREAD");
 
               auto* const teb_for_stack = NtCurrentTeb();
-              void* const original_stack_base = teb_for_stack->NtTib.StackBase;
-              void* const original_stack_limit = teb_for_stack->NtTib.StackLimit;
+              auto* const teb_tib = reinterpret_cast<NT_TIB*>(teb_for_stack);
+              void* const original_stack_base = teb_tib->StackBase;
+              void* const original_stack_limit = teb_tib->StackLimit;
               MEMORY_BASIC_INFORMATION guest_stack_mbi{};
               if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &guest_stack_mbi,
                                sizeof(guest_stack_mbi)) == 0 ||
@@ -167,8 +168,8 @@ jobs:
                   Fatal("IMP008E_E2_TEB_GUEST_STACK_RANGE", 102);
               }
 
-              teb_for_stack->NtTib.StackLimit = reinterpret_cast<void*>(guest_allocation_base);
-              teb_for_stack->NtTib.StackBase = reinterpret_cast<void*>(guest_allocation_end);
+              teb_tib->StackLimit = reinterpret_cast<void*>(guest_allocation_base);
+              teb_tib->StackBase = reinterpret_cast<void*>(guest_allocation_end);
               std::fprintf(stderr,
                            "IMP008E_E2_TEB_GUEST_STACK_BOUNDS=PASS ORIGINAL_LIMIT=%p ORIGINAL_BASE=%p GUEST_LIMIT=0x%llX GUEST_BASE=0x%llX SP=0x%llX\n",
                            original_stack_limit, original_stack_base,
@@ -181,8 +182,8 @@ jobs:
               const Core::HaltReason halt_reason = arm->RunThread(thread);
               arm->UnlockThread(thread);
 
-              teb_for_stack->NtTib.StackBase = original_stack_base;
-              teb_for_stack->NtTib.StackLimit = original_stack_limit;
+              teb_tib->StackBase = original_stack_base;
+              teb_tib->StackLimit = original_stack_limit;
               Trace("IMP008E_E2_TEB_STACK_BOUNDS_RESTORED");
           "@.Replace("`r`n", "`n").Trim("`n")
           if (([regex]::Matches($text, [regex]::Escape($old))).Count -ne 1) { throw 'TEB stack-bounds source anchor mismatch' }
