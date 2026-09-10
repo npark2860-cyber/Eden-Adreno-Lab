@@ -1,0 +1,190 @@
+name: Build Windows ARM64 NCE TEB Top Fix Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-teb-top-fix-validation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-teb-top-fix-validation
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE TEB top-fix validation package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          echo "NCE_TEB_TOP_FIX_SOURCE_SHA=$(git rev-parse HEAD)"
+          echo 'NCE_TEB_TOP_FIX_SOURCE_GUARD=PASS'
+
+      - name: Inject validation-only one-variable TEB top fix
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          old = """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {\n        return false;\n    }\n\n    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n"""
+          new = """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {\n        return false;\n    }\n    if (guest_sp_value == allocation_end) {\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_REALGAME_DIAG TEB_TOP_ACCEPT guest_sp=0x{:016X} allocation_base=0x{:016X} allocation_end=0x{:016X}\",\n                  guest_sp, static_cast<u64>(allocation_base), static_cast<u64>(allocation_end));\n    }\n\n    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n"""
+
+          if text.count(old) != 1:
+              raise SystemExit(f"TEB top-fix anchor count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old_fail = """        if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {\n            NCE::CurrentNceContext::Clear();\n            hr = HaltReason::PrefetchAbort;\n"""
+          new_fail = """        if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {\n            LOG_ERROR(Core_ARM,\n                      \"IMP008_REALGAME_DIAG TEB_FAIL core={} pc=0x{:016X} sp=0x{:016X}\",\n                      m_core_index, m_guest_ctx.pc, m_guest_ctx.sp);\n            NCE::CurrentNceContext::Clear();\n            hr = HaltReason::PrefetchAbort;\n"""
+          if text.count(old_fail) != 1:
+              raise SystemExit(f"TEB fail anchor count={text.count(old_fail)}")
+          text = text.replace(old_fail, new_fail, 1)
+
+          old_final = """    m_guest_ctx.tpidr_el0 = final_tpidr_el0;\n\n    return hr;\n}\n\nHaltReason ArmNce::StepThread"""
+          new_final = """    m_guest_ctx.tpidr_el0 = final_tpidr_el0;\n\n    if (True(hr & HaltReason::PrefetchAbort)) {\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_REALGAME_DIAG FINAL_PREFETCH core={} hr=0x{:X} pc=0x{:016X} sp=0x{:016X}\",\n                  m_core_index, static_cast<u64>(hr), m_guest_ctx.pc, m_guest_ctx.sp);\n    }\n    return hr;\n}\n\nHaltReason ArmNce::StepThread"""
+          if text.count(old_final) != 1:
+              raise SystemExit(f"final-prefetch anchor count={text.count(old_final)}")
+          text = text.replace(old_final, new_final, 1)
+
+          path.write_text(text, encoding="utf-8")
+          print("NCE_TEB_TOP_FIX_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'TEB top-fix injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Select-String -Path src/core/arm/nce/arm_nce_windows.cpp -SimpleMatch 'guest_sp_value > allocation_end' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'new strict upper-bound condition missing' }
+          if (Select-String -Path src/core/arm/nce/arm_nce_windows.cpp -SimpleMatch 'guest_sp_value >= allocation_end' -Quiet) {
+            throw 'old inclusive upper-bound rejection still present'
+          }
+          Select-String -Path src/core/arm/nce/arm_nce_windows.cpp -SimpleMatch 'IMP008_REALGAME_DIAG TEB_TOP_ACCEPT' | Out-Null
+          Write-Host 'NCE_TEB_TOP_FIX_PATCH=PASS'
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'guest_sp_value > allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_TEB_TOP_FIX_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_TEB_TOP_FIX_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-teb-top-fix-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_TEB_TOP_FIX_PACKAGE=PASS'
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged file; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) { throw "Expected exactly one upload file; found $($upload.Count)" }
+          Write-Host 'NCE_TEB_TOP_FIX_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
+
+      - name: Upload Windows ARM64 NCE TEB top-fix validation package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-TEB-TOP-FIX-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
