@@ -1,0 +1,164 @@
+name: Build Windows ARM64 NCE-JIT User Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-jit-test.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-jit-user-test
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE-JIT GUI package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify validated production source and NCE-JIT selector
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+
+          grep -Fq 'ENUM(CpuBackend, Dynarmic, Nce);' src/common/settings_enums.h
+          grep -Fq 'SwitchableSetting<CpuBackend, true> cpu_backend' src/common/settings.h
+          grep -Fq 'CpuBackend::Nce' src/common/settings.h
+          grep -Fq 'ui->backend_group->setVisible(true);' src/yuzu/configuration/configure_cpu.cpp
+          grep -Fq '<string>CPU Backend</string>' src/yuzu/configuration/configure_cpu.ui
+          grep -Fq 'ARCHITECTURE_arm64 AND (ANDROID OR LINUX OR WIN32)' CMakeLists.txt
+          grep -Fq 'add_compile_definitions(HAS_NCE=1)' CMakeLists.txt
+          grep -Fq 'Settings::IsNceEnabled()' src/core/hle/kernel/k_process.cpp
+          grep -Fq 'std::make_unique<Core::ArmNce>' src/core/hle/kernel/k_process.cpp
+          grep -Fq 'std::make_unique<Core::ArmDynarmic64>' src/core/hle/kernel/k_process.cpp
+
+          echo "NCE_JIT_TEST_SOURCE_SHA=$(git rev-parse HEAD)"
+          echo "NCE_JIT_TEST_PRODUCTION_SHA=$PROD_SHA"
+          echo 'NCE_JIT_SELECTOR_SOURCE=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'configure_cpu.cpp' build/compile_commands.json
+          if grep -Fq 'arm/nce/arm_nce.cpp' build/compile_commands.json; then
+            echo 'Linux arm_nce.cpp selected in Windows build' >&2
+            exit 31
+          fi
+          echo 'NCE_JIT_GUI_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_JIT_GUI_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-jit-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_JIT_GUI_PACKAGE=PASS'
+
+      - name: Write test build manifest
+        shell: pwsh
+        run: |
+          @"
+          Windows ARM64 Eden NCE/JIT user test build
+          Source branch: $env:GITHUB_REF_NAME
+          Source SHA: $env:GITHUB_SHA
+          Accepted NCE production implementation: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+          CPU backend selector is built in.
+          Test procedure: stop the running game, select CPU Backend = Nce or Dynarmic, then relaunch the same game.
+          This build does not claim live mid-game backend hot switching.
+          "@ | Set-Content -Encoding UTF8 eden/artifacts/NCE_JIT_TEST_BUILD.txt
+
+      - name: Upload Windows ARM64 NCE-JIT test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-JIT-${{ github.sha }}
+          archive: false
+          path: eden/artifacts/*
+          if-no-files-found: error
+          retention-days: 14
