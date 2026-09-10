@@ -1,0 +1,226 @@
+name: Prepare IMP-008E production host-pivot recovery v3
+
+on:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/prepare-imp-008e-production-host-pivot-v3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-production:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply minimal Windows NCE production recovery
+        shell: python
+        run: |
+          from pathlib import Path
+
+          header = Path('src/core/arm/nce/arm_nce.h')
+          h = header.read_text(encoding='utf-8')
+          anchor = '    std::unique_ptr<NCE::WindowsX18FallbackRunner> m_windows_x18_runner{};'
+          if h.count(anchor) != 1:
+              raise SystemExit(f'arm_nce.h Windows member anchor mismatch: {h.count(anchor)}')
+          h = h.replace(anchor, '\n'.join([
+              anchor,
+              '    bool m_windows_pending_nce_fault{};',
+              '    u64 m_windows_pending_nce_fault_address{};',
+              '    u64 m_windows_pending_nce_fault_page{};',
+          ]), 1)
+          header.write_text(h, encoding='utf-8', newline='\n')
+
+          source = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          s = source.read_text(encoding='utf-8')
+
+          inc = '#include <atomic>\n'
+          if s.count(inc) != 1:
+              raise SystemExit(f'include anchor mismatch: {s.count(inc)}')
+          s = s.replace(inc, inc + '#include <cstdint>\n', 1)
+
+          global_anchor = 'struct BreakTransformState {'
+          global_pos = s.find(global_anchor)
+          if global_pos < 0:
+              raise SystemExit('BreakTransformState anchor missing')
+          helpers = '\n'.join([
+              'struct WindowsTebStackBounds {',
+              '    NT_TIB* tib{};',
+              '    void* host_stack_base{};',
+              '    void* host_stack_limit{};',
+              '};',
+              '',
+              '[[nodiscard]] bool InstallGuestTebStackBounds(u64 guest_sp,',
+              '                                              WindowsTebStackBounds& bounds) noexcept {',
+              '    if (guest_sp == 0) {',
+              '        return false;',
+              '    }',
+              '',
+              '    MEMORY_BASIC_INFORMATION stack_mbi{};',
+              '    if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi,',
+              '                     sizeof(stack_mbi)) == 0 ||',
+              '        stack_mbi.AllocationBase == nullptr) {',
+              '        return false;',
+              '    }',
+              '',
+              '    const auto allocation_base =',
+              '        reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase);',
+              '    std::uintptr_t allocation_end = allocation_base;',
+              '    for (std::uintptr_t cursor = allocation_base;;) {',
+              '        MEMORY_BASIC_INFORMATION region{};',
+              '        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||',
+              '            region.AllocationBase != stack_mbi.AllocationBase) {',
+              '            break;',
+              '        }',
+              '',
+              '        const auto region_end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) +',
+              '                                static_cast<std::uintptr_t>(region.RegionSize);',
+              '        if (region_end <= cursor) {',
+              '            break;',
+              '        }',
+              '        allocation_end = region_end;',
+              '        cursor = region_end;',
+              '    }',
+              '',
+              '    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);',
+              '    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {',
+              '        return false;',
+              '    }',
+              '',
+              '    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());',
+              '    bounds.tib = tib;',
+              '    bounds.host_stack_base = tib->StackBase;',
+              '    bounds.host_stack_limit = tib->StackLimit;',
+              '    tib->StackLimit = reinterpret_cast<void*>(allocation_base);',
+              '    tib->StackBase = reinterpret_cast<void*>(allocation_end);',
+              '    return true;',
+              '}',
+              '',
+              'void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {',
+              '    if (bounds.tib == nullptr) {',
+              '        return;',
+              '    }',
+              '    bounds.tib->StackBase = bounds.host_stack_base;',
+              '    bounds.tib->StackLimit = bounds.host_stack_limit;',
+              '    bounds.tib = nullptr;',
+              '}',
+              '',
+          ])
+          s = s[:global_pos] + helpers + s[global_pos:]
+
+          av_start = s.find('        const auto page_address = Common::ProcessAddress{fault_address & ~Memory::YUZU_PAGEMASK};')
+          if av_start < 0:
+              raise SystemExit('AV policy start missing')
+          av_end_marker = '        return EXCEPTION_CONTINUE_EXECUTION;\n    }\n\n    // IMP-008A does not claim complete game fault compatibility.'
+          av_end = s.find(av_end_marker, av_start)
+          if av_end < 0:
+              raise SystemExit('AV policy end missing')
+          av_replacement = '\n'.join([
+              '        nce->m_windows_pending_nce_fault = true;',
+              '        nce->m_windows_pending_nce_fault_address = fault_address;',
+              '        nce->m_windows_pending_nce_fault_page = fault_address & ~Memory::YUZU_PAGEMASK;',
+              '        params->lock.store(SpinLockLocked, std::memory_order_release);',
+              '        NCE::WindowsNceTransition::RedirectToHost(',
+              '            context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));',
+              '        NCE::WindowsNceTransition::ContinueContext(context);',
+          ])
+          s = s[:av_start] + av_replacement + s[av_end + len('        return EXCEPTION_CONTINUE_EXECUTION;'):]
+
+          fn = s.find('HaltReason ArmNce::RunThread(Kernel::KThread* thread) {')
+          if fn < 0:
+              raise SystemExit('RunThread function missing')
+          loop = s.find('    for (;;) {', fn)
+          if loop < 0:
+              raise SystemExit('RunThread loop missing')
+          install = s.find('NCE::CurrentNceContext::Install(thread_params);', loop)
+          if install < 0:
+              raise SystemExit('RunThread install missing')
+          fallback_token = 'const auto fallback = m_windows_x18_runner->Dispatch('
+          fallback = s.find(fallback_token, install)
+          if fallback < 0:
+              raise SystemExit('RunThread fallback missing')
+          fallback_line = s.rfind('\n', 0, fallback) + 1
+
+          replacement = '\n'.join([
+              '    for (;;) {',
+              '        NCE::CurrentNceContext::Install(thread_params);',
+              '',
+              '        WindowsTebStackBounds teb_stack_bounds{};',
+              '        if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {',
+              '            NCE::CurrentNceContext::Clear();',
+              '            hr = HaltReason::PrefetchAbort;',
+              '            break;',
+              '        }',
+              '',
+              '        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {',
+              '            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(',
+              '                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));',
+              '        } else {',
+              '            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));',
+              '        }',
+              '',
+              '        RestoreHostTebStackBounds(teb_stack_bounds);',
+              '        NCE::CurrentNceContext::Clear();',
+              '',
+              '        if (m_windows_pending_nce_fault) {',
+              '            const u64 pending_fault_address = m_windows_pending_nce_fault_address;',
+              '            const u64 pending_fault_page = m_windows_pending_nce_fault_page;',
+              '            m_windows_pending_nce_fault = false;',
+              '            m_windows_pending_nce_fault_address = 0;',
+              '            m_windows_pending_nce_fault_page = 0;',
+              '',
+              '            if (process->GetMemory().InvalidateNCE(Common::ProcessAddress{pending_fault_page},',
+              '                                                   Memory::YUZU_PAGESIZE)) {',
+              '                continue;',
+              '            }',
+              '',
+              '            if (m_guest_ctx.pc != pending_fault_address) {',
+              '                m_guest_ctx.pc += sizeof(u32);',
+              '                continue;',
+              '            }',
+              '',
+              '            hr = HaltReason::PrefetchAbort;',
+              '            break;',
+              '        }',
+              '',
+          ]) + '\n'
+          s = s[:loop] + replacement + s[fallback_line:]
+
+          source.write_text(s, encoding='utf-8', newline='\n')
+          print('IMP008E_PRODUCTION_HOST_PIVOT_PATCH=PASS')
+
+      - name: Verify production delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only -- src/core/arm/nce | sort)
+          printf 'IMP008E_PRODUCTION_CHANGED=%s\n' "${changed[*]}"
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = 'src/core/arm/nce/arm_nce.h'
+          test "${changed[1]}" = 'src/core/arm/nce/arm_nce_windows.cpp'
+          git diff --check
+          grep -Fq 'InstallGuestTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'RestoreHostTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_windows_pending_nce_fault' src/core/arm/nce/arm_nce.h
+          grep -Fq 'NCE::WindowsNceTransition::ContinueContext(context);' src/core/arm/nce/arm_nce_windows.cpp
+          ! grep -Fq 'IMP008E_E2_HOST_PIVOT_INVALIDATED' src/core/arm/nce/arm_nce_windows.cpp
+          git diff --stat
+          git diff -- src/core/arm/nce/arm_nce.h src/core/arm/nce/arm_nce_windows.cpp
+          echo 'IMP008E_PRODUCTION_DELTA=PASS'
+
+      - name: Commit production recovery on experiment branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/core/arm/nce/arm_nce.h src/core/arm/nce/arm_nce_windows.cpp
+          git commit -m 'IMP-008E: recover cached NCE faults on Windows host stack'
+          echo "IMP008E_PRODUCTION_HEAD=$(git rev-parse HEAD)"
+          git push origin HEAD:exp/imp-008e-windows-nce-rasterizer-recovery-runtime
