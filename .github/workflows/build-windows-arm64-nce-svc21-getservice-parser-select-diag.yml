@@ -1,0 +1,251 @@
+name: Build Windows ARM64 NCE SVC21 GetService Parser Selection Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-svc21-getservice-parser-select-diag.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-svc21-getservice-parser-select-diag
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE GetService parser selection diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test -f .github/workflows/build-windows-arm64-nce-svc21-getservice-outparam-write-diag.yml
+          echo 'GETSERVICE_PARSER_SELECT_SOURCE_GUARD=PASS'
+
+      - name: Reuse validated GetService outparam diagnostic and capture fallback helper code
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/build-windows-arm64-nce-svc21-getservice-outparam-write-diag.yml').read_text(encoding='utf-8')
+          begin_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(begin_marker) + len(begin_marker)
+          end = workflow.index(end_marker, start)
+          script_lines = workflow[start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in script_lines)
+          exec(compile(script, 'validated-getservice-outparam-injection', 'exec'), {})
+
+          path = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(label, old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              text = text.replace(old, new, 1)
+
+          anchor = '            void* const diag_code = reinterpret_cast<void*>(diag_outparam_branch_trap_pc);\n'
+          observe = '\n'.join([
+              '            const u32 diag_branch_original = diag_outparam_branch_original;',
+              '            s64 diag_parser_imm19 = static_cast<s64>((diag_branch_original >> 5) & 0x7FFFFu);',
+              '            if ((diag_parser_imm19 & (1ll << 18)) != 0) {',
+              '                diag_parser_imm19 -= (1ll << 19);',
+              '            }',
+              '            const u64 diag_fallback_pc = static_cast<u64>(',
+              '                static_cast<s64>(diag_outparam_branch_trap_pc) + diag_parser_imm19 * 4);',
+              '            u32 diag_fallback_code[7]{};',
+              '            const bool diag_fallback_code_ok = process->GetMemory().ReadBlock(',
+              '                Common::ProcessAddress{diag_fallback_pc}, diag_fallback_code,',
+              '                sizeof(diag_fallback_code));',
+              '            LOG_ERROR(Core_ARM,',
+              '                      "IMP008_REALGAME_DIAG SVC21_GETSERVICE_FALLBACK_BLOCK ok={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X}",',
+              '                      diag_fallback_code_ok, diag_fallback_pc,',
+              '                      diag_fallback_code[0], diag_fallback_code[1],',
+              '                      diag_fallback_code[2], diag_fallback_code[3],',
+              '                      diag_fallback_code[4], diag_fallback_code[5],',
+              '                      diag_fallback_code[6]);',
+              '            bool diag_helper_found = false;',
+              '            u64 diag_helper_call_pc = 0;',
+              '            u64 diag_helper_target = 0;',
+              '            u32 diag_helper_bl = 0;',
+              '            if (diag_fallback_code_ok) {',
+              '                for (u32 i = 0; i < 6; ++i) {',
+              '                    const u32 instruction = diag_fallback_code[i];',
+              '                    if ((instruction & 0xFC000000u) != 0x94000000u) {',
+              '                        continue;',
+              '                    }',
+              '                    s64 imm26 = static_cast<s64>(instruction & 0x03FFFFFFu);',
+              '                    if ((imm26 & (1ll << 25)) != 0) {',
+              '                        imm26 -= (1ll << 26);',
+              '                    }',
+              '                    diag_helper_call_pc = diag_fallback_pc + static_cast<u64>(i) * 4;',
+              '                    diag_helper_target = static_cast<u64>(',
+              '                        static_cast<s64>(diag_helper_call_pc) + imm26 * 4);',
+              '                    diag_helper_bl = instruction;',
+              '                    diag_helper_found = true;',
+              '                    break;',
+              '                }',
+              '            }',
+              '            LOG_ERROR(Core_ARM,',
+              '                      "IMP008_REALGAME_DIAG SVC21_GETSERVICE_HELPER_TARGET found={} call_pc=0x{:016X} bl={:08X} target=0x{:016X}",',
+              '                      diag_helper_found, diag_helper_call_pc, diag_helper_bl,',
+              '                      diag_helper_target);',
+              '            u32 diag_helper_code[32]{};',
+              '            const bool diag_helper_code_ok = diag_helper_found &&',
+              '                process->GetMemory().ReadBlock(Common::ProcessAddress{diag_helper_target},',
+              '                                               diag_helper_code, sizeof(diag_helper_code));',
+              '            if (diag_helper_code_ok) {',
+              '                LOG_ERROR(Core_ARM,',
+              '                          "IMP008_REALGAME_DIAG SVC21_GETSERVICE_HELPER_CODE chunk=0 base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}",',
+              '                          diag_helper_target, diag_helper_code[0], diag_helper_code[1],',
+              '                          diag_helper_code[2], diag_helper_code[3], diag_helper_code[4],',
+              '                          diag_helper_code[5], diag_helper_code[6], diag_helper_code[7]);',
+              '                LOG_ERROR(Core_ARM,',
+              '                          "IMP008_REALGAME_DIAG SVC21_GETSERVICE_HELPER_CODE chunk=1 base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}",',
+              '                          diag_helper_target + 0x20, diag_helper_code[8], diag_helper_code[9],',
+              '                          diag_helper_code[10], diag_helper_code[11], diag_helper_code[12],',
+              '                          diag_helper_code[13], diag_helper_code[14], diag_helper_code[15]);',
+              '                LOG_ERROR(Core_ARM,',
+              '                          "IMP008_REALGAME_DIAG SVC21_GETSERVICE_HELPER_CODE chunk=2 base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}",',
+              '                          diag_helper_target + 0x40, diag_helper_code[16], diag_helper_code[17],',
+              '                          diag_helper_code[18], diag_helper_code[19], diag_helper_code[20],',
+              '                          diag_helper_code[21], diag_helper_code[22], diag_helper_code[23]);',
+              '                LOG_ERROR(Core_ARM,',
+              '                          "IMP008_REALGAME_DIAG SVC21_GETSERVICE_HELPER_CODE chunk=3 base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}",',
+              '                          diag_helper_target + 0x60, diag_helper_code[24], diag_helper_code[25],',
+              '                          diag_helper_code[26], diag_helper_code[27], diag_helper_code[28],',
+              '                          diag_helper_code[29], diag_helper_code[30], diag_helper_code[31]);',
+              '            } else {',
+              '                LOG_ERROR(Core_ARM,',
+              '                          "IMP008_REALGAME_DIAG SVC21_GETSERVICE_HELPER_CODE unavailable found={} target=0x{:016X}",',
+              '                          diag_helper_found, diag_helper_target);',
+              '            }',
+              '',
+          ]) + anchor
+          replace_once('parser-select-observation', anchor, observe)
+
+          path.write_text(text, encoding='utf-8')
+          for marker in [
+              'SVC21_GETSERVICE_OUTPARAM_OBSERVED',
+              'SVC21_GETSERVICE_FALLBACK_BLOCK',
+              'SVC21_GETSERVICE_HELPER_TARGET',
+              'SVC21_GETSERVICE_HELPER_CODE',
+          ]:
+              if f'IMP008_REALGAME_DIAG {marker}' not in text:
+                  raise SystemExit(f'missing marker {marker}')
+          print('GETSERVICE_PARSER_SELECT_INJECTION=PASS')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'GetService parser selection injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'GETSERVICE_PARSER_SELECT_PATCH=PASS'
+
+      - name: Checkout fixed CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_GETSERVICE_HELPER_CODE' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'GETSERVICE_PARSER_SELECT_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          echo 'GETSERVICE_PARSER_SELECT_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-svc21-getservice-parser-select-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          echo 'GETSERVICE_PARSER_SELECT_PACKAGE=PASS'
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-SVC21-GETSERVICE-PARSER-SELECT-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
