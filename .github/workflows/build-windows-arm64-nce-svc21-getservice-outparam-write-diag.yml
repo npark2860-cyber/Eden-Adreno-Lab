@@ -1,0 +1,321 @@
+name: Build Windows ARM64 NCE SVC21 GetService Outparam Write Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-svc21-getservice-outparam-write-diag.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-svc21-getservice-outparam-write-diag
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE GetService outparam write diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test -f .github/workflows/build-windows-arm64-nce-svc21-outparam-preentry-v3-diag.yml
+          echo 'GETSERVICE_OUTPARAM_WRITE_SOURCE_GUARD=PASS'
+
+      - name: Reuse validated preentry V3 injection and add GetService post-call trap
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/build-windows-arm64-nce-svc21-outparam-preentry-v3-diag.yml').read_text(encoding='utf-8')
+          begin_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(begin_marker) + len(begin_marker)
+          end = workflow.index(end_marker, start)
+          script_lines = workflow[start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in script_lines)
+          exec(compile(script, 'validated-preentry-v3-injection', 'exec'), {})
+
+          path = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(label, old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              text = text.replace(old, new, 1)
+
+          state_anchor = '    static thread_local u32 diag_outparam_branch_original{};\n'
+          state_add = state_anchor + '\n'.join([
+              '    static thread_local bool diag_getservice_outparam_trap_armed{false};',
+              '    static thread_local u64 diag_getservice_outparam_trap_pc{};',
+              '    static thread_local u32 diag_getservice_outparam_original{};',
+              '    static thread_local u64 diag_getservice_outparam_ptr{};',
+              '    static thread_local u64 diag_getservice_source_ptr{};',
+              '    static thread_local u32 diag_getservice_outparam_before{};',
+              '',
+          ])
+          replace_once('getservice-state', state_anchor, state_add)
+
+          restore_anchor = '            void* const diag_code = reinterpret_cast<void*>(diag_outparam_branch_trap_pc);\n'
+          install = '\n'.join([
+              '            if (diag_lookup_result == 0 && diag_out_ok && diag_out != 0 &&',
+              '                !diag_getservice_outparam_trap_armed) {',
+              '                constexpr u64 DiagGetServicePostCallDeltaFromCbz = 0x40;',
+              '                const u64 diag_post_pc = diag_outparam_branch_trap_pc +',
+              '                    DiagGetServicePostCallDeltaFromCbz;',
+              '                u32 diag_post_instruction{};',
+              '                const bool diag_post_read_ok = process->GetMemory().ReadBlock(',
+              '                    Common::ProcessAddress{diag_post_pc}, &diag_post_instruction,',
+              '                    sizeof(diag_post_instruction));',
+              '                const bool diag_post_signature_match = diag_post_read_ok &&',
+              '                    diag_post_instruction == 0x92407C00u;',
+              '                LOG_ERROR(Core_ARM,',
+              '                          "IMP008_REALGAME_DIAG SVC21_GETSERVICE_OUTPARAM_TRAP_INSTALL pc=0x{:016X} read_ok={} instruction={:08X} sig_match={} out=0x{:016X} before=0x{:08X}",',
+              '                          diag_post_pc, diag_post_read_ok, diag_post_instruction,',
+              '                          diag_post_signature_match, diag_out, diag_out_value);',
+              '                if (diag_post_signature_match) {',
+              '                    auto& diag_post_metadata = process->GetPostHandlers();',
+              '                    const u64 diag_post_key =',
+              '                        NCE::X18SitePatcher::MetadataKey(diag_post_pc);',
+              '                    if (diag_post_metadata.find(diag_post_key) == diag_post_metadata.end()) {',
+              '                        void* const diag_post_code = reinterpret_cast<void*>(diag_post_pc);',
+              '                        DWORD diag_post_old_protect{};',
+              '                        const BOOL diag_post_protect_ok = VirtualProtect(',
+              '                            diag_post_code, sizeof(u32), PAGE_EXECUTE_READWRITE,',
+              '                            &diag_post_old_protect);',
+              '                        if (diag_post_protect_ok) {',
+              '                            *reinterpret_cast<volatile u32*>(diag_post_code) =',
+              '                                NCE::X18SitePatcher::BreakpointInstruction;',
+              '                            const BOOL diag_post_flush_ok = FlushInstructionCache(',
+              '                                GetCurrentProcess(), diag_post_code, sizeof(u32));',
+              '                            DWORD diag_post_restore_dummy{};',
+              '                            const BOOL diag_post_restore_protect_ok = VirtualProtect(',
+              '                                diag_post_code, sizeof(u32), diag_post_old_protect,',
+              '                                &diag_post_restore_dummy);',
+              '                            if (diag_post_flush_ok && diag_post_restore_protect_ok) {',
+              '                                diag_post_metadata.insert_or_assign(',
+              '                                    diag_post_key,',
+              '                                    NCE::X18SitePatcher::MetadataValue(diag_post_instruction));',
+              '                                diag_getservice_outparam_trap_pc = diag_post_pc;',
+              '                                diag_getservice_outparam_original = diag_post_instruction;',
+              '                                diag_getservice_outparam_ptr = diag_out;',
+              '                                diag_getservice_source_ptr = diag_source;',
+              '                                diag_getservice_outparam_before = diag_out_value;',
+              '                                diag_getservice_outparam_trap_armed = true;',
+              '                                LOG_ERROR(Core_ARM,',
+              '                                          "IMP008_REALGAME_DIAG SVC21_GETSERVICE_OUTPARAM_TRAP_ARMED pc=0x{:016X} original={:08X} out=0x{:016X} before=0x{:08X}",',
+              '                                          diag_post_pc, diag_post_instruction, diag_out,',
+              '                                          diag_out_value);',
+              '                            } else {',
+              '                                LOG_ERROR(Core_ARM,',
+              '                                          "IMP008_REALGAME_DIAG SVC21_GETSERVICE_OUTPARAM_TRAP_PATCH_FAIL flush={} restore_protect={}",',
+              '                                          diag_post_flush_ok, diag_post_restore_protect_ok);',
+              '                            }',
+              '                        } else {',
+              '                            LOG_ERROR(Core_ARM,',
+              '                                      "IMP008_REALGAME_DIAG SVC21_GETSERVICE_OUTPARAM_TRAP_PROTECT_FAIL error={}",',
+              '                                      GetLastError());',
+              '                        }',
+              '                    } else {',
+              '                        LOG_ERROR(Core_ARM,',
+              '                                  "IMP008_REALGAME_DIAG SVC21_GETSERVICE_OUTPARAM_TRAP_METADATA_COLLISION pc=0x{:016X}",',
+              '                                  diag_post_pc);',
+              '                    }',
+              '                }',
+              '            }',
+              '',
+          ]) + restore_anchor
+          replace_once('getservice-install', restore_anchor, install)
+
+          branch_handler_anchor = '\n'.join([
+              '        if (diag_outparam_branch_trap_armed &&',
+              '            static_cast<u64>(hr) == NCE::WindowsX18FallbackTrap::ReturnMarker &&',
+              '            m_guest_ctx.pc == diag_outparam_branch_trap_pc) {',
+          ])
+          response_handler = '\n'.join([
+              '        if (diag_getservice_outparam_trap_armed &&',
+              '            static_cast<u64>(hr) == NCE::WindowsX18FallbackTrap::ReturnMarker &&',
+              '            m_guest_ctx.pc == diag_getservice_outparam_trap_pc) {',
+              '            const u64 diag_response_pc = diag_getservice_outparam_trap_pc;',
+              '            const u32 diag_response_original = diag_getservice_outparam_original;',
+              '            const u64 diag_out = diag_getservice_outparam_ptr;',
+              '            const u64 diag_source = diag_getservice_source_ptr;',
+              '            const u32 diag_before = diag_getservice_outparam_before;',
+              '            u32 diag_after{};',
+              '            const bool diag_after_ok = diag_out != 0 && process->GetMemory().ReadBlock(',
+              '                Common::ProcessAddress{diag_out}, &diag_after, sizeof(diag_after));',
+              '            const u64 diag_runtime_out = m_guest_ctx.cpu_registers[20];',
+              '            const u64 diag_helper_result = m_guest_ctx.cpu_registers[0];',
+              '            const std::string diag_source_text = diag_source != 0',
+              '                ? process->GetMemory().ReadCString(Common::ProcessAddress{diag_source}, 64)',
+              '                : std::string{};',
+              '            LOG_ERROR(Core_ARM,',
+              '                      "IMP008_REALGAME_DIAG SVC21_GETSERVICE_OUTPARAM_OBSERVED pc=0x{:016X} source={} out=0x{:016X} runtime_x20=0x{:016X} same_out={} before=0x{:08X} after_ok={} after=0x{:08X} value_is_20={} helper_result_x0=0x{:016X}",',
+              '                      diag_response_pc, diag_source_text, diag_out, diag_runtime_out,',
+              '                      diag_runtime_out == diag_out, diag_before, diag_after_ok, diag_after,',
+              '                      diag_after_ok && diag_after == 0x20u, diag_helper_result);',
+              '            void* const diag_response_code = reinterpret_cast<void*>(diag_response_pc);',
+              '            DWORD diag_response_old_protect{};',
+              '            const BOOL diag_response_protect_ok = VirtualProtect(',
+              '                diag_response_code, sizeof(u32), PAGE_EXECUTE_READWRITE,',
+              '                &diag_response_old_protect);',
+              '            bool diag_response_restore_ok = false;',
+              '            if (diag_response_protect_ok) {',
+              '                *reinterpret_cast<volatile u32*>(diag_response_code) =',
+              '                    diag_response_original;',
+              '                const BOOL diag_response_flush_ok = FlushInstructionCache(',
+              '                    GetCurrentProcess(), diag_response_code, sizeof(u32));',
+              '                DWORD diag_response_restore_dummy{};',
+              '                const BOOL diag_response_restore_protect_ok = VirtualProtect(',
+              '                    diag_response_code, sizeof(u32), diag_response_old_protect,',
+              '                    &diag_response_restore_dummy);',
+              '                diag_response_restore_ok =',
+              '                    diag_response_flush_ok && diag_response_restore_protect_ok;',
+              '            }',
+              '            process->GetPostHandlers().erase(',
+              '                NCE::X18SitePatcher::MetadataKey(diag_response_pc));',
+              '            LOG_ERROR(Core_ARM,',
+              '                      "IMP008_REALGAME_DIAG SVC21_GETSERVICE_OUTPARAM_RESTORE pc=0x{:016X} original={:08X} restore_ok={}",',
+              '                      diag_response_pc, diag_response_original, diag_response_restore_ok);',
+              '            diag_getservice_outparam_trap_armed = false;',
+              '            diag_getservice_outparam_trap_pc = 0;',
+              '            diag_getservice_outparam_original = 0;',
+              '            diag_getservice_outparam_ptr = 0;',
+              '            diag_getservice_source_ptr = 0;',
+              '            diag_getservice_outparam_before = 0;',
+              '            if (!diag_response_restore_ok) {',
+              '                hr = HaltReason::PrefetchAbort;',
+              '                break;',
+              '            }',
+              '            m_guest_ctx.pc = diag_response_pc;',
+              '            continue;',
+              '        }',
+              '',
+          ]) + branch_handler_anchor
+          replace_once('getservice-handler', branch_handler_anchor, response_handler)
+
+          path.write_text(text, encoding='utf-8')
+          for marker in [
+              'SVC21_OUTPARAM_BRANCH_OBSERVED',
+              'SVC21_GETSERVICE_OUTPARAM_TRAP_INSTALL',
+              'SVC21_GETSERVICE_OUTPARAM_TRAP_ARMED',
+              'SVC21_GETSERVICE_OUTPARAM_OBSERVED',
+              'SVC21_GETSERVICE_OUTPARAM_RESTORE',
+          ]:
+              if f'IMP008_REALGAME_DIAG {marker}' not in text:
+                  raise SystemExit(f'missing marker {marker}')
+          print('GETSERVICE_OUTPARAM_WRITE_INJECTION=PASS')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'GetService outparam write injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'GETSERVICE_OUTPARAM_WRITE_PATCH=PASS'
+
+      - name: Checkout fixed CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_GETSERVICE_OUTPARAM_OBSERVED' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'GETSERVICE_OUTPARAM_WRITE_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          echo 'GETSERVICE_OUTPARAM_WRITE_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-svc21-getservice-outparam-write-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-SVC21-GETSERVICE-OUTPARAM-WRITE-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
