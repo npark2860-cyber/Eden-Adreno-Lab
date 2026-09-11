@@ -1,0 +1,433 @@
+name: Build Windows ARM64 NCE SVC21 Second Call Outparam Dispatch Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-svc21-second-call-outparam-dispatch-diag.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-svc21-second-call-outparam-dispatch-diag
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE SVC21 second-call outparam-dispatch diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_SECOND_CALL_OUTPARAM_DISPATCH_SOURCE_GUARD=PASS'
+
+      - name: Reuse validated outparam-helper injection and add dispatch diagnostics
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          workflow = Path(".github/workflows/build-windows-arm64-nce-svc21-second-call-outparam-helper-diag.yml").read_text(encoding="utf-8")
+          begin_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(begin_marker) + len(begin_marker)
+          end = workflow.index(end_marker, start)
+          lines = workflow[start:end].splitlines()
+          script = "\n".join(line[10:] if line.startswith("          ") else line for line in lines)
+          exec(compile(script, "validated-outparam-helper-injection", "exec"), {})
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+          anchor = "                const u64 diag_up3_call_pc =\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f"dispatch anchor expected once, found {text.count(anchor)}")
+
+          addition = r'''
+                auto diag_decode_bl2 = [&](u64 pc, u32& insn, bool& ok) -> u64 {
+                    insn = 0;
+                    ok = pc != 0 && process->GetMemory().ReadBlock(
+                        Common::ProcessAddress{pc}, &insn, sizeof(insn));
+                    if (!ok || (insn & 0xFC000000u) != 0x94000000u) {
+                        return 0;
+                    }
+                    const s64 disp =
+                        static_cast<s64>(static_cast<s32>(insn << 6)) >> 4;
+                    return static_cast<u64>(static_cast<s64>(pc) + disp);
+                };
+                auto diag_resolve_plt2 = [&](u64 target, u64& got, bool& veneer) -> u64 {
+                    got = 0;
+                    veneer = false;
+                    u32 c[4]{};
+                    if (target == 0 || !process->GetMemory().ReadBlock(
+                                           Common::ProcessAddress{target}, c, sizeof(c))) {
+                        return 0;
+                    }
+                    veneer =
+                        (c[0] & 0x9F000000u) == 0x90000000u && (c[0] & 0x1Fu) == 16u &&
+                        (c[1] & 0xFFC00000u) == 0xF9400000u &&
+                        ((c[1] >> 5) & 0x1Fu) == 16u && (c[1] & 0x1Fu) == 17u &&
+                        (c[2] & 0xFF000000u) == 0x91000000u &&
+                        ((c[2] >> 5) & 0x1Fu) == 16u && (c[2] & 0x1Fu) == 16u &&
+                        c[3] == 0xD61F0220u;
+                    if (!veneer) {
+                        return target;
+                    }
+                    s64 imm21 = static_cast<s64>(
+                        (((c[0] >> 5) & 0x7FFFFu) << 2) | ((c[0] >> 29) & 3u));
+                    if ((imm21 & (1ll << 20)) != 0) {
+                        imm21 -= (1ll << 21);
+                    }
+                    const u64 page = static_cast<u64>(
+                        static_cast<s64>(target & ~0xFFFULL) + imm21 * 0x1000ll);
+                    got = page + static_cast<u64>((c[1] >> 10) & 0xFFFu) * 8;
+                    u64 real{};
+                    return process->GetMemory().ReadBlock(
+                               Common::ProcessAddress{got}, &real, sizeof(real))
+                               ? real
+                               : 0;
+                };
+                auto diag_dump_words2 = [&](std::string_view kind, u64 base,
+                                            const u32* words, u32 count, bool ok) {
+                    for (u32 i = 0; i + 7 < count; i += 8) {
+                        LOG_ERROR(Core_ARM,
+                                  "IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_DISPATCH_CODE kind={} ok={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}",
+                                  kind, ok, base + static_cast<u64>(i) * 4,
+                                  words[i], words[i + 1], words[i + 2], words[i + 3],
+                                  words[i + 4], words[i + 5], words[i + 6], words[i + 7]);
+                    }
+                };
+                auto diag_dump_qwords2 = [&](std::string_view kind, u64 base,
+                                             const u64* words, u32 count, bool ok) {
+                    for (u32 i = 0; i + 3 < count; i += 4) {
+                        LOG_ERROR(Core_ARM,
+                                  "IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_DISPATCH_FRAME kind={} ok={} base=0x{:016X} q00={:016X} q01={:016X} q02={:016X} q03={:016X}",
+                                  kind, ok, base + static_cast<u64>(i) * 8,
+                                  words[i], words[i + 1], words[i + 2], words[i + 3]);
+                    }
+                };
+
+                const u64 diag_lookup_pc =
+                    diag_out_real_target != 0 ? diag_out_real_target + 0x18 : 0;
+                u32 diag_lookup_insn{};
+                bool diag_lookup_bl_ok{};
+                const u64 diag_lookup_direct =
+                    diag_decode_bl2(diag_lookup_pc, diag_lookup_insn, diag_lookup_bl_ok);
+                u64 diag_lookup_got{};
+                bool diag_lookup_veneer{};
+                const u64 diag_lookup_real =
+                    diag_resolve_plt2(diag_lookup_direct, diag_lookup_got, diag_lookup_veneer);
+
+                const u64 diag_fallback_lookup_pc =
+                    diag_out_real_target != 0 ? diag_out_real_target + 0x48 : 0;
+                u32 diag_fallback_lookup_insn{};
+                bool diag_fallback_lookup_bl_ok{};
+                const u64 diag_fallback_lookup_direct = diag_decode_bl2(
+                    diag_fallback_lookup_pc, diag_fallback_lookup_insn,
+                    diag_fallback_lookup_bl_ok);
+                u64 diag_fallback_lookup_got{};
+                bool diag_fallback_lookup_veneer{};
+                const u64 diag_fallback_lookup_real = diag_resolve_plt2(
+                    diag_fallback_lookup_direct, diag_fallback_lookup_got,
+                    diag_fallback_lookup_veneer);
+
+                const u64 diag_fallback_writer_pc =
+                    diag_out_real_target != 0 ? diag_out_real_target + 0x58 : 0;
+                u32 diag_fallback_writer_insn{};
+                bool diag_fallback_writer_bl_ok{};
+                const u64 diag_fallback_writer_direct = diag_decode_bl2(
+                    diag_fallback_writer_pc, diag_fallback_writer_insn,
+                    diag_fallback_writer_bl_ok);
+                u64 diag_fallback_writer_got{};
+                bool diag_fallback_writer_veneer{};
+                const u64 diag_fallback_writer_real = diag_resolve_plt2(
+                    diag_fallback_writer_direct, diag_fallback_writer_got,
+                    diag_fallback_writer_veneer);
+
+                const u64 diag_producer_fp =
+                    diag_up3_frame_ok ? diag_up3_frame[0] : 0;
+                const u64 diag_correct_slot =
+                    diag_producer_fp >= 0x58 ? diag_producer_fp - 0x58 : 0;
+                u32 diag_correct_value{};
+                const bool diag_correct_ok = diag_correct_slot != 0 &&
+                    process->GetMemory().ReadBlock(
+                        Common::ProcessAddress{diag_correct_slot},
+                        &diag_correct_value, sizeof(diag_correct_value));
+
+                const u64 diag_down_pc = diag_up3_lr >= 4 ? diag_up3_lr - 4 : 0;
+                u32 diag_down_insn{};
+                bool diag_down_bl_ok{};
+                const u64 diag_down_direct =
+                    diag_decode_bl2(diag_down_pc, diag_down_insn, diag_down_bl_ok);
+                u64 diag_down_got{};
+                bool diag_down_veneer{};
+                const u64 diag_down_real =
+                    diag_resolve_plt2(diag_down_direct, diag_down_got, diag_down_veneer);
+
+                u32 diag_lookup_code2[256]{};
+                const bool diag_lookup_code2_ok = diag_lookup_real != 0 &&
+                    process->GetMemory().ReadBlock(Common::ProcessAddress{diag_lookup_real},
+                                                   diag_lookup_code2,
+                                                   sizeof(diag_lookup_code2));
+                u32 diag_fallback_lookup_code2[128]{};
+                const bool diag_fallback_lookup_code2_ok = diag_fallback_lookup_real != 0 &&
+                    process->GetMemory().ReadBlock(
+                        Common::ProcessAddress{diag_fallback_lookup_real},
+                        diag_fallback_lookup_code2, sizeof(diag_fallback_lookup_code2));
+                u32 diag_fallback_writer_code2[128]{};
+                const bool diag_fallback_writer_code2_ok = diag_fallback_writer_real != 0 &&
+                    process->GetMemory().ReadBlock(
+                        Common::ProcessAddress{diag_fallback_writer_real},
+                        diag_fallback_writer_code2, sizeof(diag_fallback_writer_code2));
+                u32 diag_down_code2[128]{};
+                const bool diag_down_code2_ok = diag_down_real != 0 &&
+                    process->GetMemory().ReadBlock(Common::ProcessAddress{diag_down_real},
+                                                   diag_down_code2,
+                                                   sizeof(diag_down_code2));
+
+                const u64 diag_prod_code_base =
+                    diag_out_call_pc >= 0x800 ? diag_out_call_pc - 0x800 : 0;
+                u32 diag_prod_code2[1024]{};
+                const bool diag_prod_code2_ok = diag_prod_code_base != 0 &&
+                    process->GetMemory().ReadBlock(
+                        Common::ProcessAddress{diag_prod_code_base},
+                        diag_prod_code2, sizeof(diag_prod_code2));
+
+                const u64 diag_prod_frame_base =
+                    diag_producer_fp >= 0x180 ? diag_producer_fp - 0x180 : 0;
+                u64 diag_prod_frame2[96]{};
+                const bool diag_prod_frame2_ok = diag_prod_frame_base != 0 &&
+                    process->GetMemory().ReadBlock(
+                        Common::ProcessAddress{diag_prod_frame_base},
+                        diag_prod_frame2, sizeof(diag_prod_frame2));
+                const u64 diag_callee_frame_base =
+                    diag_up3_fp >= 0x100 ? diag_up3_fp - 0x100 : 0;
+                u64 diag_callee_frame2[64]{};
+                const bool diag_callee_frame2_ok = diag_callee_frame_base != 0 &&
+                    process->GetMemory().ReadBlock(
+                        Common::ProcessAddress{diag_callee_frame_base},
+                        diag_callee_frame2, sizeof(diag_callee_frame2));
+
+                u64 diag_fp_delta{};
+                u64 diag_stable_sp{};
+                for (u32 i = 0; i < 80 && diag_down_code2_ok; ++i) {
+                    const u32 insn = diag_down_code2[i];
+                    if ((insn & 0xFFC003FFu) == 0x910003FDu) {
+                        diag_fp_delta = static_cast<u64>((insn >> 10) & 0xFFFu)
+                                        << (((insn >> 22) & 1u) != 0 ? 12 : 0);
+                        if (diag_up3_fp >= diag_fp_delta) {
+                            diag_stable_sp = diag_up3_fp - diag_fp_delta;
+                        }
+                        break;
+                    }
+                }
+                u64 diag_saved_x26_addr{};
+                u64 diag_saved_x26{};
+                bool diag_saved_x26_ok{};
+                if (diag_stable_sp != 0 && diag_down_code2_ok) {
+                    for (u32 i = 0; i < 80; ++i) {
+                        const u32 insn = diag_down_code2[i];
+                        if ((insn & 0x3B000000u) != 0x29000000u ||
+                            ((insn >> 5) & 0x1Fu) != 31u ||
+                            ((insn >> 23) & 3u) != 2u) {
+                            continue;
+                        }
+                        const u32 rt = insn & 0x1Fu;
+                        const u32 rt2 = (insn >> 10) & 0x1Fu;
+                        if (rt != 26u && rt2 != 26u) {
+                            continue;
+                        }
+                        s64 imm7 = static_cast<s64>((insn >> 15) & 0x7Fu);
+                        if ((imm7 & 0x40) != 0) {
+                            imm7 -= 0x80;
+                        }
+                        diag_saved_x26_addr = static_cast<u64>(
+                            static_cast<s64>(diag_stable_sp) + imm7 * 8 +
+                            (rt2 == 26u ? 8 : 0));
+                        diag_saved_x26_ok = process->GetMemory().ReadBlock(
+                            Common::ProcessAddress{diag_saved_x26_addr},
+                            &diag_saved_x26, sizeof(diag_saved_x26));
+                        break;
+                    }
+                }
+                u64 diag_source_mem2[32]{};
+                const bool diag_source_mem2_ok = diag_saved_x26_ok &&
+                    diag_saved_x26 != 0 &&
+                    process->GetMemory().ReadBlock(
+                        Common::ProcessAddress{diag_saved_x26},
+                        diag_source_mem2, sizeof(diag_source_mem2));
+
+                LOG_ERROR(Core_ARM,
+                          "IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_DISPATCH_LINK lookup_pc=0x{:016X} insn={:08X} direct=0x{:016X} veneer={} got=0x{:016X} real=0x{:016X} fallback_lookup=0x{:016X} fallback_writer=0x{:016X}",
+                          diag_lookup_pc, diag_lookup_insn, diag_lookup_direct,
+                          diag_lookup_veneer, diag_lookup_got, diag_lookup_real,
+                          diag_fallback_lookup_real, diag_fallback_writer_real);
+                LOG_ERROR(Core_ARM,
+                          "IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_PRODUCER_STATE callee_fp=0x{:016X} producer_fp=0x{:016X} corrected_slot=0x{:016X} slot_ok={} slot_value=0x{:08X} downstream_pc=0x{:016X} downstream_real=0x{:016X} fp_delta=0x{:X} stable_sp=0x{:016X} saved_x26_addr=0x{:016X} saved_x26_ok={} saved_x26=0x{:016X}",
+                          diag_up3_fp, diag_producer_fp, diag_correct_slot,
+                          diag_correct_ok, diag_correct_value, diag_down_pc,
+                          diag_down_real, diag_fp_delta, diag_stable_sp,
+                          diag_saved_x26_addr, diag_saved_x26_ok, diag_saved_x26);
+
+                diag_dump_words2("lookup", diag_lookup_real, diag_lookup_code2, 256,
+                                 diag_lookup_code2_ok);
+                diag_dump_words2("fallback_lookup", diag_fallback_lookup_real,
+                                 diag_fallback_lookup_code2, 128,
+                                 diag_fallback_lookup_code2_ok);
+                diag_dump_words2("fallback_writer", diag_fallback_writer_real,
+                                 diag_fallback_writer_code2, 128,
+                                 diag_fallback_writer_code2_ok);
+                diag_dump_words2("downstream", diag_down_real, diag_down_code2, 128,
+                                 diag_down_code2_ok);
+                diag_dump_words2("producer", diag_prod_code_base, diag_prod_code2, 1024,
+                                 diag_prod_code2_ok);
+                diag_dump_qwords2("producer", diag_prod_frame_base, diag_prod_frame2, 96,
+                                  diag_prod_frame2_ok);
+                diag_dump_qwords2("callee", diag_callee_frame_base, diag_callee_frame2, 64,
+                                  diag_callee_frame2_ok);
+                diag_dump_qwords2("source_x26", diag_saved_x26, diag_source_mem2, 32,
+                                  diag_source_mem2_ok);
+          ''' + anchor
+          text = text.replace(anchor, addition, 1)
+          path.write_text(text, encoding="utf-8")
+
+          for marker in [
+              "SVC21_SECOND_CALL_OUTPARAM_HELPER_LINK",
+              "SVC21_SECOND_CALL_OUTPARAM_DISPATCH_LINK",
+              "SVC21_SECOND_CALL_OUTPARAM_PRODUCER_STATE",
+              "SVC21_SECOND_CALL_OUTPARAM_DISPATCH_CODE",
+              "SVC21_SECOND_CALL_OUTPARAM_DISPATCH_FRAME",
+          ]:
+              if f"IMP008_REALGAME_DIAG {marker}" not in text:
+                  raise SystemExit(f"missing marker {marker}")
+          print("NCE_SVC21_SECOND_CALL_OUTPARAM_DISPATCH_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'SVC21 second-call outparam-dispatch injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'NCE_SVC21_SECOND_CALL_OUTPARAM_DISPATCH_PATCH=PASS'
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_DISPATCH_LINK' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_SECOND_CALL_OUTPARAM_DISPATCH_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_SVC21_SECOND_CALL_OUTPARAM_DISPATCH_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-svc21-second-call-outparam-dispatch-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_SVC21_SECOND_CALL_OUTPARAM_DISPATCH_PACKAGE=PASS'
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged file; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) { throw "Expected exactly one upload file; found $($upload.Count)" }
+          Write-Host 'NCE_SVC21_SECOND_CALL_OUTPARAM_DISPATCH_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
+
+      - name: Upload Windows ARM64 NCE SVC21 second-call outparam-dispatch diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-SVC21-SECOND-CALL-OUTPARAM-DISPATCH-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
