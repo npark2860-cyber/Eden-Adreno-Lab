@@ -1,0 +1,369 @@
+name: Build Windows ARM64 NCE Post-SVC X18 Direct Semantics Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-post-svc-x18-direct-semantics-validation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-post-svc-x18-direct-semantics-validation
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE post-SVC x18 direct-semantics validation package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_POST_SVC_X18_DIRECT_SEMANTICS_SOURCE_GUARD=PASS'
+
+      - name: Inject validation-only first substitution direct reentry and exact x18 semantics
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          def replace_once(label, old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {count}")
+              text = text.replace(old, new, 1)
+
+          old_range = (
+              "    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n"
+              "    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {\n"
+              "        return false;\n"
+              "    }\n"
+          )
+          replace_once("range", old_range, old_range.replace(">= allocation_end", "> allocation_end"))
+
+          old_teb = (
+              "    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n"
+              "    bounds.tib = tib;\n"
+              "    bounds.host_stack_base = tib->StackBase;\n"
+              "    bounds.host_stack_limit = tib->StackLimit;\n"
+              "    tib->StackLimit = reinterpret_cast<void*>(allocation_base);\n"
+              "    tib->StackBase = reinterpret_cast<void*>(allocation_end);\n"
+              "    return true;\n"
+          )
+          new_teb = (
+              "    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n"
+              "    bounds.tib = tib;\n"
+              "    bounds.host_stack_base = tib->StackBase;\n"
+              "    bounds.host_stack_limit = tib->StackLimit;\n"
+              "    static std::atomic<u32> diag_teb_counter{0};\n"
+              "    if (diag_teb_counter.fetch_add(1, std::memory_order_relaxed) == 0) {\n"
+              "        LOG_ERROR(Core_ARM,\n"
+              "                  \"IMP008_REALGAME_DIAG TEB_PREENTRY_BYPASS guest_sp=0x{:016X} allocation_base=0x{:016X} allocation_end=0x{:016X}\",\n"
+              "                  guest_sp, static_cast<u64>(allocation_base), static_cast<u64>(allocation_end));\n"
+              "    }\n"
+              "    return true;\n"
+          )
+          replace_once("teb-write", old_teb, new_teb)
+
+          old_head = (
+              "HaltReason ArmNce::RunThread(Kernel::KThread* thread) {\n"
+              "    HaltReason hr = static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0));\n"
+              "    if (True(hr)) {\n"
+              "        return hr;\n"
+              "    }\n"
+              "\n"
+              "    auto* const thread_params = &thread->GetNativeExecutionParameters();\n"
+              "    auto* const process = thread->GetOwnerProcess();\n"
+          )
+          new_head = (
+              "HaltReason ArmNce::RunThread(Kernel::KThread* thread) {\n"
+              "    static thread_local u32 diag_svc21_counter{0};\n"
+              "    static thread_local bool diag_force_direct_reentry{false};\n"
+              "    static thread_local bool diag_bypass_next_x18{false};\n"
+              "    static thread_local Kernel::KThread* diag_force_thread{};\n"
+              "\n"
+              "    HaltReason hr = static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0));\n"
+              "    if (True(hr)) {\n"
+              "        return hr;\n"
+              "    }\n"
+              "\n"
+              "    auto* const thread_params = &thread->GetNativeExecutionParameters();\n"
+              "    auto* const process = thread->GetOwnerProcess();\n"
+              "\n"
+              "    if (diag_force_direct_reentry && diag_force_thread == thread) {\n"
+              "        u32 diag_tls[4]{};\n"
+              "        const bool diag_tls_ok = m_guest_ctx.tpidrro_el0 != 0 && process->GetMemory().ReadBlock(\n"
+              "            Common::ProcessAddress{m_guest_ctx.tpidrro_el0}, diag_tls, sizeof(diag_tls));\n"
+              "        LOG_ERROR(Core_ARM,\n"
+              "                  \"IMP008_REALGAME_DIAG X18_BYPASS_HLE_STATE x0=0x{:016X} x2=0x{:016X} x3=0x{:016X} pc=0x{:016X} tls_ok={} w02=0x{:08X} w03=0x{:08X}\",\n"
+              "                  m_guest_ctx.cpu_registers[0], m_guest_ctx.cpu_registers[2],\n"
+              "                  m_guest_ctx.cpu_registers[3], m_guest_ctx.pc, diag_tls_ok,\n"
+              "                  diag_tls[2], diag_tls[3]);\n"
+              "    }\n"
+          )
+          replace_once("run-head", old_head, new_head)
+
+          old_entry = (
+              "        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n"
+              "                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n"
+              "        } else {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n"
+              "        }\n"
+          )
+          new_entry = (
+              "        const bool diag_force_direct_now =\n"
+              "            diag_force_direct_reentry && diag_force_thread == thread;\n"
+              "        if (diag_force_direct_now) {\n"
+              "            LOG_ERROR(Core_ARM,\n"
+              "                      \"IMP008_REALGAME_DIAG X18_BYPASS_DIRECT_REENTRY pc=0x{:016X} x2=0x{:016X}\",\n"
+              "                      m_guest_ctx.pc, m_guest_ctx.cpu_registers[2]);\n"
+              "            diag_force_direct_reentry = false;\n"
+              "            diag_force_thread = nullptr;\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n"
+              "        } else if (const auto it = post_handlers.find(m_guest_ctx.pc);\n"
+              "                   it != post_handlers.end()) {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n"
+              "                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n"
+              "        } else {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n"
+              "        }\n"
+          )
+          replace_once("entry", old_entry, new_entry)
+
+          old_clear = (
+              "        RestoreHostTebStackBounds(teb_stack_bounds);\n"
+              "        NCE::CurrentNceContext::Clear();\n"
+              "\n"
+              "        if (m_windows_pending_nce_fault) {\n"
+          )
+          new_clear = (
+              "        RestoreHostTebStackBounds(teb_stack_bounds);\n"
+              "        NCE::CurrentNceContext::Clear();\n"
+              "\n"
+              "        if (static_cast<u64>(hr) == static_cast<u64>(HaltReason::SupervisorCall) &&\n"
+              "            m_guest_ctx.svc == 0x21 && m_guest_ctx.cpu_registers[0] == 0x20 &&\n"
+              "            m_guest_ctx.tpidrro_el0 != 0) {\n"
+              "            const u32 diag_occurrence = diag_svc21_counter++;\n"
+              "            u32 diag_tls[4]{};\n"
+              "            const bool diag_tls_ok = process->GetMemory().ReadBlock(\n"
+              "                Common::ProcessAddress{m_guest_ctx.tpidrro_el0}, diag_tls, sizeof(diag_tls));\n"
+              "            const Kernel::Handle diag_candidate = diag_tls_ok ? diag_tls[3] : 0;\n"
+              "            auto diag_candidate_object = process->GetHandleTable().GetObjectForIpcWithoutPseudoHandle(\n"
+              "                m_system.Kernel(), diag_candidate);\n"
+              "            const bool diag_candidate_live = diag_candidate_object.IsNotNull();\n"
+              "            LOG_ERROR(Core_ARM,\n"
+              "                      \"IMP008_REALGAME_DIAG X18_BYPASS_SVC21 n={} pc=0x{:016X} x0=0x{:016X} x2=0x{:016X} tls_ok={} w02=0x{:08X} w03=0x{:08X} live={}\",\n"
+              "                      diag_occurrence, m_guest_ctx.pc, m_guest_ctx.cpu_registers[0],\n"
+              "                      m_guest_ctx.cpu_registers[2], diag_tls_ok, diag_tls[2],\n"
+              "                      diag_tls[3], diag_candidate_live);\n"
+              "            if (diag_occurrence == 0 && diag_tls_ok && diag_tls[2] == 0x20 &&\n"
+              "                diag_candidate_live) {\n"
+              "                m_guest_ctx.cpu_registers[0] = diag_candidate;\n"
+              "                diag_force_direct_reentry = true;\n"
+              "                diag_bypass_next_x18 = true;\n"
+              "                diag_force_thread = thread;\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG X18_BYPASS_FIRST_SUBSTITUTE old=0x00000020 new=0x{:08X}=LIVE\",\n"
+              "                          diag_candidate);\n"
+              "            }\n"
+              "        }\n"
+              "\n"
+              "        if (m_windows_pending_nce_fault) {\n"
+          )
+          replace_once("clear", old_clear, new_clear)
+
+          old_fallback = (
+              "        const auto fallback = m_windows_x18_runner->Dispatch(\n"
+              "            static_cast<u64>(hr), thread, m_guest_ctx, post_handlers);\n"
+              "        if (!fallback.handled) {\n"
+          )
+          new_fallback = (
+              "        const bool diag_bypass_this_x18 = diag_bypass_next_x18 &&\n"
+              "            static_cast<u64>(hr) == NCE::WindowsX18FallbackTrap::ReturnMarker;\n"
+              "        if (diag_bypass_this_x18) {\n"
+              "            const auto diag_instruction = NCE::WindowsX18FallbackTrap::FindOriginalInstruction(\n"
+              "                m_guest_ctx.pc, post_handlers);\n"
+              "            LOG_ERROR(Core_ARM,\n"
+              "                      \"IMP008_REALGAME_DIAG X18_BYPASS_PRE pc=0x{:016X} found={} instruction=0x{:08X} x18=0x{:016X} x2=0x{:016X} sp=0x{:016X} lr=0x{:016X}\",\n"
+              "                      m_guest_ctx.pc, diag_instruction.has_value(),\n"
+              "                      diag_instruction.value_or(0), m_guest_ctx.cpu_registers[18],\n"
+              "                      m_guest_ctx.cpu_registers[2], m_guest_ctx.sp,\n"
+              "                      m_guest_ctx.cpu_registers[30]);\n"
+              "            if (diag_instruction && *diag_instruction == 0x2A1F03F2u) {\n"
+              "                const u64 diag_old_pc = m_guest_ctx.pc;\n"
+              "                m_guest_ctx.cpu_registers[18] = 0;\n"
+              "                m_guest_ctx.pc += sizeof(u32);\n"
+              "                diag_bypass_next_x18 = false;\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG X18_BYPASS_APPLIED instruction=0x2A1F03F2 semantics=mov_w18_wzr old_pc=0x{:016X} new_pc=0x{:016X} x18=0x{:016X} x2=0x{:016X}\",\n"
+              "                          diag_old_pc, m_guest_ctx.pc, m_guest_ctx.cpu_registers[18],\n"
+              "                          m_guest_ctx.cpu_registers[2]);\n"
+              "                continue;\n"
+              "            }\n"
+              "            diag_bypass_next_x18 = false;\n"
+              "            LOG_ERROR(Core_ARM,\n"
+              "                      \"IMP008_REALGAME_DIAG X18_BYPASS_NOT_APPLIED expected=0x2A1F03F2\");\n"
+              "        }\n"
+              "\n"
+              "        const auto fallback = m_windows_x18_runner->Dispatch(\n"
+              "            static_cast<u64>(hr), thread, m_guest_ctx, post_handlers);\n"
+              "        if (!fallback.handled) {\n"
+          )
+          replace_once("fallback", old_fallback, new_fallback)
+
+          path.write_text(text, encoding="utf-8")
+
+          for marker in [
+              "TEB_PREENTRY_BYPASS",
+              "X18_BYPASS_HLE_STATE",
+              "X18_BYPASS_DIRECT_REENTRY",
+              "X18_BYPASS_SVC21",
+              "X18_BYPASS_FIRST_SUBSTITUTE",
+              "X18_BYPASS_PRE",
+              "X18_BYPASS_APPLIED",
+          ]:
+              if f"IMP008_REALGAME_DIAG {marker}" not in text:
+                  raise SystemExit(f"missing marker {marker}")
+          if "guest_sp_value >= allocation_end" in text:
+              raise SystemExit("old inclusive upper-bound rejection still present")
+          if "tib->StackLimit = reinterpret_cast<void*>(allocation_base);" in text:
+              raise SystemExit("guest TEB StackLimit overwrite still present")
+          if "tib->StackBase = reinterpret_cast<void*>(allocation_end);" in text:
+              raise SystemExit("guest TEB StackBase overwrite still present")
+          print("NCE_POST_SVC_X18_DIRECT_SEMANTICS_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'post-SVC x18 direct-semantics injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'NCE_POST_SVC_X18_DIRECT_SEMANTICS_PATCH=PASS'
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG X18_BYPASS_APPLIED' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_POST_SVC_X18_DIRECT_SEMANTICS_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_POST_SVC_X18_DIRECT_SEMANTICS_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-post-svc-x18-direct-semantics-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_POST_SVC_X18_DIRECT_SEMANTICS_PACKAGE=PASS'
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged file; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) { throw "Expected exactly one upload file; found $($upload.Count)" }
+          Write-Host 'NCE_POST_SVC_X18_DIRECT_SEMANTICS_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
+
+      - name: Upload Windows ARM64 NCE post-SVC x18 direct-semantics validation package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-POST-SVC-X18-DIRECT-SEMANTICS-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
