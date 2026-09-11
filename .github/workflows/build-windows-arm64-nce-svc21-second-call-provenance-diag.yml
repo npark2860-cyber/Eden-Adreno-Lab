@@ -1,0 +1,394 @@
+name: Build Windows ARM64 NCE SVC21 Second Call Provenance Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-svc21-second-call-provenance-diag.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-svc21-second-call-provenance-diag
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE SVC21 second-call provenance diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_SECOND_CALL_PROVENANCE_SOURCE_GUARD=PASS'
+
+      - name: Inject validation-only first-substitution and second-call provenance diagnostics
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          def replace_once(label, old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {count}")
+              text = text.replace(old, new, 1)
+
+          old_range = (
+              "    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n"
+              "    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {\n"
+              "        return false;\n"
+              "    }\n"
+          )
+          replace_once("range", old_range, old_range.replace(">= allocation_end", "> allocation_end"))
+
+          old_teb = (
+              "    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n"
+              "    bounds.tib = tib;\n"
+              "    bounds.host_stack_base = tib->StackBase;\n"
+              "    bounds.host_stack_limit = tib->StackLimit;\n"
+              "    tib->StackLimit = reinterpret_cast<void*>(allocation_base);\n"
+              "    tib->StackBase = reinterpret_cast<void*>(allocation_end);\n"
+              "    return true;\n"
+          )
+          new_teb = (
+              "    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n"
+              "    bounds.tib = tib;\n"
+              "    bounds.host_stack_base = tib->StackBase;\n"
+              "    bounds.host_stack_limit = tib->StackLimit;\n"
+              "    static std::atomic<u32> diag_teb_counter{0};\n"
+              "    if (diag_teb_counter.fetch_add(1, std::memory_order_relaxed) == 0) {\n"
+              "        LOG_ERROR(Core_ARM,\n"
+              "                  \"IMP008_REALGAME_DIAG TEB_PREENTRY_BYPASS guest_sp=0x{:016X} allocation_base=0x{:016X} allocation_end=0x{:016X}\",\n"
+              "                  guest_sp, static_cast<u64>(allocation_base), static_cast<u64>(allocation_end));\n"
+              "    }\n"
+              "    return true;\n"
+          )
+          replace_once("teb-write", old_teb, new_teb)
+
+          old_run_head = (
+              "HaltReason ArmNce::RunThread(Kernel::KThread* thread) {\n"
+              "    HaltReason hr = static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0));\n"
+              "    if (True(hr)) {\n"
+              "        return hr;\n"
+              "    }\n"
+              "\n"
+              "    auto* const thread_params = &thread->GetNativeExecutionParameters();\n"
+              "    auto* const process = thread->GetOwnerProcess();\n"
+          )
+          new_run_head = (
+              "HaltReason ArmNce::RunThread(Kernel::KThread* thread) {\n"
+              "    static thread_local u32 diag_svc21_counter{0};\n"
+              "    static thread_local Kernel::KThread* diag_pending_thread{};\n"
+              "    static thread_local u32 diag_pending_occurrence{0};\n"
+              "    static thread_local bool diag_pending_after_hle{false};\n"
+              "\n"
+              "    HaltReason hr = static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0));\n"
+              "    if (True(hr)) {\n"
+              "        return hr;\n"
+              "    }\n"
+              "\n"
+              "    auto* const thread_params = &thread->GetNativeExecutionParameters();\n"
+              "    auto* const process = thread->GetOwnerProcess();\n"
+              "\n"
+              "    if (diag_pending_after_hle && diag_pending_thread == thread) {\n"
+              "        LOG_ERROR(Core_ARM,\n"
+              "                  \"IMP008_REALGAME_DIAG SVC21_AFTER_HLE_RETURN n={} result_x0=0x{:016X} pc=0x{:016X} sp=0x{:016X} fp=0x{:016X} lr=0x{:016X} stale_svc=0x{:02X}\",\n"
+              "                  diag_pending_occurrence, m_guest_ctx.cpu_registers[0], m_guest_ctx.pc,\n"
+              "                  m_guest_ctx.sp, m_guest_ctx.cpu_registers[29],\n"
+              "                  m_guest_ctx.cpu_registers[30], m_guest_ctx.svc);\n"
+              "        diag_pending_after_hle = false;\n"
+              "        diag_pending_thread = nullptr;\n"
+              "    }\n"
+          )
+          replace_once("run-head", old_run_head, new_run_head)
+
+          old_guest_return = (
+              "        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n"
+              "                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n"
+              "        } else {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n"
+              "        }\n"
+              "\n"
+              "        RestoreHostTebStackBounds(teb_stack_bounds);\n"
+          )
+
+          new_guest_return = (
+              "        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n"
+              "                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n"
+              "        } else {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n"
+              "        }\n"
+              "\n"
+              "        if (static_cast<u64>(hr) == static_cast<u64>(HaltReason::SupervisorCall) &&\n"
+              "            m_guest_ctx.svc == 0x21 && m_guest_ctx.cpu_registers[0] == 0x20 &&\n"
+              "            m_guest_ctx.tpidrro_el0 != 0) {\n"
+              "            const u32 diag_occurrence = diag_svc21_counter++;\n"
+              "            u32 diag_tls[4]{};\n"
+              "            const bool diag_tls_ok = process->GetMemory().ReadBlock(\n"
+              "                Common::ProcessAddress{m_guest_ctx.tpidrro_el0}, diag_tls, sizeof(diag_tls));\n"
+              "            const Kernel::Handle diag_candidate = diag_tls_ok ? diag_tls[3] : 0;\n"
+              "            auto diag_candidate_object = process->GetHandleTable().GetObjectForIpcWithoutPseudoHandle(\n"
+              "                m_system.Kernel(), diag_candidate);\n"
+              "            const bool diag_candidate_live = diag_candidate_object.IsNotNull();\n"
+              "\n"
+              "            LOG_ERROR(Core_ARM,\n"
+              "                      \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_EVENT n={} pc=0x{:016X} sp=0x{:016X} fp=0x{:016X} lr=0x{:016X} tls_ok={} tls=0x{:016X} w02=0x{:08X} w03=0x{:08X} live={} old_x0=0x{:016X}\",\n"
+              "                      diag_occurrence, m_guest_ctx.pc, m_guest_ctx.sp,\n"
+              "                      m_guest_ctx.cpu_registers[29], m_guest_ctx.cpu_registers[30],\n"
+              "                      diag_tls_ok, m_guest_ctx.tpidrro_el0, diag_tls[2], diag_tls[3],\n"
+              "                      diag_candidate_live, m_guest_ctx.cpu_registers[0]);\n"
+              "\n"
+              "            if (diag_tls_ok && diag_tls[2] == 0x20 && diag_candidate_live) {\n"
+              "                m_guest_ctx.cpu_registers[0] = diag_candidate;\n"
+              "                diag_pending_thread = thread;\n"
+              "                diag_pending_occurrence = diag_occurrence;\n"
+              "                diag_pending_after_hle = true;\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_MOVED_HANDLE_SUBSTITUTE n={} old=0x00000020 new=0x{:08X}=LIVE\",\n"
+              "                          diag_occurrence, diag_candidate);\n"
+              "            } else {\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_MOVED_HANDLE_SUBSTITUTE_SKIPPED n={} tls_ok={} special=0x{:08X} candidate=0x{:08X} live={}\",\n"
+              "                          diag_occurrence, diag_tls_ok, diag_tls[2], diag_candidate,\n"
+              "                          diag_candidate_live);\n"
+              "            }\n"
+              "\n"
+              "            if (diag_occurrence == 1) {\n"
+              "                const u64 diag_fp = m_guest_ctx.cpu_registers[29];\n"
+              "                const u64 diag_lr = m_guest_ctx.cpu_registers[30];\n"
+              "                u64 diag_frame[8]{};\n"
+              "                const bool diag_frame_ok = diag_fp != 0 && process->GetMemory().ReadBlock(\n"
+              "                    Common::ProcessAddress{diag_fp}, diag_frame, sizeof(diag_frame));\n"
+              "                const u64 diag_parent_fp = diag_frame_ok ? diag_frame[0] : 0;\n"
+              "                const u64 diag_parent_lr = diag_frame_ok ? diag_frame[1] : 0;\n"
+              "\n"
+              "                u64 diag_parent_frame[8]{};\n"
+              "                const bool diag_parent_frame_ok = diag_parent_fp != 0 && process->GetMemory().ReadBlock(\n"
+              "                    Common::ProcessAddress{diag_parent_fp}, diag_parent_frame,\n"
+              "                    sizeof(diag_parent_frame));\n"
+              "                const u64 diag_grand_lr = diag_parent_frame_ok ? diag_parent_frame[1] : 0;\n"
+              "\n"
+              "                u32 diag_parent_code[64]{};\n"
+              "                const u64 diag_parent_code_base =\n"
+              "                    diag_parent_lr >= 0x80 ? diag_parent_lr - 0x80 : diag_parent_lr;\n"
+              "                const bool diag_parent_code_ok = diag_parent_lr != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_parent_code_base}, diag_parent_code,\n"
+              "                        sizeof(diag_parent_code));\n"
+              "\n"
+              "                u32 diag_grand_code[32]{};\n"
+              "                const u64 diag_grand_code_base =\n"
+              "                    diag_grand_lr >= 0x40 ? diag_grand_lr - 0x40 : diag_grand_lr;\n"
+              "                const bool diag_grand_code_ok = diag_grand_lr != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_grand_code_base}, diag_grand_code,\n"
+              "                        sizeof(diag_grand_code));\n"
+              "\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_REGS x0=0x{:016X} x1=0x{:016X} x2=0x{:016X} x3=0x{:016X} x4=0x{:016X} x5=0x{:016X} x6=0x{:016X} x7=0x{:016X} x16=0x{:016X} x17=0x{:016X} x18=0x{:016X}\",\n"
+              "                          m_guest_ctx.cpu_registers[0], m_guest_ctx.cpu_registers[1],\n"
+              "                          m_guest_ctx.cpu_registers[2], m_guest_ctx.cpu_registers[3],\n"
+              "                          m_guest_ctx.cpu_registers[4], m_guest_ctx.cpu_registers[5],\n"
+              "                          m_guest_ctx.cpu_registers[6], m_guest_ctx.cpu_registers[7],\n"
+              "                          m_guest_ctx.cpu_registers[16], m_guest_ctx.cpu_registers[17],\n"
+              "                          m_guest_ctx.cpu_registers[18]);\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_FRAME ok={} fp=0x{:016X} lr=0x{:016X} parent_fp=0x{:016X} parent_lr=0x{:016X} grand_lr=0x{:016X} q02={:016X} q03={:016X} q04={:016X} q05={:016X} q06={:016X} q07={:016X}\",\n"
+              "                          diag_frame_ok, diag_fp, diag_lr, diag_parent_fp, diag_parent_lr,\n"
+              "                          diag_grand_lr, diag_frame[2], diag_frame[3], diag_frame[4],\n"
+              "                          diag_frame[5], diag_frame[6], diag_frame[7]);\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_PARENT_FRAME ok={} base=0x{:016X} q00={:016X} q01={:016X} q02={:016X} q03={:016X} q04={:016X} q05={:016X} q06={:016X} q07={:016X}\",\n"
+              "                          diag_parent_frame_ok, diag_parent_fp, diag_parent_frame[0],\n"
+              "                          diag_parent_frame[1], diag_parent_frame[2], diag_parent_frame[3],\n"
+              "                          diag_parent_frame[4], diag_parent_frame[5], diag_parent_frame[6],\n"
+              "                          diag_parent_frame[7]);\n"
+              "                for (u32 diag_chunk = 0; diag_chunk < 8; ++diag_chunk) {\n"
+              "                    const u32 diag_i = diag_chunk * 8;\n"
+              "                    LOG_ERROR(Core_ARM,\n"
+              "                              \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_PARENT_CODE ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}\",\n"
+              "                              diag_parent_code_ok, diag_chunk,\n"
+              "                              diag_parent_code_base + static_cast<u64>(diag_i) * sizeof(u32),\n"
+              "                              diag_parent_code[diag_i], diag_parent_code[diag_i + 1],\n"
+              "                              diag_parent_code[diag_i + 2], diag_parent_code[diag_i + 3],\n"
+              "                              diag_parent_code[diag_i + 4], diag_parent_code[diag_i + 5],\n"
+              "                              diag_parent_code[diag_i + 6], diag_parent_code[diag_i + 7]);\n"
+              "                }\n"
+              "                for (u32 diag_chunk = 0; diag_chunk < 4; ++diag_chunk) {\n"
+              "                    const u32 diag_i = diag_chunk * 8;\n"
+              "                    LOG_ERROR(Core_ARM,\n"
+              "                              \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_GRAND_CODE ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}\",\n"
+              "                              diag_grand_code_ok, diag_chunk,\n"
+              "                              diag_grand_code_base + static_cast<u64>(diag_i) * sizeof(u32),\n"
+              "                              diag_grand_code[diag_i], diag_grand_code[diag_i + 1],\n"
+              "                              diag_grand_code[diag_i + 2], diag_grand_code[diag_i + 3],\n"
+              "                              diag_grand_code[diag_i + 4], diag_grand_code[diag_i + 5],\n"
+              "                              diag_grand_code[diag_i + 6], diag_grand_code[diag_i + 7]);\n"
+              "                }\n"
+              "            }\n"
+              "        }\n"
+              "\n"
+              "        RestoreHostTebStackBounds(teb_stack_bounds);\n"
+          )
+          replace_once("guest-return", old_guest_return, new_guest_return)
+
+          path.write_text(text, encoding="utf-8")
+
+          for marker in [
+              "TEB_PREENTRY_BYPASS",
+              "SVC21_AFTER_HLE_RETURN",
+              "SVC21_SECOND_CALL_EVENT",
+              "SVC21_MOVED_HANDLE_SUBSTITUTE",
+              "SVC21_MOVED_HANDLE_SUBSTITUTE_SKIPPED",
+              "SVC21_SECOND_CALL_REGS",
+              "SVC21_SECOND_CALL_FRAME",
+              "SVC21_SECOND_CALL_PARENT_CODE",
+              "SVC21_SECOND_CALL_GRAND_CODE",
+          ]:
+              if f"IMP008_REALGAME_DIAG {marker}" not in text:
+                  raise SystemExit(f"missing marker {marker}")
+          if "guest_sp_value >= allocation_end" in text:
+              raise SystemExit("old inclusive upper-bound rejection still present")
+          if "tib->StackLimit = reinterpret_cast<void*>(allocation_base);" in text:
+              raise SystemExit("guest TEB StackLimit overwrite still present")
+          if "tib->StackBase = reinterpret_cast<void*>(allocation_end);" in text:
+              raise SystemExit("guest TEB StackBase overwrite still present")
+          print("NCE_SVC21_SECOND_CALL_PROVENANCE_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'SVC21 second-call provenance injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'NCE_SVC21_SECOND_CALL_PROVENANCE_PATCH=PASS'
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_AFTER_HLE_RETURN' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_SECOND_CALL_PARENT_CODE' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_SECOND_CALL_PROVENANCE_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_SVC21_SECOND_CALL_PROVENANCE_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-svc21-second-call-provenance-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_SVC21_SECOND_CALL_PROVENANCE_PACKAGE=PASS'
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged file; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) { throw "Expected exactly one upload file; found $($upload.Count)" }
+          Write-Host 'NCE_SVC21_SECOND_CALL_PROVENANCE_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
+
+      - name: Upload Windows ARM64 NCE SVC21 second-call provenance diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-SVC21-SECOND-CALL-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
