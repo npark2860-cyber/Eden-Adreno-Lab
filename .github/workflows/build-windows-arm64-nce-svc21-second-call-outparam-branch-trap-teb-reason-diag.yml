@@ -1,0 +1,258 @@
+name: Build Windows ARM64 NCE SVC21 Second Call Outparam Branch Trap TEB Reason Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-svc21-second-call-outparam-branch-trap-teb-reason-diag.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-svc21-second-call-outparam-branch-trap-teb-reason-diag
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE SVC21 outparam branch-trap TEB-reason diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_OUTPARAM_BRANCH_TRAP_TEB_REASON_SOURCE_GUARD=PASS'
+
+      - name: Reuse branch-trap injection and add TEB rejection reasons
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          workflow = Path(".github/workflows/build-windows-arm64-nce-svc21-second-call-outparam-branch-trap-diag.yml").read_text(encoding="utf-8")
+          begin_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(begin_marker) + len(begin_marker)
+          end = workflow.index(end_marker, start)
+          script_lines = workflow[start:end].splitlines()
+          script = "\n".join(line[10:] if line.startswith("          ") else line for line in script_lines)
+          exec(compile(script, "validated-outparam-branch-trap-injection", "exec"), {})
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          def replace_once(label, old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {count}")
+              text = text.replace(old, new, 1)
+
+          zero_old = "\n".join([
+              "    if (guest_sp == 0) {",
+              "        return false;",
+              "    }",
+              "",
+          ])
+          zero_new = "\n".join([
+              "    if (guest_sp == 0) {",
+              "        LOG_ERROR(Core_ARM,",
+              "                  \"IMP008_REALGAME_DIAG TEB_PREENTRY_FAIL reason=ZERO_SP guest_sp=0x{:016X}\",",
+              "                  guest_sp);",
+              "        return false;",
+              "    }",
+              "",
+          ])
+          replace_once("teb-zero-sp", zero_old, zero_new)
+
+          query_old = "\n".join([
+              "    MEMORY_BASIC_INFORMATION stack_mbi{};",
+              "    if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi,",
+              "                     sizeof(stack_mbi)) == 0 ||",
+              "        stack_mbi.AllocationBase == nullptr) {",
+              "        return false;",
+              "    }",
+              "",
+          ])
+          query_new = "\n".join([
+              "    MEMORY_BASIC_INFORMATION stack_mbi{};",
+              "    const SIZE_T diag_stack_query_size = VirtualQuery(",
+              "        reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi, sizeof(stack_mbi));",
+              "    if (diag_stack_query_size == 0 || stack_mbi.AllocationBase == nullptr) {",
+              "        LOG_ERROR(Core_ARM,",
+              "                  \"IMP008_REALGAME_DIAG TEB_PREENTRY_FAIL reason=STACK_QUERY guest_sp=0x{:016X} query={} error={} base=0x{:016X} allocation=0x{:016X} region_size=0x{:X} state=0x{:X} protect=0x{:X} type=0x{:X}\",",
+              "                  guest_sp, static_cast<u64>(diag_stack_query_size),",
+              "                  static_cast<u32>(GetLastError()),",
+              "                  static_cast<u64>(reinterpret_cast<std::uintptr_t>(stack_mbi.BaseAddress)),",
+              "                  static_cast<u64>(reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase)),",
+              "                  static_cast<u64>(stack_mbi.RegionSize), static_cast<u32>(stack_mbi.State),",
+              "                  static_cast<u32>(stack_mbi.Protect), static_cast<u32>(stack_mbi.Type));",
+              "        return false;",
+              "    }",
+              "",
+          ])
+          replace_once("teb-stack-query", query_old, query_new)
+
+          range_old = "\n".join([
+              "    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);",
+              "    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {",
+              "        return false;",
+              "    }",
+              "",
+          ])
+          range_new = "\n".join([
+              "    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);",
+              "    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {",
+              "        LOG_ERROR(Core_ARM,",
+              "                  \"IMP008_REALGAME_DIAG TEB_PREENTRY_FAIL reason=RANGE guest_sp=0x{:016X} allocation_base=0x{:016X} allocation_end=0x{:016X} delta_from_end={}\",",
+              "                  guest_sp, static_cast<u64>(allocation_base),",
+              "                  static_cast<u64>(allocation_end),",
+              "                  static_cast<s64>(guest_sp_value) - static_cast<s64>(allocation_end));",
+              "        return false;",
+              "    }",
+              "",
+          ])
+          replace_once("teb-range", range_old, range_new)
+
+          path.write_text(text, encoding="utf-8")
+          for marker in [
+              "TEB_PREENTRY_BYPASS",
+              "TEB_PREENTRY_FAIL reason=ZERO_SP",
+              "TEB_PREENTRY_FAIL reason=STACK_QUERY",
+              "TEB_PREENTRY_FAIL reason=RANGE",
+              "SVC21_OUTPARAM_BRANCH_TRAP_INSTALL",
+              "SVC21_OUTPARAM_BRANCH_OBSERVED",
+          ]:
+              if f"IMP008_REALGAME_DIAG {marker}" not in text:
+                  raise SystemExit(f"missing marker {marker}")
+          print("NCE_SVC21_OUTPARAM_BRANCH_TRAP_TEB_REASON_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'SVC21 outparam branch-trap TEB-reason injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'NCE_SVC21_OUTPARAM_BRANCH_TRAP_TEB_REASON_PATCH=PASS'
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG TEB_PREENTRY_FAIL reason=' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_OUTPARAM_BRANCH_OBSERVED' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_OUTPARAM_BRANCH_TRAP_TEB_REASON_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_SVC21_OUTPARAM_BRANCH_TRAP_TEB_REASON_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-svc21-outparam-branch-trap-teb-reason-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_SVC21_OUTPARAM_BRANCH_TRAP_TEB_REASON_PACKAGE=PASS'
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged file; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) { throw "Expected exactly one upload file; found $($upload.Count)" }
+          Write-Host 'NCE_SVC21_OUTPARAM_BRANCH_TRAP_TEB_REASON_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
+
+      - name: Upload Windows ARM64 NCE SVC21 outparam branch-trap TEB-reason diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-SVC21-OUTPARAM-BRANCH-TRAP-TEB-REASON-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
