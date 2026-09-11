@@ -73,7 +73,11 @@ jobs:
               raise SystemExit(f'candidate anchor count={t.count(old)}')
           t = t.replace(old, new, 1)
 
-          anchor = '    auto* const process = thread->GetOwnerProcess();\n'
+          anchor = "\n".join([
+              '    auto* const thread_params = &thread->GetNativeExecutionParameters();',
+              '    auto* const process = thread->GetOwnerProcess();',
+              '',
+          ])
           prearm = "\n".join([
               '    if (!diag_outparam_branch_trap_attempted && !diag_pending_after_hle) {',
               '        diag_pending_thread = thread;',
@@ -83,8 +87,8 @@ jobs:
               '',
           ])
           if t.count(anchor) != 1:
-              raise SystemExit(f'process anchor count={t.count(anchor)}')
-          t = t.replace(anchor, anchor + '\n' + prearm, 1)
+              raise SystemExit(f'runthread anchor count={t.count(anchor)}')
+          t = t.replace(anchor, anchor + prearm, 1)
           p.write_text(t, encoding='utf-8')
           print('PREENTRY_V2_INJECTION=PASS')
           '@ | python -
