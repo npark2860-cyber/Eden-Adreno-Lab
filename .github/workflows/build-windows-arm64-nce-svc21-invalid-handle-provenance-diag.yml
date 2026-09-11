@@ -51,7 +51,6 @@ jobs:
           grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
-          grep -Fq 'auto* const process = thread->GetOwnerProcess();' src/core/arm/nce/arm_nce_windows.cpp
           echo 'NCE_SVC21_INVALID_HANDLE_PROVENANCE_SOURCE_GUARD=PASS'
 
       - name: Inject validation-only SVC21 invalid-handle provenance diagnostics
@@ -71,230 +70,135 @@ jobs:
                   raise SystemExit(f"{label}: expected one anchor, found {count}")
               text = text.replace(old, new, 1)
 
-          replace_once(
-              "range",
-              """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);
-              if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {
-                  return false;
-              }
-          """,
-              """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);
-              if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {
-                  return false;
-              }
-          """)
+          old_range = (
+              "    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n"
+              "    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {\n"
+              "        return false;\n"
+              "    }\n"
+          )
+          new_range = old_range.replace(">= allocation_end", "> allocation_end")
+          replace_once("range", old_range, new_range)
 
-          replace_once(
-              "teb-write",
-              """    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-              bounds.tib = tib;
-              bounds.host_stack_base = tib->StackBase;
-              bounds.host_stack_limit = tib->StackLimit;
-              tib->StackLimit = reinterpret_cast<void*>(allocation_base);
-              tib->StackBase = reinterpret_cast<void*>(allocation_end);
-              return true;
-          """,
-              """    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-              bounds.tib = tib;
-              bounds.host_stack_base = tib->StackBase;
-              bounds.host_stack_limit = tib->StackLimit;
-              static std::atomic<u32> diag_teb_counter{0};
-              if (diag_teb_counter.fetch_add(1, std::memory_order_relaxed) == 0) {
-                  LOG_ERROR(Core_ARM,
-                            "IMP008_REALGAME_DIAG TEB_PREENTRY_BYPASS guest_sp=0x{:016X} allocation_base=0x{:016X} allocation_end=0x{:016X}",
-                            guest_sp, static_cast<u64>(allocation_base), static_cast<u64>(allocation_end));
-              }
-              return true;
-          """)
+          old_teb = (
+              "    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n"
+              "    bounds.tib = tib;\n"
+              "    bounds.host_stack_base = tib->StackBase;\n"
+              "    bounds.host_stack_limit = tib->StackLimit;\n"
+              "    tib->StackLimit = reinterpret_cast<void*>(allocation_base);\n"
+              "    tib->StackBase = reinterpret_cast<void*>(allocation_end);\n"
+              "    return true;\n"
+          )
+          new_teb = (
+              "    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n"
+              "    bounds.tib = tib;\n"
+              "    bounds.host_stack_base = tib->StackBase;\n"
+              "    bounds.host_stack_limit = tib->StackLimit;\n"
+              "    static std::atomic<u32> diag_teb_counter{0};\n"
+              "    if (diag_teb_counter.fetch_add(1, std::memory_order_relaxed) == 0) {\n"
+              "        LOG_ERROR(Core_ARM,\n"
+              "                  \"IMP008_REALGAME_DIAG TEB_PREENTRY_BYPASS guest_sp=0x{:016X} allocation_base=0x{:016X} allocation_end=0x{:016X}\",\n"
+              "                  guest_sp, static_cast<u64>(allocation_base), static_cast<u64>(allocation_end));\n"
+              "    }\n"
+              "    return true;\n"
+          )
+          replace_once("teb-write", old_teb, new_teb)
 
-          replace_once(
-              "guest-return",
-              """        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
-                      hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
-                          &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
-                  } else {
-                      hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
-                  }
+          old_guest_return = (
+              "        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n"
+              "                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n"
+              "        } else {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n"
+              "        }\n"
+              "\n"
+              "        RestoreHostTebStackBounds(teb_stack_bounds);\n"
+          )
 
-                  RestoreHostTebStackBounds(teb_stack_bounds);
-          """,
-              """        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
-                      hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
-                          &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
-                  } else {
-                      hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
-                  }
-
-                  if (static_cast<u64>(hr) == static_cast<u64>(HaltReason::SupervisorCall) &&
-                      m_guest_ctx.svc == 0x21 && m_guest_ctx.cpu_registers[0] == 0x20) {
-                      static std::atomic<u32> diag_invalid_handle_counter{0};
-                      const u32 diag_occurrence =
-                          diag_invalid_handle_counter.fetch_add(1, std::memory_order_relaxed);
-                      if (diag_occurrence < 4) {
-                          const u32 diag_raw_handle = static_cast<u32>(m_guest_ctx.cpu_registers[0]);
-                          const u32 diag_handle_index = diag_raw_handle & 0x7FFFu;
-                          const u32 diag_handle_linear_id = (diag_raw_handle >> 15) & 0x7FFFu;
-
-                          auto& diag_handle_table = process->GetHandleTable();
-                          Kernel::Handle diag_slot_handle{};
-                          auto diag_slot_object = diag_handle_table.GetObjectByIndex(
-                              m_system.Kernel(), &diag_slot_handle, diag_handle_index);
-                          const bool diag_slot_present = diag_slot_object.IsNotNull();
-
-                          const u64 diag_fp = m_guest_ctx.cpu_registers[29];
-                          u64 diag_frame[16]{};
-                          const bool diag_frame_ok =
-                              diag_fp != 0 && process->GetMemory().ReadBlock(
-                                                  Common::ProcessAddress{diag_fp}, diag_frame,
-                                                  sizeof(diag_frame));
-                          const u64 diag_parent_fp = diag_frame_ok ? diag_frame[0] : 0;
-                          const u64 diag_parent_lr = diag_frame_ok ? diag_frame[1] : 0;
-
-                          u32 diag_parent_code[64]{};
-                          const u64 diag_parent_code_base =
-                              diag_parent_lr >= 0x80 ? diag_parent_lr - 0x80 : diag_parent_lr;
-                          const bool diag_parent_code_ok =
-                              diag_parent_lr != 0 && process->GetMemory().ReadBlock(
-                                                         Common::ProcessAddress{diag_parent_code_base},
-                                                         diag_parent_code, sizeof(diag_parent_code));
-
-                          u64 diag_parent_frame[16]{};
-                          const bool diag_parent_frame_ok =
-                              diag_parent_fp != 0 && process->GetMemory().ReadBlock(
-                                                         Common::ProcessAddress{diag_parent_fp},
-                                                         diag_parent_frame, sizeof(diag_parent_frame));
-                          const u64 diag_grand_fp = diag_parent_frame_ok ? diag_parent_frame[0] : 0;
-                          const u64 diag_grand_lr = diag_parent_frame_ok ? diag_parent_frame[1] : 0;
-
-                          u32 diag_grand_code[32]{};
-                          const u64 diag_grand_code_base =
-                              diag_grand_lr >= 0x40 ? diag_grand_lr - 0x40 : diag_grand_lr;
-                          const bool diag_grand_code_ok =
-                              diag_grand_lr != 0 && process->GetMemory().ReadBlock(
-                                                        Common::ProcessAddress{diag_grand_code_base},
-                                                        diag_grand_code, sizeof(diag_grand_code));
-
-                          u32 diag_tls[16]{};
-                          const bool diag_tls_ok =
-                              m_guest_ctx.tpidrro_el0 != 0 && process->GetMemory().ReadBlock(
-                                                                  Common::ProcessAddress{
-                                                                      m_guest_ctx.tpidrro_el0},
-                                                                  diag_tls, sizeof(diag_tls));
-
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_INVALID_HANDLE n={} raw=0x{:08X} index={} linear_id={} table_count={} table_max_count={} slot_present={} slot_handle=0x{:08X}",
-                                    diag_occurrence, diag_raw_handle, diag_handle_index,
-                                    diag_handle_linear_id, diag_handle_table.GetCount(),
-                                    diag_handle_table.GetMaxCount(), diag_slot_present, diag_slot_handle);
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_INVALID_HANDLE_CONTEXT n={} pc=0x{:016X} sp=0x{:016X} fp=0x{:016X} lr=0x{:016X} parent_fp=0x{:016X} parent_lr=0x{:016X} grand_fp=0x{:016X} grand_lr=0x{:016X}",
-                                    diag_occurrence, m_guest_ctx.pc, m_guest_ctx.sp, diag_fp,
-                                    m_guest_ctx.cpu_registers[30], diag_parent_fp, diag_parent_lr,
-                                    diag_grand_fp, diag_grand_lr);
-
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_REGS0 n={} x00={:016X} x01={:016X} x02={:016X} x03={:016X} x04={:016X} x05={:016X} x06={:016X} x07={:016X}",
-                                    diag_occurrence, m_guest_ctx.cpu_registers[0],
-                                    m_guest_ctx.cpu_registers[1], m_guest_ctx.cpu_registers[2],
-                                    m_guest_ctx.cpu_registers[3], m_guest_ctx.cpu_registers[4],
-                                    m_guest_ctx.cpu_registers[5], m_guest_ctx.cpu_registers[6],
-                                    m_guest_ctx.cpu_registers[7]);
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_REGS1 n={} x08={:016X} x09={:016X} x10={:016X} x11={:016X} x12={:016X} x13={:016X} x14={:016X} x15={:016X}",
-                                    diag_occurrence, m_guest_ctx.cpu_registers[8],
-                                    m_guest_ctx.cpu_registers[9], m_guest_ctx.cpu_registers[10],
-                                    m_guest_ctx.cpu_registers[11], m_guest_ctx.cpu_registers[12],
-                                    m_guest_ctx.cpu_registers[13], m_guest_ctx.cpu_registers[14],
-                                    m_guest_ctx.cpu_registers[15]);
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_REGS2 n={} x16={:016X} x17={:016X} x18={:016X} x19={:016X} x20={:016X} x21={:016X} x22={:016X} x23={:016X}",
-                                    diag_occurrence, m_guest_ctx.cpu_registers[16],
-                                    m_guest_ctx.cpu_registers[17], m_guest_ctx.cpu_registers[18],
-                                    m_guest_ctx.cpu_registers[19], m_guest_ctx.cpu_registers[20],
-                                    m_guest_ctx.cpu_registers[21], m_guest_ctx.cpu_registers[22],
-                                    m_guest_ctx.cpu_registers[23]);
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_REGS3 n={} x24={:016X} x25={:016X} x26={:016X} x27={:016X} x28={:016X} fp={:016X} lr={:016X} sp={:016X}",
-                                    diag_occurrence, m_guest_ctx.cpu_registers[24],
-                                    m_guest_ctx.cpu_registers[25], m_guest_ctx.cpu_registers[26],
-                                    m_guest_ctx.cpu_registers[27], m_guest_ctx.cpu_registers[28],
-                                    diag_fp, m_guest_ctx.cpu_registers[30], m_guest_ctx.sp);
-
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_FRAME0 n={} ok={} base=0x{:016X} q00={:016X} q01={:016X} q02={:016X} q03={:016X} q04={:016X} q05={:016X} q06={:016X} q07={:016X}",
-                                    diag_occurrence, diag_frame_ok, diag_fp, diag_frame[0], diag_frame[1],
-                                    diag_frame[2], diag_frame[3], diag_frame[4], diag_frame[5],
-                                    diag_frame[6], diag_frame[7]);
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_FRAME1 n={} base=0x{:016X} q08={:016X} q09={:016X} q10={:016X} q11={:016X} q12={:016X} q13={:016X} q14={:016X} q15={:016X}",
-                                    diag_occurrence, diag_fp, diag_frame[8], diag_frame[9],
-                                    diag_frame[10], diag_frame[11], diag_frame[12], diag_frame[13],
-                                    diag_frame[14], diag_frame[15]);
-
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_PARENT_FRAME0 n={} ok={} base=0x{:016X} q00={:016X} q01={:016X} q02={:016X} q03={:016X} q04={:016X} q05={:016X} q06={:016X} q07={:016X}",
-                                    diag_occurrence, diag_parent_frame_ok, diag_parent_fp,
-                                    diag_parent_frame[0], diag_parent_frame[1], diag_parent_frame[2],
-                                    diag_parent_frame[3], diag_parent_frame[4], diag_parent_frame[5],
-                                    diag_parent_frame[6], diag_parent_frame[7]);
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_PARENT_FRAME1 n={} base=0x{:016X} q08={:016X} q09={:016X} q10={:016X} q11={:016X} q12={:016X} q13={:016X} q14={:016X} q15={:016X}",
-                                    diag_occurrence, diag_parent_fp, diag_parent_frame[8],
-                                    diag_parent_frame[9], diag_parent_frame[10], diag_parent_frame[11],
-                                    diag_parent_frame[12], diag_parent_frame[13], diag_parent_frame[14],
-                                    diag_parent_frame[15]);
-
-                          for (u32 chunk = 0; chunk < 8; ++chunk) {
-                              const u32 i = chunk * 8;
-                              LOG_ERROR(Core_ARM,
-                                        "IMP008_REALGAME_DIAG SVC21_PARENT_CODE n={} ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}",
-                                        diag_occurrence, diag_parent_code_ok, chunk,
-                                        diag_parent_code_base + static_cast<u64>(i) * sizeof(u32),
-                                        diag_parent_code[i + 0], diag_parent_code[i + 1],
-                                        diag_parent_code[i + 2], diag_parent_code[i + 3],
-                                        diag_parent_code[i + 4], diag_parent_code[i + 5],
-                                        diag_parent_code[i + 6], diag_parent_code[i + 7]);
-                          }
-
-                          for (u32 chunk = 0; chunk < 4; ++chunk) {
-                              const u32 i = chunk * 8;
-                              LOG_ERROR(Core_ARM,
-                                        "IMP008_REALGAME_DIAG SVC21_GRAND_CODE n={} ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}",
-                                        diag_occurrence, diag_grand_code_ok, chunk,
-                                        diag_grand_code_base + static_cast<u64>(i) * sizeof(u32),
-                                        diag_grand_code[i + 0], diag_grand_code[i + 1],
-                                        diag_grand_code[i + 2], diag_grand_code[i + 3],
-                                        diag_grand_code[i + 4], diag_grand_code[i + 5],
-                                        diag_grand_code[i + 6], diag_grand_code[i + 7]);
-                          }
-
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_TLS0 n={} ok={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}",
-                                    diag_occurrence, diag_tls_ok, m_guest_ctx.tpidrro_el0, diag_tls[0],
-                                    diag_tls[1], diag_tls[2], diag_tls[3], diag_tls[4], diag_tls[5],
-                                    diag_tls[6], diag_tls[7]);
-                          LOG_ERROR(Core_ARM,
-                                    "IMP008_REALGAME_DIAG SVC21_TLS1 n={} base=0x{:016X} w08={:08X} w09={:08X} w10={:08X} w11={:08X} w12={:08X} w13={:08X} w14={:08X} w15={:08X}",
-                                    diag_occurrence, m_guest_ctx.tpidrro_el0, diag_tls[8], diag_tls[9],
-                                    diag_tls[10], diag_tls[11], diag_tls[12], diag_tls[13],
-                                    diag_tls[14], diag_tls[15]);
-                      }
-                  }
-
-                  RestoreHostTebStackBounds(teb_stack_bounds);
-          """)
+          new_guest_return = (
+              "        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n"
+              "                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n"
+              "        } else {\n"
+              "            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n"
+              "        }\n"
+              "\n"
+              "        if (static_cast<u64>(hr) == static_cast<u64>(HaltReason::SupervisorCall) &&\n"
+              "            m_guest_ctx.svc == 0x21 && m_guest_ctx.cpu_registers[0] == 0x20) {\n"
+              "            static std::atomic<u32> diag_invalid_handle_counter{0};\n"
+              "            const u32 diag_occurrence = diag_invalid_handle_counter.fetch_add(1, std::memory_order_relaxed);\n"
+              "            if (diag_occurrence < 4) {\n"
+              "                const u32 raw_handle = static_cast<u32>(m_guest_ctx.cpu_registers[0]);\n"
+              "                const u32 handle_index = raw_handle & 0x7FFFu;\n"
+              "                const u32 handle_linear_id = (raw_handle >> 15) & 0x7FFFu;\n"
+              "                auto& handle_table = process->GetHandleTable();\n"
+              "                Kernel::Handle slot_handle{};\n"
+              "                auto slot_object = handle_table.GetObjectByIndex(m_system.Kernel(), &slot_handle, handle_index);\n"
+              "                const bool slot_present = slot_object.IsNotNull();\n"
+              "\n"
+              "                const u64 fp = m_guest_ctx.cpu_registers[29];\n"
+              "                u64 frame[8]{};\n"
+              "                const bool frame_ok = fp != 0 && process->GetMemory().ReadBlock(\n"
+              "                    Common::ProcessAddress{fp}, frame, sizeof(frame));\n"
+              "                const u64 parent_fp = frame_ok ? frame[0] : 0;\n"
+              "                const u64 parent_lr = frame_ok ? frame[1] : 0;\n"
+              "\n"
+              "                u32 parent_code[64]{};\n"
+              "                const u64 parent_code_base = parent_lr >= 0x80 ? parent_lr - 0x80 : parent_lr;\n"
+              "                const bool parent_code_ok = parent_lr != 0 && process->GetMemory().ReadBlock(\n"
+              "                    Common::ProcessAddress{parent_code_base}, parent_code, sizeof(parent_code));\n"
+              "\n"
+              "                u64 parent_frame[8]{};\n"
+              "                const bool parent_frame_ok = parent_fp != 0 && process->GetMemory().ReadBlock(\n"
+              "                    Common::ProcessAddress{parent_fp}, parent_frame, sizeof(parent_frame));\n"
+              "                const u64 grand_lr = parent_frame_ok ? parent_frame[1] : 0;\n"
+              "                u32 grand_code[32]{};\n"
+              "                const u64 grand_code_base = grand_lr >= 0x40 ? grand_lr - 0x40 : grand_lr;\n"
+              "                const bool grand_code_ok = grand_lr != 0 && process->GetMemory().ReadBlock(\n"
+              "                    Common::ProcessAddress{grand_code_base}, grand_code, sizeof(grand_code));\n"
+              "\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_INVALID_HANDLE raw=0x{:08X} index={} linear_id={} table_count={} slot_present={} slot_handle=0x{:08X}\",\n"
+              "                          raw_handle, handle_index, handle_linear_id, handle_table.GetCount(),\n"
+              "                          slot_present, slot_handle);\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_FRAME ok={} fp=0x{:016X} parent_fp=0x{:016X} parent_lr=0x{:016X} q02={:016X} q03={:016X} q04={:016X} q05={:016X} q06={:016X} q07={:016X}\",\n"
+              "                          frame_ok, fp, parent_fp, parent_lr, frame[2], frame[3], frame[4], frame[5], frame[6], frame[7]);\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_PARENT_FRAME ok={} base=0x{:016X} q00={:016X} q01={:016X} q02={:016X} q03={:016X} q04={:016X} q05={:016X} q06={:016X} q07={:016X}\",\n"
+              "                          parent_frame_ok, parent_fp, parent_frame[0], parent_frame[1], parent_frame[2],\n"
+              "                          parent_frame[3], parent_frame[4], parent_frame[5], parent_frame[6], parent_frame[7]);\n"
+              "                for (u32 chunk = 0; chunk < 8; ++chunk) {\n"
+              "                    const u32 i = chunk * 8;\n"
+              "                    LOG_ERROR(Core_ARM,\n"
+              "                              \"IMP008_REALGAME_DIAG SVC21_PARENT_CODE ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}\",\n"
+              "                              parent_code_ok, chunk, parent_code_base + static_cast<u64>(i) * sizeof(u32),\n"
+              "                              parent_code[i], parent_code[i + 1], parent_code[i + 2], parent_code[i + 3],\n"
+              "                              parent_code[i + 4], parent_code[i + 5], parent_code[i + 6], parent_code[i + 7]);\n"
+              "                }\n"
+              "                for (u32 chunk = 0; chunk < 4; ++chunk) {\n"
+              "                    const u32 i = chunk * 8;\n"
+              "                    LOG_ERROR(Core_ARM,\n"
+              "                              \"IMP008_REALGAME_DIAG SVC21_GRAND_CODE ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}\",\n"
+              "                              grand_code_ok, chunk, grand_code_base + static_cast<u64>(i) * sizeof(u32),\n"
+              "                              grand_code[i], grand_code[i + 1], grand_code[i + 2], grand_code[i + 3],\n"
+              "                              grand_code[i + 4], grand_code[i + 5], grand_code[i + 6], grand_code[i + 7]);\n"
+              "                }\n"
+              "            }\n"
+              "        }\n"
+              "\n"
+              "        RestoreHostTebStackBounds(teb_stack_bounds);\n"
+          )
+          replace_once("guest-return", old_guest_return, new_guest_return)
 
           path.write_text(text, encoding="utf-8")
+
           for marker in [
               "TEB_PREENTRY_BYPASS",
               "SVC21_INVALID_HANDLE",
-              "SVC21_INVALID_HANDLE_CONTEXT",
-              "SVC21_REGS0",
-              "SVC21_FRAME0",
-              "SVC21_PARENT_FRAME0",
+              "SVC21_FRAME",
+              "SVC21_PARENT_FRAME",
               "SVC21_PARENT_CODE",
               "SVC21_GRAND_CODE",
-              "SVC21_TLS0",
           ]:
               if f"IMP008_REALGAME_DIAG {marker}" not in text:
                   raise SystemExit(f"missing marker {marker}")
@@ -355,7 +259,6 @@ jobs:
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           grep -Fq 'IMP008_REALGAME_DIAG SVC21_INVALID_HANDLE' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_REALGAME_DIAG SVC21_PARENT_CODE' src/core/arm/nce/arm_nce_windows.cpp
-          grep -Fq 'IMP008_REALGAME_DIAG SVC21_TLS0' src/core/arm/nce/arm_nce_windows.cpp
           echo 'NCE_SVC21_INVALID_HANDLE_PROVENANCE_DIAG_CONFIGURE=PASS'
 
       - name: Build full Windows ARM64 Eden GUI
