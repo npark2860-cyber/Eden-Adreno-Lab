@@ -1,0 +1,287 @@
+name: Build Windows ARM64 NCE SVC21 Second Call Outparam Helper Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-svc21-second-call-outparam-helper-diag.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-svc21-second-call-outparam-helper-diag
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE SVC21 second-call outparam-helper diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_SECOND_CALL_OUTPARAM_HELPER_SOURCE_GUARD=PASS'
+
+      - name: Reuse validated upstream-x3 injection and add outparam-helper diagnostics
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          workflow = Path(".github/workflows/build-windows-arm64-nce-svc21-second-call-upstream-x3-diag.yml").read_text(encoding="utf-8")
+          begin_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(begin_marker) + len(begin_marker)
+          end = workflow.index(end_marker, start)
+          script_lines = workflow[start:end].splitlines()
+          script = "\n".join(line[10:] if line.startswith("          ") else line for line in script_lines)
+          exec(compile(script, "validated-second-call-upstream-x3-injection", "exec"), {})
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+          anchor = "                const u64 diag_up3_lr = diag_up3_frame_ok ? diag_up3_frame[1] : 0;\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f"outparam-helper anchor expected once, found {text.count(anchor)}")
+
+          addition = anchor + (
+              "                const u64 diag_out_slot_addr =\n"
+              "                    diag_up3_fp >= 0x58 ? diag_up3_fp - 0x58 : 0;\n"
+              "                u32 diag_out_slot{};\n"
+              "                const bool diag_out_slot_ok = diag_out_slot_addr != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_out_slot_addr},\n"
+              "                        &diag_out_slot, sizeof(diag_out_slot));\n"
+              "                const u64 diag_out_call_pc =\n"
+              "                    diag_up3_lr >= 0xD8 ? diag_up3_lr - 0xD8 : 0;\n"
+              "                u32 diag_out_call_instruction{};\n"
+              "                const bool diag_out_call_ok = diag_out_call_pc != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_out_call_pc},\n"
+              "                        &diag_out_call_instruction, sizeof(diag_out_call_instruction));\n"
+              "                const bool diag_out_call_is_bl = diag_out_call_ok &&\n"
+              "                    (diag_out_call_instruction & 0xFC000000u) == 0x94000000u;\n"
+              "                const s64 diag_out_call_disp = diag_out_call_is_bl\n"
+              "                    ? (static_cast<s64>(static_cast<s32>(diag_out_call_instruction << 6)) >> 4)\n"
+              "                    : 0;\n"
+              "                const u64 diag_out_call_target = diag_out_call_is_bl\n"
+              "                    ? static_cast<u64>(static_cast<s64>(diag_out_call_pc) + diag_out_call_disp)\n"
+              "                    : 0;\n"
+              "                u32 diag_out_target_code[16]{};\n"
+              "                const bool diag_out_target_code_ok = diag_out_call_target != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_out_call_target},\n"
+              "                        diag_out_target_code, sizeof(diag_out_target_code));\n"
+              "                const u32 diag_v0 = diag_out_target_code[0];\n"
+              "                const u32 diag_v1 = diag_out_target_code[1];\n"
+              "                const u32 diag_v2 = diag_out_target_code[2];\n"
+              "                const u32 diag_v3 = diag_out_target_code[3];\n"
+              "                const bool diag_out_is_veneer = diag_out_target_code_ok &&\n"
+              "                    (diag_v0 & 0x9F000000u) == 0x90000000u && (diag_v0 & 0x1Fu) == 16u &&\n"
+              "                    (diag_v1 & 0xFFC00000u) == 0xF9400000u &&\n"
+              "                    ((diag_v1 >> 5) & 0x1Fu) == 16u && (diag_v1 & 0x1Fu) == 17u &&\n"
+              "                    (diag_v2 & 0xFF000000u) == 0x91000000u &&\n"
+              "                    ((diag_v2 >> 5) & 0x1Fu) == 16u && (diag_v2 & 0x1Fu) == 16u &&\n"
+              "                    diag_v3 == 0xD61F0220u;\n"
+              "                const u64 diag_adrp_immlo = (diag_v0 >> 29) & 0x3u;\n"
+              "                const u64 diag_adrp_immhi = (diag_v0 >> 5) & 0x7FFFFu;\n"
+              "                s64 diag_adrp_imm21 =\n"
+              "                    static_cast<s64>((diag_adrp_immhi << 2) | diag_adrp_immlo);\n"
+              "                if ((diag_adrp_imm21 & (1ll << 20)) != 0) {\n"
+              "                    diag_adrp_imm21 -= (1ll << 21);\n"
+              "                }\n"
+              "                const u64 diag_adrp_page = diag_out_is_veneer\n"
+              "                    ? static_cast<u64>(static_cast<s64>(diag_out_call_target & ~0xFFFULL) +\n"
+              "                                       diag_adrp_imm21 * 0x1000ll)\n"
+              "                    : 0;\n"
+              "                const u64 diag_ldr_offset =\n"
+              "                    diag_out_is_veneer ? static_cast<u64>((diag_v1 >> 10) & 0xFFFu) * 8 : 0;\n"
+              "                const u64 diag_out_got =\n"
+              "                    diag_out_is_veneer ? diag_adrp_page + diag_ldr_offset : 0;\n"
+              "                u64 diag_out_real_target{};\n"
+              "                const bool diag_out_got_ok = diag_out_got != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_out_got},\n"
+              "                        &diag_out_real_target, sizeof(diag_out_real_target));\n"
+              "                u32 diag_out_real_code[128]{};\n"
+              "                const bool diag_out_real_code_ok = diag_out_real_target != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_out_real_target},\n"
+              "                        diag_out_real_code, sizeof(diag_out_real_code));\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_SLOT addr=0x{:016X} ok={} value=0x{:08X}\",\n"
+              "                          diag_out_slot_addr, diag_out_slot_ok, diag_out_slot);\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_HELPER_LINK call_pc=0x{:016X} call_ok={} instruction=0x{:08X} is_bl={} disp={} target=0x{:016X}\",\n"
+              "                          diag_out_call_pc, diag_out_call_ok, diag_out_call_instruction,\n"
+              "                          diag_out_call_is_bl, diag_out_call_disp, diag_out_call_target);\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_VENEER code_ok={} v0={:08X} v1={:08X} v2={:08X} v3={:08X} is_veneer={} page=0x{:016X} got=0x{:016X} got_ok={} real=0x{:016X}\",\n"
+              "                          diag_out_target_code_ok, diag_v0, diag_v1, diag_v2, diag_v3,\n"
+              "                          diag_out_is_veneer, diag_adrp_page, diag_out_got,\n"
+              "                          diag_out_got_ok, diag_out_real_target);\n"
+              "                for (u32 diag_chunk = 0; diag_chunk < 2; ++diag_chunk) {\n"
+              "                    const u32 diag_i = diag_chunk * 8;\n"
+              "                    LOG_ERROR(Core_ARM,\n"
+              "                              \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_TARGET_CODE ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}\",\n"
+              "                              diag_out_target_code_ok, diag_chunk,\n"
+              "                              diag_out_call_target + static_cast<u64>(diag_i) * sizeof(u32),\n"
+              "                              diag_out_target_code[diag_i], diag_out_target_code[diag_i + 1],\n"
+              "                              diag_out_target_code[diag_i + 2], diag_out_target_code[diag_i + 3],\n"
+              "                              diag_out_target_code[diag_i + 4], diag_out_target_code[diag_i + 5],\n"
+              "                              diag_out_target_code[diag_i + 6], diag_out_target_code[diag_i + 7]);\n"
+              "                }\n"
+              "                for (u32 diag_chunk = 0; diag_chunk < 16; ++diag_chunk) {\n"
+              "                    const u32 diag_i = diag_chunk * 8;\n"
+              "                    LOG_ERROR(Core_ARM,\n"
+              "                              \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_REAL_CODE ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}\",\n"
+              "                              diag_out_real_code_ok, diag_chunk,\n"
+              "                              diag_out_real_target + static_cast<u64>(diag_i) * sizeof(u32),\n"
+              "                              diag_out_real_code[diag_i], diag_out_real_code[diag_i + 1],\n"
+              "                              diag_out_real_code[diag_i + 2], diag_out_real_code[diag_i + 3],\n"
+              "                              diag_out_real_code[diag_i + 4], diag_out_real_code[diag_i + 5],\n"
+              "                              diag_out_real_code[diag_i + 6], diag_out_real_code[diag_i + 7]);\n"
+              "                }\n"
+          )
+          text = text.replace(anchor, addition, 1)
+          path.write_text(text, encoding="utf-8")
+
+          for marker in [
+              "SVC21_SECOND_CALL_UPSTREAM_X3_LINK",
+              "SVC21_SECOND_CALL_OUTPARAM_SLOT",
+              "SVC21_SECOND_CALL_OUTPARAM_HELPER_LINK",
+              "SVC21_SECOND_CALL_OUTPARAM_VENEER",
+              "SVC21_SECOND_CALL_OUTPARAM_REAL_CODE",
+          ]:
+              if f"IMP008_REALGAME_DIAG {marker}" not in text:
+                  raise SystemExit(f"missing marker {marker}")
+          print("NCE_SVC21_SECOND_CALL_OUTPARAM_HELPER_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'SVC21 second-call outparam-helper injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'NCE_SVC21_SECOND_CALL_OUTPARAM_HELPER_PATCH=PASS'
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_SECOND_CALL_OUTPARAM_HELPER_LINK' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_SECOND_CALL_OUTPARAM_HELPER_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_SVC21_SECOND_CALL_OUTPARAM_HELPER_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-svc21-second-call-outparam-helper-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_SVC21_SECOND_CALL_OUTPARAM_HELPER_PACKAGE=PASS'
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged file; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) { throw "Expected exactly one upload file; found $($upload.Count)" }
+          Write-Host 'NCE_SVC21_SECOND_CALL_OUTPARAM_HELPER_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
+
+      - name: Upload Windows ARM64 NCE SVC21 second-call outparam-helper diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-SVC21-SECOND-CALL-OUTPARAM-HELPER-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
