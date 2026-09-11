@@ -1,0 +1,235 @@
+name: Build Windows ARM64 NCE SVC21 Second Call Parent Local Producer Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-svc21-second-call-parent-local-producer-diag.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-svc21-second-call-parent-local-producer-diag
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE SVC21 second-call parent-local producer diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_SECOND_CALL_PARENT_LOCAL_SOURCE_GUARD=PASS'
+
+      - name: Reuse validated entry injection and add parent-local producer diagnostics
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          workflow = Path(".github/workflows/build-windows-arm64-nce-svc21-second-call-entry-diag.yml").read_text(encoding="utf-8")
+          begin_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(begin_marker) + len(begin_marker)
+          end = workflow.index(end_marker, start)
+          script_lines = workflow[start:end].splitlines()
+          script = "\n".join(line[10:] if line.startswith("          ") else line for line in script_lines)
+          exec(compile(script, "validated-second-call-entry-injection", "exec"), {})
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+          anchor = "                const u64 diag_grand_lr = diag_parent_frame_ok ? diag_parent_frame[1] : 0;\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f"parent-local anchor expected once, found {text.count(anchor)}")
+
+          addition = (
+              "                const u64 diag_parent_local_base =\n"
+              "                    diag_parent_fp >= 0x100 ? diag_parent_fp - 0x100 : diag_parent_fp;\n"
+              "                u64 diag_parent_locals[40]{};\n"
+              "                const bool diag_parent_locals_ok = diag_parent_fp != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_parent_local_base}, diag_parent_locals,\n"
+              "                        sizeof(diag_parent_locals));\n"
+              "                const u64 diag_parent_slot_d4_addr =\n"
+              "                    diag_parent_fp >= 0xD4 ? diag_parent_fp - 0xD4 : 0;\n"
+              "                u32 diag_parent_slot_d4{};\n"
+              "                const bool diag_parent_slot_d4_ok = diag_parent_slot_d4_addr != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_parent_slot_d4_addr},\n"
+              "                        &diag_parent_slot_d4, sizeof(diag_parent_slot_d4));\n"
+              "                const u64 diag_parent_wide_code_base =\n"
+              "                    diag_parent_lr >= 0x400 ? diag_parent_lr - 0x400 : diag_parent_lr;\n"
+              "                u32 diag_parent_wide_code[288]{};\n"
+              "                const bool diag_parent_wide_code_ok = diag_parent_lr != 0 &&\n"
+              "                    process->GetMemory().ReadBlock(\n"
+              "                        Common::ProcessAddress{diag_parent_wide_code_base},\n"
+              "                        diag_parent_wide_code, sizeof(diag_parent_wide_code));\n"
+              "                LOG_ERROR(Core_ARM,\n"
+              "                          \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_PARENT_LOCAL_SLOT parent_fp=0x{:016X} addr=0x{:016X} ok={} w=0x{:08X}\",\n"
+              "                          diag_parent_fp, diag_parent_slot_d4_addr,\n"
+              "                          diag_parent_slot_d4_ok, diag_parent_slot_d4);\n"
+              "                for (u32 diag_chunk = 0; diag_chunk < 10; ++diag_chunk) {\n"
+              "                    const u32 diag_i = diag_chunk * 4;\n"
+              "                    LOG_ERROR(Core_ARM,\n"
+              "                              \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_PARENT_LOCALS ok={} chunk={} base=0x{:016X} q00={:016X} q01={:016X} q02={:016X} q03={:016X}\",\n"
+              "                              diag_parent_locals_ok, diag_chunk,\n"
+              "                              diag_parent_local_base + static_cast<u64>(diag_i) * sizeof(u64),\n"
+              "                              diag_parent_locals[diag_i], diag_parent_locals[diag_i + 1],\n"
+              "                              diag_parent_locals[diag_i + 2], diag_parent_locals[diag_i + 3]);\n"
+              "                }\n"
+              "                for (u32 diag_chunk = 0; diag_chunk < 36; ++diag_chunk) {\n"
+              "                    const u32 diag_i = diag_chunk * 8;\n"
+              "                    LOG_ERROR(Core_ARM,\n"
+              "                              \"IMP008_REALGAME_DIAG SVC21_SECOND_CALL_PARENT_WIDE_CODE ok={} chunk={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}\",\n"
+              "                              diag_parent_wide_code_ok, diag_chunk,\n"
+              "                              diag_parent_wide_code_base + static_cast<u64>(diag_i) * sizeof(u32),\n"
+              "                              diag_parent_wide_code[diag_i], diag_parent_wide_code[diag_i + 1],\n"
+              "                              diag_parent_wide_code[diag_i + 2], diag_parent_wide_code[diag_i + 3],\n"
+              "                              diag_parent_wide_code[diag_i + 4], diag_parent_wide_code[diag_i + 5],\n"
+              "                              diag_parent_wide_code[diag_i + 6], diag_parent_wide_code[diag_i + 7]);\n"
+              "                }\n"
+              + anchor
+          )
+          text = text.replace(anchor, addition, 1)
+          path.write_text(text, encoding="utf-8")
+
+          for marker in [
+              "SVC21_SECOND_CALL_ENTRY_LINK",
+              "SVC21_SECOND_CALL_PARENT_LOCAL_SLOT",
+              "SVC21_SECOND_CALL_PARENT_LOCALS",
+              "SVC21_SECOND_CALL_PARENT_WIDE_CODE",
+          ]:
+              if f"IMP008_REALGAME_DIAG {marker}" not in text:
+                  raise SystemExit(f"missing marker {marker}")
+          print("NCE_SVC21_SECOND_CALL_PARENT_LOCAL_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'SVC21 second-call parent-local injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'NCE_SVC21_SECOND_CALL_PARENT_LOCAL_PATCH=PASS'
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_SECOND_CALL_PARENT_LOCAL_SLOT' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_SECOND_CALL_PARENT_LOCAL_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_SVC21_SECOND_CALL_PARENT_LOCAL_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-svc21-second-call-parent-local-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_SVC21_SECOND_CALL_PARENT_LOCAL_PACKAGE=PASS'
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged file; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) { throw "Expected exactly one upload file; found $($upload.Count)" }
+          Write-Host 'NCE_SVC21_SECOND_CALL_PARENT_LOCAL_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
+
+      - name: Upload Windows ARM64 NCE SVC21 second-call parent-local producer diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-SVC21-SECOND-CALL-PARENT-LOCAL-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
