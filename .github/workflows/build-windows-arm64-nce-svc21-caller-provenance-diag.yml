@@ -1,0 +1,198 @@
+name: Build Windows ARM64 NCE SVC21 Caller Provenance Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-svc21-caller-provenance-diag.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-svc21-caller-provenance-diag
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE SVC21 caller provenance diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+
+    steps:
+      - name: Checkout validated Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify production-equivalent source
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_CALLER_PROVENANCE_SOURCE_GUARD=PASS'
+
+      - name: Inject validation-only SVC21 caller provenance diagnostics
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          def replace_once(label, old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {count}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "range",
+              """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {\n        return false;\n    }\n""",
+              """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {\n        return false;\n    }\n""")
+
+          replace_once(
+              "teb-write",
+              """    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n    bounds.tib = tib;\n    bounds.host_stack_base = tib->StackBase;\n    bounds.host_stack_limit = tib->StackLimit;\n    tib->StackLimit = reinterpret_cast<void*>(allocation_base);\n    tib->StackBase = reinterpret_cast<void*>(allocation_end);\n    return true;\n""",
+              """    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n    bounds.tib = tib;\n    bounds.host_stack_base = tib->StackBase;\n    bounds.host_stack_limit = tib->StackLimit;\n    static std::atomic<u32> diag_teb_counter{0};\n    if (diag_teb_counter.fetch_add(1, std::memory_order_relaxed) == 0) {\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_REALGAME_DIAG TEB_PREENTRY_BYPASS guest_sp=0x{:016X} allocation_base=0x{:016X} allocation_end=0x{:016X}\",\n                  guest_sp, static_cast<u64>(allocation_base), static_cast<u64>(allocation_end));\n    }\n    return true;\n""")
+
+          replace_once(
+              "guest-return",
+              """        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n\n        RestoreHostTebStackBounds(teb_stack_bounds);\n""",
+              """        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n\n        if (static_cast<u64>(hr) == static_cast<u64>(HaltReason::SupervisorCall) &&\n            m_guest_ctx.svc == 0x21 && m_guest_ctx.cpu_registers[0] == 0x20) {\n            static std::atomic<u32> diag_svc21_counter{0};\n            const u32 diag_occurrence = diag_svc21_counter.fetch_add(1, std::memory_order_relaxed);\n            if (diag_occurrence < 16) {\n                const u64 diag_fp = m_guest_ctx.cpu_registers[29];\n                const u64 diag_lr = m_guest_ctx.cpu_registers[30];\n                const u64 diag_code_base = diag_lr >= 0x40 ? diag_lr - 0x40 : diag_lr;\n                u32 diag_code[32]{};\n                const bool diag_code_ok = diag_lr != 0 && process->GetMemory().ReadBlock(\n                    Common::ProcessAddress{diag_code_base}, diag_code, sizeof(diag_code));\n                u64 diag_stack[16]{};\n                const bool diag_stack_ok = m_guest_ctx.sp != 0 && process->GetMemory().ReadBlock(\n                    Common::ProcessAddress{m_guest_ctx.sp}, diag_stack, sizeof(diag_stack));\n\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_REALGAME_DIAG SVC21_X0_20_CALLER n={} pc=0x{:016X} sp=0x{:016X} fp=0x{:016X} lr=0x{:016X} x0=0x{:016X} x1=0x{:016X} x2=0x{:016X} x3=0x{:016X} x16=0x{:016X} x17=0x{:016X} x18=0x{:016X}\",\n                          diag_occurrence, m_guest_ctx.pc, m_guest_ctx.sp, diag_fp, diag_lr,\n                          m_guest_ctx.cpu_registers[0], m_guest_ctx.cpu_registers[1],\n                          m_guest_ctx.cpu_registers[2], m_guest_ctx.cpu_registers[3],\n                          m_guest_ctx.cpu_registers[16], m_guest_ctx.cpu_registers[17],\n                          m_guest_ctx.cpu_registers[18]);\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_REALGAME_DIAG SVC21_CALLER_CODE0 n={} ok={} base=0x{:016X} w00={:08X} w01={:08X} w02={:08X} w03={:08X} w04={:08X} w05={:08X} w06={:08X} w07={:08X}\",\n                          diag_occurrence, diag_code_ok, diag_code_base, diag_code[0], diag_code[1],\n                          diag_code[2], diag_code[3], diag_code[4], diag_code[5], diag_code[6], diag_code[7]);\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_REALGAME_DIAG SVC21_CALLER_CODE1 n={} base=0x{:016X} w08={:08X} w09={:08X} w10={:08X} w11={:08X} w12={:08X} w13={:08X} w14={:08X} w15={:08X}\",\n                          diag_occurrence, diag_code_base, diag_code[8], diag_code[9], diag_code[10],\n                          diag_code[11], diag_code[12], diag_code[13], diag_code[14], diag_code[15]);\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_REALGAME_DIAG SVC21_CALLER_CODE2 n={} base=0x{:016X} w16={:08X} w17={:08X} w18={:08X} w19={:08X} w20={:08X} w21={:08X} w22={:08X} w23={:08X}\",\n                          diag_occurrence, diag_code_base, diag_code[16], diag_code[17], diag_code[18],\n                          diag_code[19], diag_code[20], diag_code[21], diag_code[22], diag_code[23]);\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_REALGAME_DIAG SVC21_CALLER_CODE3 n={} base=0x{:016X} w24={:08X} w25={:08X} w26={:08X} w27={:08X} w28={:08X} w29={:08X} w30={:08X} w31={:08X}\",\n                          diag_occurrence, diag_code_base, diag_code[24], diag_code[25], diag_code[26],\n                          diag_code[27], diag_code[28], diag_code[29], diag_code[30], diag_code[31]);\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_REALGAME_DIAG SVC21_CALLER_STACK0 n={} ok={} sp=0x{:016X} q00={:016X} q01={:016X} q02={:016X} q03={:016X} q04={:016X} q05={:016X} q06={:016X} q07={:016X}\",\n                          diag_occurrence, diag_stack_ok, m_guest_ctx.sp, diag_stack[0], diag_stack[1],\n                          diag_stack[2], diag_stack[3], diag_stack[4], diag_stack[5], diag_stack[6], diag_stack[7]);\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_REALGAME_DIAG SVC21_CALLER_STACK1 n={} sp=0x{:016X} q08={:016X} q09={:016X} q10={:016X} q11={:016X} q12={:016X} q13={:016X} q14={:016X} q15={:016X}\",\n                          diag_occurrence, m_guest_ctx.sp, diag_stack[8], diag_stack[9], diag_stack[10],\n                          diag_stack[11], diag_stack[12], diag_stack[13], diag_stack[14], diag_stack[15]);\n            }\n        }\n\n        RestoreHostTebStackBounds(teb_stack_bounds);\n""")
+
+          path.write_text(text, encoding="utf-8")
+          for marker in ["TEB_PREENTRY_BYPASS", "SVC21_X0_20_CALLER", "SVC21_CALLER_CODE0",
+                         "SVC21_CALLER_CODE3", "SVC21_CALLER_STACK0", "SVC21_CALLER_STACK1"]:
+              if f"IMP008_REALGAME_DIAG {marker}" not in text:
+                  raise SystemExit(f"missing marker {marker}")
+          if "guest_sp_value >= allocation_end" in text:
+              raise SystemExit("old inclusive upper-bound rejection still present")
+          if "tib->StackLimit = reinterpret_cast<void*>(allocation_base);" in text:
+              raise SystemExit("guest TEB StackLimit overwrite still present")
+          if "tib->StackBase = reinterpret_cast<void*>(allocation_end);" in text:
+              raise SystemExit("guest TEB StackBase overwrite still present")
+          print("NCE_SVC21_CALLER_PROVENANCE_DIAG_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'SVC21 caller provenance diagnostic injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'NCE_SVC21_CALLER_PROVENANCE_DIAG_PATCH=PASS'
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_X0_20_CALLER' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_REALGAME_DIAG SVC21_CALLER_CODE0' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_SVC21_CALLER_PROVENANCE_DIAG_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe || {
+            echo 'GUI executable not found after full build' >&2
+            find build -maxdepth 4 -iname '*.exe' -print
+            exit 41
+          }
+          echo 'NCE_SVC21_CALLER_PROVENANCE_DIAG_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-svc21-caller-provenance-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          find artifacts -maxdepth 2 -type f -print
+          echo 'NCE_SVC21_CALLER_PROVENANCE_DIAG_PACKAGE=PASS'
+
+      - name: Verify single-file package upload boundary
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          Write-Host "Package files found: $($files.Count)"
+          $files | ForEach-Object { Write-Host $_.FullName }
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged file; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item -LiteralPath $files[0].FullName -Destination upload/ -Force
+          $upload = @(Get-ChildItem -Path upload -File)
+          if ($upload.Count -ne 1) { throw "Expected exactly one upload file; found $($upload.Count)" }
+          Write-Host 'NCE_SVC21_CALLER_PROVENANCE_DIAG_SINGLE_FILE_UPLOAD_BOUNDARY=PASS'
+
+      - name: Upload Windows ARM64 NCE SVC21 caller provenance diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-SVC21-CALLER-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
