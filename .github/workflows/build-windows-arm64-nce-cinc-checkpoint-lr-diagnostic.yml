@@ -125,10 +125,15 @@ jobs:
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'diagnostic diff check failed' }
           grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
+          if ($LASTEXITCODE -ne 0) { throw 'missing breadcrumb PRE marker' }
           grep -Fq 'IMP008_REENTRY_BREADCRUMB_RETURN' src/core/arm/nce/arm_nce_windows.cpp
+          if ($LASTEXITCODE -ne 0) { throw 'missing breadcrumb RETURN marker' }
           grep -Fq 'IMP008_CINC_CHECKPOINT_LR' src/core/arm/nce/arm_nce_windows.cpp
+          if ($LASTEXITCODE -ne 0) { throw 'missing checkpoint LR marker' }
           grep -Fq 'm_guest_ctx.sp + 0x18' src/core/arm/nce/arm_nce_windows.cpp
-          ! grep -Fq 'IMP008_CINC_STACK_LR' src/core/arm/nce/arm_nce_windows.cpp
+          if ($LASTEXITCODE -ne 0) { throw 'missing checkpoint LR address' }
+          grep -Fq 'IMP008_CINC_STACK_LR' src/core/arm/nce/arm_nce_windows.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'stale stack LR marker remained' }
           echo 'NCE_CINC_CHECKPOINT_LR_PATCH=PASS'
 
       - name: Checkout fixed CI workflow
