@@ -90,17 +90,19 @@ jobs:
           s = s.replace(host_old, host_new, 1)
 
           old = """        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n"""
-          new = """        static std::atomic_uint32_t breadcrumb_count{0};\n        const u32 breadcrumb_index = breadcrumb_count.fetch_add(1, std::memory_order_relaxed);\n        const u64 breadcrumb_pc = m_guest_ctx.pc;\n        const auto breadcrumb_it = post_handlers.find(breadcrumb_pc);\n        const bool breadcrumb_post = breadcrumb_it != post_handlers.end();\n        if (breadcrumb_index < 64) {\n            LOG_ERROR(Core_ARM, \"IMP008_REENTRY_BREADCRUMB_PRE n={} path={} pc={:016X} svc={:08X} x30={:016X}\",\n                      breadcrumb_index, breadcrumb_post ? \"post\" : \"context\", breadcrumb_pc,\n                      m_guest_ctx.svc, m_guest_ctx.cpu_registers[30]);\n        }\n        if (breadcrumb_post) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(breadcrumb_it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n        if (breadcrumb_index < 64) {\n            LOG_ERROR(Core_ARM, \"IMP008_REENTRY_BREADCRUMB_RETURN n={} entry_pc={:016X} exit_pc={:016X} svc={:08X} x30={:016X} pending_fault={}\",\n                      breadcrumb_index, breadcrumb_pc, m_guest_ctx.pc, m_guest_ctx.svc,\n                      m_guest_ctx.cpu_registers[30], m_windows_pending_nce_fault);\n        }\n"""
+          new = """        static std::atomic_uint32_t breadcrumb_count{0};\n        const u32 breadcrumb_index = breadcrumb_count.fetch_add(1, std::memory_order_relaxed);\n        const u64 breadcrumb_pc = m_guest_ctx.pc;\n        const auto breadcrumb_it = post_handlers.find(breadcrumb_pc);\n        const bool breadcrumb_post = breadcrumb_it != post_handlers.end();\n        if (breadcrumb_index < 64) {\n            LOG_ERROR(Core_ARM, \"IMP008_REENTRY_BREADCRUMB_PRE n={} path={} pc={:016X} svc={:08X} x30={:016X}\",\n                      breadcrumb_index, breadcrumb_post ? \"post\" : \"context\", breadcrumb_pc,\n                      m_guest_ctx.svc, m_guest_ctx.cpu_registers[30]);\n        }\n        if (breadcrumb_index == 30 && breadcrumb_post && m_guest_ctx.svc == 0x27U &&\n            m_guest_ctx.sp != 0) {\n            static u64 cinc_saved_lr{};\n            cinc_saved_lr = 0xFFFFFFFFFFFFFFFFULL;\n            const bool cinc_saved_lr_read = process->GetMemory().ReadBlock(\n                Common::ProcessAddress{m_guest_ctx.sp + 8}, &cinc_saved_lr, sizeof(cinc_saved_lr));\n            LOG_ERROR(Core_ARM,\n                      \"IMP008_CINC_STACK_LR n={} sp={:016X} read={} saved_lr={:016X} x30={:016X}\",\n                      breadcrumb_index, m_guest_ctx.sp, cinc_saved_lr_read, cinc_saved_lr,\n                      m_guest_ctx.cpu_registers[30]);\n        }\n        if (breadcrumb_post) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(breadcrumb_it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n        if (breadcrumb_index < 64) {\n            LOG_ERROR(Core_ARM, \"IMP008_REENTRY_BREADCRUMB_RETURN n={} entry_pc={:016X} exit_pc={:016X} svc={:08X} x30={:016X} pending_fault={}\",\n                      breadcrumb_index, breadcrumb_pc, m_guest_ctx.pc, m_guest_ctx.svc,\n                      m_guest_ctx.cpu_registers[30], m_windows_pending_nce_fault);\n        }\n"""
           if s.count(old) != 1:
               raise SystemExit(f"breadcrumb anchor count={s.count(old)}")
           p.write_text(s.replace(old, new, 1), encoding="utf-8")
-          print("NCE_HOST_STACK_AND_BREADCRUMB_INJECTION=PASS")
+          print("NCE_HOST_STACK_BREADCRUMB_CINC_STACK_LR_INJECTION=PASS")
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'diagnostic injection failed' }
           git diff --check
           grep -Fq 'host_code != 0x40010006U && host_code != 0x4001000AU' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_HOST_STACK_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'breadcrumb_index == 30 && breadcrumb_post && m_guest_ctx.svc == 0x27U' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_CINC_STACK_LR' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_UNKNOWN_GUEST_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
 
       - uses: actions/checkout@v7
@@ -139,7 +141,8 @@ jobs:
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           grep -Fq 'host_code != 0x40010006U && host_code != 0x4001000AU' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_HOST_STACK_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
-          echo 'NCE_REENTRY_BREADCRUMB_CONFIGURE=PASS'
+          grep -Fq 'IMP008_CINC_STACK_LR' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_REENTRY_BREADCRUMB_CINC_STACK_LR_CONFIGURE=PASS'
 
       - name: Build full Windows ARM64 Eden GUI
         shell: msys2 {0}
@@ -153,7 +156,7 @@ jobs:
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: nce-host-stack-observer-${{ github.sha }}
+          ARTIFACT_REF: nce-cinc-stack-lr-once-${{ github.sha }}
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
@@ -169,7 +172,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-HOST-STACK-OBSERVER-${{ github.sha }}
+          name: Eden-Windows-ARM64-NCE-CINC-STACK-LR-ONCE-${{ github.sha }}
           archive: false
           path: upload/*
           retention-days: 14
