@@ -1,0 +1,210 @@
+name: Build Windows ARM64 NCE CINC Checkpoint LR Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-cinc-checkpoint-lr-diagnostic.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-cinc-checkpoint-lr-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE CINC checkpoint LR diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
+      V3_WORKFLOW: .github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml
+      UNKNOWN_WORKFLOW: .github/workflows/build-windows-arm64-nce-unknown-exception-diagnostic.yml
+      BREADCRUMB_WORKFLOW: .github/workflows/build-windows-arm64-nce-reentry-breadcrumb-diagnostic.yml
+
+    steps:
+      - name: Checkout Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify diagnostic baseline
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test -f "$V3_WORKFLOW"
+          test -f "$UNKNOWN_WORKFLOW"
+          test -f "$BREADCRUMB_WORKFLOW"
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
+          grep -Fq 'IMP008_CINC_STACK_LR' "$BREADCRUMB_WORKFLOW"
+          echo 'NCE_CINC_CHECKPOINT_LR_GUARD=PASS'
+
+      - name: Replay validated V3 and unknown observer
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+          import textwrap
+
+          def replay(path, section=None):
+              text = Path(path).read_text(encoding="utf-8")
+              if section is not None:
+                  text = text[text.index(section):]
+              start_marker = "          @'\n"
+              end_marker = "\n          '@ | python -"
+              start = text.index(start_marker) + len(start_marker)
+              end = text.index(end_marker, start)
+              script = textwrap.dedent(text[start:end])
+              exec(compile(script, f"<{path}>", "exec"), {})
+
+          replay(".github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml")
+          replay(".github/workflows/build-windows-arm64-nce-unknown-exception-diagnostic.yml",
+                 "      - name: Inject unknown guest exception observer")
+          print("NCE_CINC_CHECKPOINT_LR_BASE_REPLAY=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'base diagnostic replay failed' }
+
+      - name: Replay validated breadcrumb injection and move probe to checkpoint LR
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+          import textwrap
+
+          workflow_path = Path(".github/workflows/build-windows-arm64-nce-reentry-breadcrumb-diagnostic.yml")
+          workflow = workflow_path.read_text(encoding="utf-8")
+          section = "      - name: Inject host-stack exception observer and reentry breadcrumbs"
+          workflow = workflow[workflow.index(section):]
+          start_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          exec(compile(script, "<validated-breadcrumb-injection>", "exec"), {})
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          old_addr = "Common::ProcessAddress{m_guest_ctx.sp + 8}, &cinc_saved_lr, sizeof(cinc_saved_lr));"
+          new_addr = "Common::ProcessAddress{m_guest_ctx.sp + 0x18}, &cinc_saved_lr, sizeof(cinc_saved_lr));"
+          if text.count(old_addr) != 1:
+              raise SystemExit(f"CINC saved-LR address anchor count={text.count(old_addr)}")
+          text = text.replace(old_addr, new_addr, 1)
+
+          old_marker = "IMP008_CINC_STACK_LR"
+          new_marker = "IMP008_CINC_CHECKPOINT_LR"
+          if text.count(old_marker) != 1:
+              raise SystemExit(f"CINC stack-LR marker count={text.count(old_marker)}")
+          text = text.replace(old_marker, new_marker, 1)
+
+          path.write_text(text, encoding="utf-8")
+          print("NCE_CINC_CHECKPOINT_LR_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'checkpoint LR diagnostic injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'diagnostic diff check failed' }
+          grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_REENTRY_BREADCRUMB_RETURN' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_CINC_CHECKPOINT_LR' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_guest_ctx.sp + 0x18' src/core/arm/nce/arm_nce_windows.cpp
+          ! grep -Fq 'IMP008_CINC_STACK_LR' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_CINC_CHECKPOINT_LR_PATCH=PASS'
+
+      - name: Checkout fixed CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_CINC_CHECKPOINT_LR' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'm_guest_ctx.sp + 0x18' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_CINC_CHECKPOINT_LR_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          echo 'NCE_CINC_CHECKPOINT_LR_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-cinc-checkpoint-lr-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          echo 'NCE_CINC_CHECKPOINT_LR_PACKAGE=PASS'
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-CINC-CHECKPOINT-LR-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
