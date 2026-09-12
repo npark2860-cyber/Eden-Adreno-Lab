@@ -1,4 +1,4 @@
-name: Build Windows ARM64 NCE NZCV Production Candidate
+name: Build Windows ARM64 NCE TEB Transition Candidate
 
 on:
   workflow_dispatch:
@@ -12,12 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-arm64-nce-nzcv-production-candidate
+  group: windows-arm64-nce-teb-transition-candidate
   cancel-in-progress: false
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE NZCV production candidate package
+    name: Windows ARM64 NCE TEB transition validation package
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -33,14 +33,14 @@ jobs:
       PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
 
     steps:
-      - name: Checkout Eden NCE production candidate branch
+      - name: Checkout Eden NCE NZCV candidate branch
         uses: actions/checkout@v7
         with:
           path: eden
           fetch-depth: 0
           submodules: recursive
 
-      - name: Verify production candidate source boundary
+      - name: Verify pre-patch source boundary
         shell: bash
         working-directory: eden
         run: |
@@ -48,7 +48,135 @@ jobs:
           git cat-file -e "$PROD_SHA^{commit}"
           git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
           grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
-          echo 'X18_NZCV_PRODUCTION_SOURCE_GUARD=PASS'
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value >= allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackLimit = reinterpret_cast<void*>(allocation_base);' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'tib->StackBase = reinterpret_cast<void*>(allocation_end);' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_TEB_TRANSITION_PREPATCH_GUARD=PASS'
+
+      - name: Inject validation-only TEB transition candidate
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          def replace_once(path_name, old, new, label):
+              path = Path(path_name)
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: anchor count={count}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          # Carry the prepared guest TEB range in GuestContext so both native entry paths can
+          # activate it only at their final host->guest transition boundary.
+          replace_once(
+              "src/core/arm/nce/guest_context.h",
+              """    System* system{};\n    ArmNce* parent{};\n};\n""",
+              """    System* system{};\n    ArmNce* parent{};\n#if defined(_WIN32)\n    u64 windows_guest_stack_base{};\n    u64 windows_guest_stack_limit{};\n#endif\n};\n""",
+              "guest-context-fields",
+          )
+
+          arm = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = arm.read_text(encoding="utf-8")
+
+          old_sig = """[[nodiscard]] bool InstallGuestTebStackBounds(u64 guest_sp,\n                                              WindowsTebStackBounds& bounds) noexcept {\n    if (guest_sp == 0) {\n"""
+          new_sig = """[[nodiscard]] bool PrepareGuestTebStackBounds(GuestContext& guest,\n                                              WindowsTebStackBounds& bounds) noexcept {\n    const u64 guest_sp = guest.sp;\n    if (guest_sp == 0) {\n"""
+          if text.count(old_sig) != 1:
+              raise SystemExit(f"prepare-signature anchor count={text.count(old_sig)}")
+          text = text.replace(old_sig, new_sig, 1)
+
+          old_range = """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {\n        return false;\n    }\n"""
+          new_range = """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {\n        return false;\n    }\n"""
+          if text.count(old_range) != 1:
+              raise SystemExit(f"range anchor count={text.count(old_range)}")
+          text = text.replace(old_range, new_range, 1)
+
+          old_publish = """    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n    bounds.tib = tib;\n    bounds.host_stack_base = tib->StackBase;\n    bounds.host_stack_limit = tib->StackLimit;\n    tib->StackLimit = reinterpret_cast<void*>(allocation_base);\n    tib->StackBase = reinterpret_cast<void*>(allocation_end);\n    return true;\n"""
+          new_publish = """    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n    bounds.tib = tib;\n    bounds.host_stack_base = tib->StackBase;\n    bounds.host_stack_limit = tib->StackLimit;\n    guest.windows_guest_stack_base = static_cast<u64>(allocation_end);\n    guest.windows_guest_stack_limit = static_cast<u64>(allocation_base);\n    return true;\n"""
+          if text.count(old_publish) != 1:
+              raise SystemExit(f"publish anchor count={text.count(old_publish)}")
+          text = text.replace(old_publish, new_publish, 1)
+
+          old_call = "if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {"
+          new_call = "if (!PrepareGuestTebStackBounds(m_guest_ctx, teb_stack_bounds)) {"
+          if text.count(old_call) != 1:
+              raise SystemExit(f"prepare-call anchor count={text.count(old_call)}")
+          text = text.replace(old_call, new_call, 1)
+          arm.write_text(text, encoding="utf-8")
+
+          # Direct post-handler entry: physical SP becomes guest-owned first; while x17 still owns
+          # GuestContext and x30 is scratch, publish the prepared guest TEB bounds, then restore the
+          # guest LR and branch. Physical x18 remains the Windows TEB pointer throughout.
+          asm = Path("src/core/arm/nce/windows_nce_entry.asm")
+          text = asm.read_text(encoding="utf-8")
+          old_defs = """GuestContextPstate      EQU 0x310\nGuestContextHostContext EQU 0x320\nHostContextRegs         EQU 0x000\n"""
+          new_defs = """GuestContextPstate      EQU 0x310\nGuestContextHostContext EQU 0x320\nGuestContextWinStackBase  EQU 0x440\nGuestContextWinStackLimit EQU 0x448\nWindowsTebStackBase       EQU 0x08\nWindowsTebStackLimit      EQU 0x10\nHostContextRegs         EQU 0x000\n"""
+          if text.count(old_defs) != 1:
+              raise SystemExit(f"asm-defs anchor count={text.count(old_defs)}")
+          text = text.replace(old_defs, new_defs, 1)
+
+          old_switch = """        mov     sp, x30\n        ldr     x30, [x17, #0x0F0]\n\n        ; entry_trampoline restores guest x16/x17 and uses a direct relative branch to guest PC.\n"""
+          new_switch = """        mov     sp, x30\n\n        ; Physical SP is now guest-owned. Publish guest TEB bounds at this final transition seam,\n        ; using x30 as scratch before restoring the architectural guest LR.\n        ldr     x30, [x17, #GuestContextWinStackLimit]\n        str     x30, [x18, #WindowsTebStackLimit]\n        ldr     x30, [x17, #GuestContextWinStackBase]\n        str     x30, [x18, #WindowsTebStackBase]\n        ldr     x30, [x17, #0x0F0]\n\n        ; entry_trampoline restores guest x16/x17 and uses a direct relative branch to guest PC.\n"""
+          if text.count(old_switch) != 1:
+              raise SystemExit(f"asm-switch anchor count={text.count(old_switch)}")
+          text = text.replace(old_switch, new_switch, 1)
+          asm.write_text(text, encoding="utf-8")
+
+          # Arbitrary-PC/NtContinue entry: resolve NtContinue while TEB still describes the host
+          # stack, then publish guest bounds immediately before the non-returning context transfer.
+          trans = Path("src/core/arm/nce/windows_nce_transition.cpp")
+          text = trans.read_text(encoding="utf-8")
+          old_ns = """namespace {\nconstexpr std::uint32_t NzcvMask = 0xF0000000U;\n\nvoid TraceVirtualMapping"""
+          new_ns = """namespace {\nconstexpr std::uint32_t NzcvMask = 0xF0000000U;\nusing NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);\n\n[[nodiscard]] NtContinueFn ResolveNtContinue() noexcept {\n    const HMODULE ntdll = GetModuleHandleW(L\"ntdll.dll\");\n    return ntdll != nullptr\n               ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, \"NtContinue\"))\n               : nullptr;\n}\n\nvoid ActivateGuestTebStackBounds(const GuestContext& guest) noexcept {\n    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n    tib->StackLimit = reinterpret_cast<void*>(\n        static_cast<std::uintptr_t>(guest.windows_guest_stack_limit));\n    tib->StackBase = reinterpret_cast<void*>(\n        static_cast<std::uintptr_t>(guest.windows_guest_stack_base));\n}\n\nvoid TraceVirtualMapping"""
+          if text.count(old_ns) != 1:
+              raise SystemExit(f"transition-namespace anchor count={text.count(old_ns)}")
+          text = text.replace(old_ns, new_ns, 1)
+
+          old_continue = """[[noreturn]] void WindowsNceTransition::ContinueContext(ARM64_NT_CONTEXT& context) noexcept {\n    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);\n    const HMODULE ntdll = GetModuleHandleW(L\"ntdll.dll\");\n    const auto nt_continue = ntdll != nullptr\n                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, \"NtContinue\"))\n                                 : nullptr;\n"""
+          new_continue = """[[noreturn]] void WindowsNceTransition::ContinueContext(ARM64_NT_CONTEXT& context) noexcept {\n    const auto nt_continue = ResolveNtContinue();\n"""
+          if text.count(old_continue) != 1:
+              raise SystemExit(f"continue anchor count={text.count(old_continue)}")
+          text = text.replace(old_continue, new_continue, 1)
+
+          old_tail = """    std::fputs(\"IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n\", stderr);\n    std::fflush(stderr);\n    WindowsNceTransition::ContinueContext(context);\n}\n"""
+          new_tail = """    std::fputs(\"IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n\", stderr);\n    std::fflush(stderr);\n\n    const auto nt_continue = ResolveNtContinue();\n    if (nt_continue == nullptr) {\n        std::fprintf(stderr, \"IMP008B_E2_NT_CONTINUE_RESOLVE_ERROR=%lu\\n\",\n                     static_cast<unsigned long>(GetLastError()));\n        std::fflush(stderr);\n        std::abort();\n    }\n\n    ActivateGuestTebStackBounds(*guest);\n    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);\n    std::fprintf(stderr, \"IMP008B_E2_NT_CONTINUE_RETURN=0x%08lX\\n\",\n                 static_cast<unsigned long>(status));\n    std::fflush(stderr);\n    std::abort();\n}\n"""
+          if text.count(old_tail) != 1:
+              raise SystemExit(f"restore-tail anchor count={text.count(old_tail)}")
+          text = text.replace(old_tail, new_tail, 1)
+
+          old_asserts = """static_assert(offsetof(GuestContext, host_ctx) == GuestContextHostContext);\nstatic_assert(offsetof(HostContext, host_saved_regs) == HostContextRegs);\n"""
+          new_asserts = """static_assert(offsetof(GuestContext, host_ctx) == GuestContextHostContext);\nstatic_assert(offsetof(GuestContext, windows_guest_stack_base) == 0x440);\nstatic_assert(offsetof(GuestContext, windows_guest_stack_limit) == 0x448);\nstatic_assert(offsetof(NT_TIB, StackBase) == 0x08);\nstatic_assert(offsetof(NT_TIB, StackLimit) == 0x10);\nstatic_assert(offsetof(HostContext, host_saved_regs) == HostContextRegs);\n"""
+          if text.count(old_asserts) != 1:
+              raise SystemExit(f"static-assert anchor count={text.count(old_asserts)}")
+          text = text.replace(old_asserts, new_asserts, 1)
+          trans.write_text(text, encoding="utf-8")
+
+          # Validation guards: one semantic axis only. NZCV must remain present, early RunThread TEB
+          # publication must be gone, and both direct/context guest-entry activations must exist.
+          arm_text = arm.read_text(encoding="utf-8")
+          asm_text = asm.read_text(encoding="utf-8")
+          trans_text = trans.read_text(encoding="utf-8")
+          guest_text = Path("src/core/arm/nce/guest_context.h").read_text(encoding="utf-8")
+          checks = {
+              "upper-bound": "guest_sp_value <= allocation_base || guest_sp_value > allocation_end" in arm_text,
+              "no-early-limit": "tib->StackLimit = reinterpret_cast<void*>(allocation_base);" not in arm_text,
+              "no-early-base": "tib->StackBase = reinterpret_cast<void*>(allocation_end);" not in arm_text,
+              "guest-fields": "windows_guest_stack_base" in guest_text and "windows_guest_stack_limit" in guest_text,
+              "direct-activation": "WindowsTebStackLimit" in asm_text and "WindowsTebStackBase" in asm_text,
+              "context-activation": "ActivateGuestTebStackBounds(*guest);" in trans_text,
+              "nzcv": "guest.nzcv = context.Cpsr & 0xF0000000U;" in Path("src/core/arm/nce/windows_exception_context.h").read_text(encoding="utf-8"),
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit(f"validation guard failed: {failed}")
+          print("NCE_TEB_TRANSITION_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'TEB transition injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          git diff -- src/core/arm/nce/guest_context.h src/core/arm/nce/arm_nce_windows.cpp src/core/arm/nce/windows_nce_entry.asm src/core/arm/nce/windows_nce_transition.cpp
+          Write-Host 'NCE_TEB_TRANSITION_PATCH=PASS'
 
       - name: Checkout fixed CI workflow
         uses: actions/checkout@v7
@@ -87,7 +215,9 @@ jobs:
           ./.ci/build/configure.sh -DCCACHE_PATH=sccache
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
-          echo 'X18_NZCV_PRODUCTION_CONFIGURE=PASS'
+          grep -Fq 'windows_guest_stack_base' src/core/arm/nce/guest_context.h
+          grep -Fq 'guest_sp_value <= allocation_base || guest_sp_value > allocation_end' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_TEB_TRANSITION_CONFIGURE=PASS'
 
       - name: Build full Windows ARM64 Eden GUI
         shell: msys2 {0}
@@ -96,19 +226,19 @@ jobs:
           set -euo pipefail
           cmake --build build
           test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
-          echo 'X18_NZCV_PRODUCTION_BUILD=PASS'
+          echo 'NCE_TEB_TRANSITION_BUILD=PASS'
 
       - name: Package Windows ARM64 Eden
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: nce-x18-nzcv-production-${{ github.sha }}
+          ARTIFACT_REF: nce-teb-transition-${{ github.sha }}
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
-          echo 'X18_NZCV_PRODUCTION_PACKAGE=PASS'
+          echo 'NCE_TEB_TRANSITION_PACKAGE=PASS'
 
       - name: Prepare upload
         shell: pwsh
@@ -121,7 +251,7 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-NZCV-PRODUCTION-${{ github.sha }}
+          name: Eden-Windows-ARM64-NCE-TEB-TRANSITION-${{ github.sha }}
           archive: false
           path: upload/*
           if-no-files-found: error
