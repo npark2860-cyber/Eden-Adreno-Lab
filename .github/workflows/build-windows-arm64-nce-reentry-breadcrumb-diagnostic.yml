@@ -1,0 +1,164 @@
+name: Build Windows ARM64 NCE Reentry Breadcrumb Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-reentry-breadcrumb-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-package:
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
+      V3_WORKFLOW: .github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml
+      UNKNOWN_WORKFLOW: .github/workflows/build-windows-arm64-nce-unknown-exception-diagnostic.yml
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify diagnostic baseline
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test -f "$V3_WORKFLOW"
+          test -f "$UNKNOWN_WORKFLOW"
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
+          echo 'NCE_REENTRY_BREADCRUMB_GUARD=PASS'
+
+      - name: Replay validated V3 and unknown observer
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+          import textwrap
+
+          def replay(path, section=None):
+              text = Path(path).read_text(encoding="utf-8")
+              if section is not None:
+                  text = text[text.index(section):]
+              start_marker = "          @'\n"
+              end_marker = "\n          '@ | python -"
+              start = text.index(start_marker) + len(start_marker)
+              end = text.index(end_marker, start)
+              script = textwrap.dedent(text[start:end])
+              exec(compile(script, f"<{path}>", "exec"), {})
+
+          replay(".github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml")
+          replay(".github/workflows/build-windows-arm64-nce-unknown-exception-diagnostic.yml",
+                 "      - name: Inject unknown guest exception observer")
+          print("NCE_REENTRY_BREADCRUMB_REPLAY=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'diagnostic replay failed' }
+
+      - name: Inject lightweight reentry breadcrumbs
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+          p = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          s = p.read_text(encoding="utf-8")
+          old = """        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n"""
+          new = """        static std::atomic_uint32_t breadcrumb_count{0};\n        const u32 breadcrumb_index = breadcrumb_count.fetch_add(1, std::memory_order_relaxed);\n        const u64 breadcrumb_pc = m_guest_ctx.pc;\n        const auto breadcrumb_it = post_handlers.find(breadcrumb_pc);\n        const bool breadcrumb_post = breadcrumb_it != post_handlers.end();\n        if (breadcrumb_index < 64) {\n            LOG_ERROR(Core_ARM, \"IMP008_REENTRY_BREADCRUMB_PRE n={} path={} pc={:016X} svc={:08X} x30={:016X}\",\n                      breadcrumb_index, breadcrumb_post ? \"post\" : \"context\", breadcrumb_pc,\n                      m_guest_ctx.svc, m_guest_ctx.cpu_registers[30]);\n        }\n        if (breadcrumb_post) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(breadcrumb_it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n        if (breadcrumb_index < 64) {\n            LOG_ERROR(Core_ARM, \"IMP008_REENTRY_BREADCRUMB_RETURN n={} entry_pc={:016X} exit_pc={:016X} svc={:08X} x30={:016X} pending_fault={}\",\n                      breadcrumb_index, breadcrumb_pc, m_guest_ctx.pc, m_guest_ctx.svc,\n                      m_guest_ctx.cpu_registers[30], m_windows_pending_nce_fault);\n        }\n"""
+          if s.count(old) != 1:
+              raise SystemExit(f"breadcrumb anchor count={s.count(old)}")
+          p.write_text(s.replace(old, new, 1), encoding="utf-8")
+          print("NCE_REENTRY_BREADCRUMB_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'breadcrumb injection failed' }
+          git diff --check
+          grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_UNKNOWN_GUEST_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
+
+      - uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          echo 'NCE_REENTRY_BREADCRUMB_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-reentry-breadcrumb-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-REENTRY-BREADCRUMB-${{ github.sha }}
+          archive: false
+          path: upload/*
+          retention-days: 14
