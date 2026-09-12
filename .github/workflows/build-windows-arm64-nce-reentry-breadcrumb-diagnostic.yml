@@ -84,7 +84,7 @@ jobs:
           s = p.read_text(encoding="utf-8")
 
           host_old = """    if (nce->m_windows_break != nullptr && nce->m_windows_break->IsHostStackPointer(context.Sp)) {\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n"""
-          host_new = """    if (nce->m_windows_break != nullptr && nce->m_windows_break->IsHostStackPointer(context.Sp)) {\n        const auto& host_record = *exception->ExceptionRecord;\n        const u32 host_code = static_cast<u32>(host_record.ExceptionCode);\n        if (host_code != 0x4001000AU) {\n            static std::atomic_uint32_t host_stack_exception_count{0};\n            const u32 host_index = host_stack_exception_count.fetch_add(1, std::memory_order_relaxed);\n            if (host_index < 16) {\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_HOST_STACK_EXCEPTION n={} code={:08X} flags={:08X} address={:016X} pc={:016X} sp={:016X} x30={:016X}\",\n                          host_index, host_code, static_cast<u32>(host_record.ExceptionFlags),\n                          reinterpret_cast<u64>(host_record.ExceptionAddress), context.Pc, context.Sp,\n                          context.X[30]);\n            }\n        }\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n"""
+          host_new = """    if (nce->m_windows_break != nullptr && nce->m_windows_break->IsHostStackPointer(context.Sp)) {\n        const auto& host_record = *exception->ExceptionRecord;\n        const u32 host_code = static_cast<u32>(host_record.ExceptionCode);\n        if (host_code != 0x40010006U && host_code != 0x4001000AU) {\n            static std::atomic_uint32_t host_stack_exception_count{0};\n            const u32 host_index = host_stack_exception_count.fetch_add(1, std::memory_order_relaxed);\n            if (host_index < 16) {\n                LOG_ERROR(Core_ARM,\n                          \"IMP008_HOST_STACK_EXCEPTION n={} code={:08X} flags={:08X} address={:016X} pc={:016X} sp={:016X} x30={:016X}\",\n                          host_index, host_code, static_cast<u32>(host_record.ExceptionFlags),\n                          reinterpret_cast<u64>(host_record.ExceptionAddress), context.Pc, context.Sp,\n                          context.X[30]);\n            }\n        }\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n"""
           if s.count(host_old) != 1:
               raise SystemExit(f"host-stack anchor count={s.count(host_old)}")
           s = s.replace(host_old, host_new, 1)
@@ -98,7 +98,7 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'diagnostic injection failed' }
           git diff --check
-          grep -Fq 'host_code != 0x4001000AU' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'host_code != 0x40010006U && host_code != 0x4001000AU' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_HOST_STACK_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_UNKNOWN_GUEST_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
@@ -137,7 +137,7 @@ jobs:
           set -euo pipefail
           ./.ci/build/configure.sh -DCCACHE_PATH=sccache
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
-          grep -Fq 'host_code != 0x4001000AU' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'host_code != 0x40010006U && host_code != 0x4001000AU' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_HOST_STACK_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
           echo 'NCE_REENTRY_BREADCRUMB_CONFIGURE=PASS'
 
