@@ -2,6 +2,11 @@ name: Probe IMP-008A Integrated Windows ARM64 Core Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008a-integrated-core-build-arm64.yml
 
 permissions:
   contents: read
@@ -52,7 +57,9 @@ jobs:
           grep -Fq 'arm/nce/arm_nce_windows.cpp' src/core/CMakeLists.txt
           grep -Fq 'NCE_ARMASM64_CANDIDATES' src/core/CMakeLists.txt
           grep -Fq 'arm/nce/x18_site_patcher.cpp' src/core/CMakeLists.txt
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
           echo 'IMP008A_WINDOWS_BUILD_SELECTION_SOURCE=PASS'
+          echo 'X18_NZCV_PRODUCTION_SOURCE=PASS'
 
       - name: Set up normal Eden CLANGARM64 toolchain
         id: msys2
