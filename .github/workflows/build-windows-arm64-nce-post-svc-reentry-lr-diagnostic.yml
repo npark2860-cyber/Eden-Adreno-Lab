@@ -182,3 +182,5 @@ jobs:
           path: upload/*
           if-no-files-found: error
           retention-days: 14
+
+# Rebuild marker: correlate NCE-DIAG-CINC 0.2.1 SVC 0x27 post-reentry guest x30/LR.
