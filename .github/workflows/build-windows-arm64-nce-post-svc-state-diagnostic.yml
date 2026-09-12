@@ -1,0 +1,180 @@
+name: Build Windows ARM64 NCE Post-SVC State Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-post-svc-state-diagnostic.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-post-svc-state-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE post-SVC state diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
+      V3_WORKFLOW: .github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml
+
+    steps:
+      - name: Checkout Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify source and v3 boundary
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test -f "$V3_WORKFLOW"
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
+          grep -Fq 'NCE_TEB_BIDIRECTIONAL_INJECTION=PASS' "$V3_WORKFLOW"
+          echo 'NCE_POST_SVC_STATE_DIAG_PREPATCH_GUARD=PASS'
+
+      - name: Reapply exact validated v3 injection
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path(".github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml").read_text(encoding="utf-8")
+          start_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          exec(compile(script, "<v3-bidirectional-injection>", "exec"), {})
+          print("NCE_POST_SVC_STATE_DIAG_V3_REAPPLY=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'exact v3 injection replay failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'v3 replay diff check failed' }
+
+      - name: Inject guest nonvolatile and stack diagnostics
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          old = """        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n"""
+
+          new = """        static std::atomic_uint32_t reentry_count{0};\n        const u32 reentry_index = reentry_count.fetch_add(1, std::memory_order_relaxed);\n        const u64 entry_pc = m_guest_ctx.pc;\n        const auto post_it = post_handlers.find(entry_pc);\n        const bool used_post_handler = post_it != post_handlers.end();\n        const u64 post_target = used_post_handler ? static_cast<u64>(post_it->second) : 0;\n\n        const u64 guest_x19 = m_guest_ctx.cpu_registers[19];\n        const u64 guest_x20 = m_guest_ctx.cpu_registers[20];\n        const u64 guest_x29 = m_guest_ctx.cpu_registers[29];\n        const u64 guest_x30 = m_guest_ctx.cpu_registers[30];\n        u64 stack_words[4]{};\n        u32 x20_state_word{};\n        u32 lr_words[4]{};\n        const bool stack_read_ok = m_guest_ctx.sp != 0 && process->GetMemory().ReadBlock(\n            Common::ProcessAddress{m_guest_ctx.sp}, stack_words, sizeof(stack_words));\n        const bool x20_state_read_ok = guest_x20 != 0 && process->GetMemory().ReadBlock(\n            Common::ProcessAddress{guest_x20 + 0xEE0}, &x20_state_word, sizeof(x20_state_word));\n        const bool lr_read_ok = guest_x30 != 0 && process->GetMemory().ReadBlock(\n            Common::ProcessAddress{guest_x30}, lr_words, sizeof(lr_words));\n\n        if (reentry_index < 64) {\n            LOG_ERROR(Core_ARM,\n                      \"IMP008_REENTRY_STATE_PRE n={} path={} pc={:016X} sp={:016X} target={:016X} \"\n                      \"svc={:08X} x19={:016X} x20={:016X} x29={:016X} x30={:016X} \"\n                      \"stack_read={} stack={:016X},{:016X},{:016X},{:016X} \"\n                      \"x20_state_read={} x20_state={:08X} lr_read={} lr={:08X},{:08X},{:08X},{:08X}\",\n                      reentry_index, used_post_handler ? \"post\" : \"context\", entry_pc,\n                      m_guest_ctx.sp, post_target, m_guest_ctx.svc, guest_x19, guest_x20,\n                      guest_x29, guest_x30, stack_read_ok, stack_words[0], stack_words[1],\n                      stack_words[2], stack_words[3], x20_state_read_ok, x20_state_word,\n                      lr_read_ok, lr_words[0], lr_words[1], lr_words[2], lr_words[3]);\n        }\n\n        if (used_post_handler) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(post_it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n\n        if (reentry_index < 64) {\n            LOG_ERROR(Core_ARM,\n                      \"IMP008_REENTRY_STATE_RETURN n={} path={} entry_pc={:016X} exit_pc={:016X} \"\n                      \"hr={:016X} svc={:08X} x19={:016X} x20={:016X} x30={:016X} pending_fault={}\",\n                      reentry_index, used_post_handler ? \"post\" : \"context\", entry_pc,\n                      m_guest_ctx.pc, static_cast<u64>(hr), m_guest_ctx.svc,\n                      m_guest_ctx.cpu_registers[19], m_guest_ctx.cpu_registers[20],\n                      m_guest_ctx.cpu_registers[30], m_windows_pending_nce_fault);\n        }\n"""
+
+          if text.count(old) != 1:
+              raise SystemExit(f"RunThread entry/return anchor count={text.count(old)}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          print("NCE_POST_SVC_STATE_DIAG_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'post-SVC state diagnostic injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'diagnostic diff check failed' }
+          grep -Fq 'IMP008_REENTRY_STATE_PRE' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'x20_state=' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'stack=' src/core/arm/nce/arm_nce_windows.cpp
+          Write-Host 'NCE_POST_SVC_STATE_DIAG_PATCH=PASS'
+
+      - name: Checkout fixed CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_REENTRY_STATE_PRE' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_POST_SVC_STATE_DIAG_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          echo 'NCE_POST_SVC_STATE_DIAG_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-post-svc-state-diag-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          echo 'NCE_POST_SVC_STATE_DIAG_PACKAGE=PASS'
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-POST-SVC-STATE-DIAG-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
