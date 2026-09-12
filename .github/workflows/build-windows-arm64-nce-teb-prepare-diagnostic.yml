@@ -1,0 +1,217 @@
+name: Build Windows ARM64 NCE TEB Prepare Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-teb-prepare-diagnostic.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-teb-prepare-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE TEB prepare diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
+      V3_WORKFLOW: .github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml
+
+    steps:
+      - name: Checkout Eden NCE NZCV candidate branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify source and v3 boundary
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test -f "$V3_WORKFLOW"
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
+          grep -Fq 'NCE_TEB_BIDIRECTIONAL_INJECTION=PASS' "$V3_WORKFLOW"
+          echo 'NCE_TEB_PREP_DIAG_PREPATCH_GUARD=PASS'
+
+      - name: Reapply exact validated v3 injection
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path(".github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml").read_text(encoding="utf-8")
+          start_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          exec(compile(script, "<v3-bidirectional-injection>", "exec"), {})
+          print("NCE_TEB_PREP_DIAG_V3_REAPPLY=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'exact v3 injection replay failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'v3 replay diff check failed' }
+
+      - name: Inject TEB prepare diagnostics only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: anchor count={count}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              """    const u64 guest_sp = guest.sp;\n    if (guest_sp == 0) {\n        return false;\n    }\n""",
+              """    const u64 guest_sp = guest.sp;\n    static std::atomic_uint32_t prepare_attempt_count{0};\n    const u32 prepare_attempt =\n        prepare_attempt_count.fetch_add(1, std::memory_order_relaxed);\n    if (guest_sp == 0) {\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_TEB_PREP_FAIL stage=zero_sp n={} pc={:016X} sp={:016X}\",\n                  prepare_attempt, guest.pc, guest_sp);\n        return false;\n    }\n""",
+              "zero-sp-diagnostic",
+          )
+
+          replace_once(
+              """    MEMORY_BASIC_INFORMATION stack_mbi{};\n    if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi,\n                     sizeof(stack_mbi)) == 0 ||\n        stack_mbi.AllocationBase == nullptr) {\n        return false;\n    }\n""",
+              """    MEMORY_BASIC_INFORMATION stack_mbi{};\n    const SIZE_T stack_query_size =\n        VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi, sizeof(stack_mbi));\n    if (stack_query_size == 0 || stack_mbi.AllocationBase == nullptr) {\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_TEB_PREP_FAIL stage=initial_query n={} pc={:016X} sp={:016X} \"\n                  \"query_size={} allocation_base={:016X} state={:X} protect={:X} type={:X} \"\n                  \"last_error={}\",\n                  prepare_attempt, guest.pc, guest_sp, static_cast<u64>(stack_query_size),\n                  static_cast<u64>(reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase)),\n                  static_cast<u64>(stack_mbi.State), static_cast<u64>(stack_mbi.Protect),\n                  static_cast<u64>(stack_mbi.Type), static_cast<u64>(GetLastError()));\n        return false;\n    }\n""",
+              "initial-query-diagnostic",
+          )
+
+          replace_once(
+              """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {\n        return false;\n    }\n""",
+              """    const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);\n    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_TEB_PREP_FAIL stage=range n={} pc={:016X} sp={:016X} \"\n                  \"allocation_base={:016X} allocation_end={:016X} at_or_below_base={} above_end={}\",\n                  prepare_attempt, guest.pc, guest_sp, static_cast<u64>(allocation_base),\n                  static_cast<u64>(allocation_end), guest_sp_value <= allocation_base,\n                  guest_sp_value > allocation_end);\n        return false;\n    }\n""",
+              "range-diagnostic",
+          )
+
+          replace_once(
+              """    guest.windows_host_stack_limit = static_cast<u64>(\n        reinterpret_cast<std::uintptr_t>(bounds.host_stack_limit));\n    return true;\n""",
+              """    guest.windows_host_stack_limit = static_cast<u64>(\n        reinterpret_cast<std::uintptr_t>(bounds.host_stack_limit));\n    if (prepare_attempt < 16) {\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_TEB_PREP_OK n={} pc={:016X} sp={:016X} guest_base={:016X} \"\n                  \"guest_limit={:016X} host_base={:016X} host_limit={:016X}\",\n                  prepare_attempt, guest.pc, guest_sp, guest.windows_guest_stack_base,\n                  guest.windows_guest_stack_limit, guest.windows_host_stack_base,\n                  guest.windows_host_stack_limit);\n    }\n    return true;\n""",
+              "success-diagnostic",
+          )
+
+          replace_once(
+              """        if (!PrepareGuestTebStackBounds(m_guest_ctx, teb_stack_bounds)) {\n            NCE::CurrentNceContext::Clear();\n            hr = HaltReason::PrefetchAbort;\n            break;\n        }\n""",
+              """        if (!PrepareGuestTebStackBounds(m_guest_ctx, teb_stack_bounds)) {\n            LOG_ERROR(Core_ARM,\n                      \"IMP008_TEB_PREP_TO_PREFETCH core={} pc={:016X} sp={:016X}\",\n                      m_core_index, m_guest_ctx.pc, m_guest_ctx.sp);\n            NCE::CurrentNceContext::Clear();\n            hr = HaltReason::PrefetchAbort;\n            break;\n        }\n""",
+              "runthread-prefetch-diagnostic",
+          )
+
+          path.write_text(text, encoding="utf-8")
+          print("NCE_TEB_PREP_DIAG_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'TEB prepare diagnostic injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'diagnostic diff check failed' }
+          grep -Fq 'IMP008_TEB_PREP_FAIL stage=zero_sp' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_TEB_PREP_FAIL stage=initial_query' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_TEB_PREP_FAIL stage=range' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_TEB_PREP_OK' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_TEB_PREP_TO_PREFETCH' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'WindowsNceReturnToHost' src/core/arm/nce/windows_nce_entry.asm
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
+          Write-Host 'NCE_TEB_PREP_DIAG_PATCH=PASS'
+
+      - name: Checkout fixed CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_TEB_PREP_FAIL stage=range' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'WindowsNceReturnToHost' src/core/arm/nce/windows_nce_entry.asm
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
+          echo 'NCE_TEB_PREP_DIAG_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          echo 'NCE_TEB_PREP_DIAG_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-teb-prepare-diag-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          echo 'NCE_TEB_PREP_DIAG_PACKAGE=PASS'
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-TEB-PREP-DIAG-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
