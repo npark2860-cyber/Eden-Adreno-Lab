@@ -1,4 +1,4 @@
-name: Build Windows ARM64 NCE X18 NZCV Carry Validation
+name: Build Windows ARM64 NCE NZCV Production Candidate
 
 on:
   workflow_dispatch:
@@ -12,12 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-arm64-nce-x18-nzcv-carry-validation
+  group: windows-arm64-nce-nzcv-production-candidate
   cancel-in-progress: false
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE x18 NZCV carry validation package
+    name: Windows ARM64 NCE NZCV production candidate package
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -30,56 +30,25 @@ jobs:
       ARCH: arm64-clang-standard
       RELEASE_PGO_HOST: github.com
       RELEASE_PGO_REPO: Eden-CI/PGO
-      PROD_SHA: 1572c8c55508d67d4423e025ec30ad7f3d2f9291
+      PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
 
     steps:
-      - name: Checkout validated Eden NCE branch
+      - name: Checkout Eden NCE production candidate branch
         uses: actions/checkout@v7
         with:
           path: eden
           fetch-depth: 0
           submodules: recursive
 
-      - name: Verify production-equivalent source
+      - name: Verify production candidate source boundary
         shell: bash
         working-directory: eden
         run: |
           set -euo pipefail
           git cat-file -e "$PROD_SHA^{commit}"
           git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
-          echo 'X18_NZCV_CARRY_SOURCE_GUARD=PASS'
-
-      - name: Reuse parser diagnostics and sync captured NZCV
-        shell: pwsh
-        working-directory: eden
-        run: |
-          @'
-          from pathlib import Path
-
-          wf = Path('.github/workflows/build-windows-arm64-nce-svc21-getservice-parser-select-diag.yml').read_text(encoding='utf-8')
-          begin = "          @'\n"
-          end = "\n          '@ | python -"
-          s = wf.index(begin) + len(begin)
-          e = wf.index(end, s)
-          src = '\n'.join(line[10:] if line.startswith('          ') else line for line in wf[s:e].splitlines())
-          exec(compile(src, 'validated-parser-select-diagnostics', 'exec'), {})
-
-          p = Path('src/core/arm/nce/windows_exception_context.h')
-          t = p.read_text(encoding='utf-8')
-          old = '        guest.pstate = context.Cpsr;\n        guest.fpcr = context.Fpcr;\n'
-          new = '        guest.pstate = context.Cpsr;\n        guest.nzcv = context.Cpsr & 0xF0000000U;\n        guest.fpcr = context.Fpcr;\n'
-          if t.count(old) != 1:
-              raise SystemExit(f'NZCV sync anchor count={t.count(old)}')
-          t = t.replace(old, new, 1)
-          p.write_text(t, encoding='utf-8')
-          if 'guest.nzcv = context.Cpsr & 0xF0000000U;' not in t:
-              raise SystemExit('NZCV sync missing')
-          print('X18_NZCV_CARRY_INJECTION=PASS')
-          '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'x18 NZCV carry validation injection failed' }
-          git diff --check
-          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
-          Write-Host 'X18_NZCV_CARRY_PATCH=PASS'
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
+          echo 'X18_NZCV_PRODUCTION_SOURCE_GUARD=PASS'
 
       - name: Checkout fixed CI workflow
         uses: actions/checkout@v7
@@ -118,7 +87,7 @@ jobs:
           ./.ci/build/configure.sh -DCCACHE_PATH=sccache
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
-          echo 'X18_NZCV_CARRY_CONFIGURE=PASS'
+          echo 'X18_NZCV_PRODUCTION_CONFIGURE=PASS'
 
       - name: Build full Windows ARM64 Eden GUI
         shell: msys2 {0}
@@ -127,19 +96,19 @@ jobs:
           set -euo pipefail
           cmake --build build
           test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
-          echo 'X18_NZCV_CARRY_BUILD=PASS'
+          echo 'X18_NZCV_PRODUCTION_BUILD=PASS'
 
       - name: Package Windows ARM64 Eden
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: nce-x18-nzcv-carry-${{ github.sha }}
+          ARTIFACT_REF: nce-x18-nzcv-production-${{ github.sha }}
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
-          echo 'X18_NZCV_CARRY_PACKAGE=PASS'
+          echo 'X18_NZCV_PRODUCTION_PACKAGE=PASS'
 
       - name: Prepare upload
         shell: pwsh
@@ -152,7 +121,7 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-X18-NZCV-CARRY-${{ github.sha }}
+          name: Eden-Windows-ARM64-NCE-NZCV-PRODUCTION-${{ github.sha }}
           archive: false
           path: upload/*
           if-no-files-found: error
