@@ -1,0 +1,179 @@
+name: Build Windows ARM64 NCE Unknown Exception Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-windows-arm64-nce-unknown-exception-diagnostic.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-nce-unknown-exception-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE unknown exception diagnostic package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
+      V3_WORKFLOW: .github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml
+
+    steps:
+      - name: Checkout Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify source and v3 boundary
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test -f "$V3_WORKFLOW"
+          grep -Fq 'guest.nzcv = context.Cpsr & 0xF0000000U;' src/core/arm/nce/windows_exception_context.h
+          grep -Fq 'NCE_TEB_BIDIRECTIONAL_INJECTION=PASS' "$V3_WORKFLOW"
+          echo 'NCE_UNKNOWN_EXCEPTION_DIAG_PREPATCH_GUARD=PASS'
+
+      - name: Reapply exact validated v3 injection
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path(".github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml").read_text(encoding="utf-8")
+          start_marker = "          @'\n"
+          end_marker = "\n          '@ | python -"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          exec(compile(script, "<v3-bidirectional-injection>", "exec"), {})
+          print("NCE_UNKNOWN_EXCEPTION_DIAG_V3_REAPPLY=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'exact v3 injection replay failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'v3 replay diff check failed' }
+
+      - name: Inject unknown guest exception observer
+        shell: pwsh
+        working-directory: eden
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          old = """    // IMP-008A does not claim complete game fault compatibility. Unknown host/guest exception\n    // classes remain chainable instead of being swallowed by the NCE VEH.\n    return EXCEPTION_CONTINUE_SEARCH;\n"""
+
+          new = """    // Diagnostic only: preserve the existing chainable semantics, but expose the first-chance\n    // exception that would otherwise disappear when the process terminates before RunThread returns.\n    static std::atomic_uint32_t unknown_exception_count{0};\n    const u32 unknown_index = unknown_exception_count.fetch_add(1, std::memory_order_relaxed);\n    const auto& record = *exception->ExceptionRecord;\n    const u64 info0 = record.NumberParameters > 0 ? static_cast<u64>(record.ExceptionInformation[0]) : 0;\n    const u64 info1 = record.NumberParameters > 1 ? static_cast<u64>(record.ExceptionInformation[1]) : 0;\n    if (unknown_index < 16) {\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_UNKNOWN_GUEST_EXCEPTION n={} code={:08X} flags={:08X} address={:016X} \"\n                  \"pc={:016X} sp={:016X} x0={:016X} x1={:016X} x2={:016X} x3={:016X} \"\n                  \"x19={:016X} x20={:016X} x29={:016X} x30={:016X} params={} info0={:016X} info1={:016X}\",\n                  unknown_index, static_cast<u32>(record.ExceptionCode),\n                  static_cast<u32>(record.ExceptionFlags),\n                  reinterpret_cast<u64>(record.ExceptionAddress), context.Pc, context.Sp,\n                  context.X[0], context.X[1], context.X[2], context.X[3], context.X[19],\n                  context.X[20], context.X[29], context.X[30], record.NumberParameters, info0, info1);\n    }\n\n    // IMP-008A does not claim complete game fault compatibility. Unknown host/guest exception\n    // classes remain chainable instead of being swallowed by the NCE VEH.\n    return EXCEPTION_CONTINUE_SEARCH;\n"""
+
+          if text.count(old) != 1:
+              raise SystemExit(f"unknown-exception anchor count={text.count(old)}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          print("NCE_UNKNOWN_EXCEPTION_DIAG_INJECTION=PASS")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'unknown exception diagnostic injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'diagnostic diff check failed' }
+          grep -Fq 'IMP008_UNKNOWN_GUEST_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'return EXCEPTION_CONTINUE_SEARCH;' src/core/arm/nce/arm_nce_windows.cpp
+          Write-Host 'NCE_UNKNOWN_EXCEPTION_DIAG_PATCH=PASS'
+
+      - name: Checkout fixed CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 GUI build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_UNKNOWN_GUEST_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_UNKNOWN_EXCEPTION_DIAG_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          echo 'NCE_UNKNOWN_EXCEPTION_DIAG_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-unknown-exception-diag-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          echo 'NCE_UNKNOWN_EXCEPTION_DIAG_PACKAGE=PASS'
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-UNKNOWN-EXCEPTION-DIAG-${{ github.sha }}
+          archive: false
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 14
