@@ -69,6 +69,7 @@ public:
         guest.sp = context.Sp;
         guest.pc = context.Pc;
         guest.pstate = context.Cpsr;
+        guest.nzcv = context.Cpsr & 0xF0000000U;
         guest.fpcr = context.Fpcr;
         guest.fpsr = context.Fpsr;
 
