@@ -74,7 +74,7 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'diagnostic replay failed' }
 
-      - name: Inject lightweight reentry breadcrumbs
+      - name: Inject host-stack exception observer and reentry breadcrumbs
         shell: pwsh
         working-directory: eden
         run: |
@@ -82,15 +82,23 @@ jobs:
           from pathlib import Path
           p = Path("src/core/arm/nce/arm_nce_windows.cpp")
           s = p.read_text(encoding="utf-8")
+
+          host_old = """    if (nce->m_windows_break != nullptr && nce->m_windows_break->IsHostStackPointer(context.Sp)) {\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n"""
+          host_new = """    if (nce->m_windows_break != nullptr && nce->m_windows_break->IsHostStackPointer(context.Sp)) {\n        static std::atomic_uint32_t host_stack_exception_count{0};\n        const u32 host_index = host_stack_exception_count.fetch_add(1, std::memory_order_relaxed);\n        if (host_index < 16) {\n            const auto& host_record = *exception->ExceptionRecord;\n            LOG_ERROR(Core_ARM,\n                      \"IMP008_HOST_STACK_EXCEPTION n={} code={:08X} flags={:08X} address={:016X} pc={:016X} sp={:016X} x30={:016X}\",\n                      host_index, static_cast<u32>(host_record.ExceptionCode),\n                      static_cast<u32>(host_record.ExceptionFlags),\n                      reinterpret_cast<u64>(host_record.ExceptionAddress), context.Pc, context.Sp,\n                      context.X[30]);\n        }\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n"""
+          if s.count(host_old) != 1:
+              raise SystemExit(f"host-stack anchor count={s.count(host_old)}")
+          s = s.replace(host_old, host_new, 1)
+
           old = """        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n"""
           new = """        static std::atomic_uint32_t breadcrumb_count{0};\n        const u32 breadcrumb_index = breadcrumb_count.fetch_add(1, std::memory_order_relaxed);\n        const u64 breadcrumb_pc = m_guest_ctx.pc;\n        const auto breadcrumb_it = post_handlers.find(breadcrumb_pc);\n        const bool breadcrumb_post = breadcrumb_it != post_handlers.end();\n        if (breadcrumb_index < 64) {\n            LOG_ERROR(Core_ARM, \"IMP008_REENTRY_BREADCRUMB_PRE n={} path={} pc={:016X} svc={:08X} x30={:016X}\",\n                      breadcrumb_index, breadcrumb_post ? \"post\" : \"context\", breadcrumb_pc,\n                      m_guest_ctx.svc, m_guest_ctx.cpu_registers[30]);\n        }\n        if (breadcrumb_post) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(breadcrumb_it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n        RestoreHostTebStackBounds(teb_stack_bounds);\n        NCE::CurrentNceContext::Clear();\n        if (breadcrumb_index < 64) {\n            LOG_ERROR(Core_ARM, \"IMP008_REENTRY_BREADCRUMB_RETURN n={} entry_pc={:016X} exit_pc={:016X} svc={:08X} x30={:016X} pending_fault={}\",\n                      breadcrumb_index, breadcrumb_pc, m_guest_ctx.pc, m_guest_ctx.svc,\n                      m_guest_ctx.cpu_registers[30], m_windows_pending_nce_fault);\n        }\n"""
           if s.count(old) != 1:
               raise SystemExit(f"breadcrumb anchor count={s.count(old)}")
           p.write_text(s.replace(old, new, 1), encoding="utf-8")
-          print("NCE_REENTRY_BREADCRUMB_INJECTION=PASS")
+          print("NCE_HOST_STACK_AND_BREADCRUMB_INJECTION=PASS")
           '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'breadcrumb injection failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'diagnostic injection failed' }
           git diff --check
+          grep -Fq 'IMP008_HOST_STACK_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_UNKNOWN_GUEST_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
 
@@ -128,6 +136,7 @@ jobs:
           set -euo pipefail
           ./.ci/build/configure.sh -DCCACHE_PATH=sccache
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'IMP008_HOST_STACK_EXCEPTION' src/core/arm/nce/arm_nce_windows.cpp
           echo 'NCE_REENTRY_BREADCRUMB_CONFIGURE=PASS'
 
       - name: Build full Windows ARM64 Eden GUI
@@ -142,7 +151,7 @@ jobs:
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: nce-reentry-breadcrumb-${{ github.sha }}
+          ARTIFACT_REF: nce-host-stack-observer-${{ github.sha }}
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
@@ -158,7 +167,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-REENTRY-BREADCRUMB-${{ github.sha }}
+          name: Eden-Windows-ARM64-NCE-HOST-STACK-OBSERVER-${{ github.sha }}
           archive: false
           path: upload/*
           retention-days: 14
