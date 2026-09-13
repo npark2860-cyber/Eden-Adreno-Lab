@@ -34,18 +34,25 @@ jobs:
           Write-Output "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
           Write-Output "GITHUB_SHA=$env:GITHUB_SHA"
           Write-Output "PS_VERSION=$($PSVersionTable.PSVersion)"
-          [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
-          [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-          [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+          Write-Output "OS_DESCRIPTION=$([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)"
+          Write-Output "OS_ARCH=$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+          Write-Output "PROCESS_ARCH=$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
 
-      - name: Verify ARM64 build prerequisites
+      - name: Verify runner essentials
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $required = @('git','python','cmake','ninja')
-          foreach ($tool in $required) {
+          foreach ($tool in @('git','python')) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             if (-not $cmd) { throw "missing required tool: $tool" }
             Write-Output "$tool=$($cmd.Source)"
+          }
+          foreach ($tool in @('pwsh','cmake','ninja')) {
+            $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+            if ($cmd) {
+              Write-Output "optional:$tool=$($cmd.Source)"
+            } else {
+              Write-Output "optional:$tool=MISSING"
+            }
           }
           Write-Output "SELF_HOSTED_WINDOWS_ARM64_RUNNER=PASS"
