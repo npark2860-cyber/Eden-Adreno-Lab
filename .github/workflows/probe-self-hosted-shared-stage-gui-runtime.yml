@@ -18,11 +18,11 @@ jobs:
       - name: Download shared-stage Eden package
         uses: actions/download-artifact@v7
         with:
-          name: Eden-Windows-nce-cinc-x18-shared-stage-02d688c65e4a9375310024c357aa29f5a6cac81e-arm64-clang-standard.zip
+          name: Eden-Windows-nce-cinc-x18-shared-stage-8b7e0e35fca39ee8d45190e168b824984df5951e-arm64-clang-standard.zip
           path: runtime/eden
           github-token: ${{ github.token }}
           repository: npark2860-cyber/Eden-Adreno-Lab
-          run-id: 34773095581
+          run-id: 34775023412
       - name: Run exact three-down GUI sequence
         shell: powershell
         run: |
