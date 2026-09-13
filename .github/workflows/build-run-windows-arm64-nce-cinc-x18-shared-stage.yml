@@ -1,0 +1,321 @@
+name: Build and Run Windows ARM64 NCE CINC X18 Shared Stage
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/build-run-windows-arm64-nce-cinc-x18-shared-stage.yml
+      - tools/nce_diag/apply_cinc_x18_shared_stage_diagnostic.py
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-arm64-nce-cinc-x18-shared-stage
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+      PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
+
+    steps:
+      - name: Checkout Eden NCE branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify shared-stage diagnostic baseline
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PROD_SHA^{commit}"
+          git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
+          test -f tools/nce_diag/apply_cinc_checkpoint_epilogue_bypass.py
+          test -f tools/nce_diag/apply_cinc_x18_veh_clean_control.py
+          test -f tools/nce_diag/apply_cinc_x18_shared_stage_diagnostic.py
+          echo 'NCE_CINC_X18_SHARED_STAGE_GUARD=PASS'
+
+      - name: Apply non-logging shared-stage diagnostic
+        shell: pwsh
+        working-directory: eden
+        run: |
+          python tools/nce_diag/apply_cinc_x18_shared_stage_diagnostic.py
+          if ($LASTEXITCODE -ne 0) { throw 'shared-stage diagnostic injection failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'shared-stage diagnostic diff check failed' }
+
+          $source = 'src/core/arm/nce/arm_nce_windows.cpp'
+          $required = @(
+            'kWindowsX18StageMapName',
+            'SetWindowsX18Stage(1)',
+            'SetWindowsX18Stage(2)',
+            'SetWindowsX18Stage(3)',
+            'NCE::WindowsX18FallbackTrap::TryRedirect',
+            'IMP008_CINC_WITNESS_EPILOGUE_APPLIED',
+            'IMP008_CINC_CHECKPOINT_EPILOGUE_APPLIED',
+            'IMP008_CINC_X18_METADATA',
+            'IMP008_CINC_CALLER_ARG_SETUP_APPLIED',
+            'IMP008_REENTRY_BREADCRUMB_PRE',
+            'IMP008_X18_FALLBACK_PRE',
+            'IMP008_X18_FALLBACK_POST'
+          )
+          foreach ($marker in $required) {
+            if (-not (Select-String -Path $source -Pattern $marker -SimpleMatch -Quiet)) {
+              throw "missing shared-stage marker: $marker"
+            }
+          }
+
+          $forbidden = @(
+            'IMP008_X18_VEH_BREAK',
+            'IMP008_X18_VEH_MATCH',
+            'IMP008_X18_VEH_REDIRECT',
+            'IMP008_UNKNOWN_GUEST_EXCEPTION',
+            'IMP008_HOST_STACK_EXCEPTION'
+          )
+          foreach ($marker in $forbidden) {
+            if (Select-String -Path $source -Pattern $marker -SimpleMatch -Quiet) {
+              throw "VEH logging observer still present: $marker"
+            }
+          }
+          Write-Output 'NCE_CINC_X18_SHARED_STAGE_PATCH=PASS'
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'SetWindowsX18Stage(2)' src/core/arm/nce/arm_nce_windows.cpp
+          ! grep -Fq 'IMP008_X18_VEH_BREAK' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_CINC_X18_SHARED_STAGE_CONFIGURE=PASS'
+
+      - name: Build full Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          test -f build/bin/eden-cli.exe || test -f build/bin/yuzu-cmd.exe || test -f build/bin/yuzu_cmd.exe
+          echo 'NCE_CINC_X18_SHARED_STAGE_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-cinc-x18-shared-stage-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          echo 'NCE_CINC_X18_SHARED_STAGE_PACKAGE=PASS'
+
+      - name: Prepare package upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - name: Upload shared-stage package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-CINC-X18-SHARED-STAGE-${{ github.sha }}
+          archive: false
+          path: upload/*
+          retention-days: 14
+
+  runtime-observe:
+    needs: build-package
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Download shared-stage Eden package
+        uses: actions/download-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-CINC-X18-SHARED-STAGE-${{ github.sha }}
+          path: runtime/eden
+
+      - name: Download fixed NCE-DIAG executables
+        uses: actions/download-artifact@v7
+        with:
+          name: NCE-DIAG-0.2.1-executables
+          path: runtime/nce-diag
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/NCE-DIAG
+          run-id: 34704427664
+
+      - name: Observe x18 shared stage without VEH logging
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = Join-Path $env:GITHUB_WORKSPACE 'runtime-output'
+          New-Item -ItemType Directory -Force $outDir | Out-Null
+
+          $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden-cli.exe'
+          if (-not (Test-Path $eden -PathType Leaf)) {
+            $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/yuzu-cmd.exe'
+          }
+          $cinc = Join-Path $env:GITHUB_WORKSPACE 'runtime/nce-diag/NCE-DIAG-CINC.nro'
+          if (-not (Test-Path $eden -PathType Leaf)) { throw "eden CLI missing: $eden" }
+          if (-not (Test-Path $cinc -PathType Leaf)) { throw "CINC NRO missing: $cinc" }
+
+          $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
+          if (Test-Path $logPath) { Remove-Item $logPath -Force }
+
+          $stdoutPath = Join-Path $outDir 'eden-cli.stdout.txt'
+          $stderrPath = Join-Path $outDir 'eden-cli.stderr.txt'
+          $stagePath = Join-Path $outDir 'x18-stage.txt'
+          $classPath = Join-Path $outDir 'classification.txt'
+
+          $process = Start-Process -FilePath $eden -ArgumentList @('--null-render', $cinc) `
+            -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+
+          $mapping = $null
+          $view = $null
+          $stage = -1
+          $maxStage = -1
+          $timedOut = $false
+          $deadline = [DateTime]::UtcNow.AddSeconds(30)
+
+          while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline -and $null -eq $mapping) {
+            try {
+              $mapping = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting(
+                'Local\EdenNceX18Stage',
+                [System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
+            } catch {
+              Start-Sleep -Milliseconds 25
+            }
+          }
+
+          if ($null -ne $mapping) {
+            $view = $mapping.CreateViewAccessor(0, 4, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
+            while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+              $stage = $view.ReadInt32(0)
+              if ($stage -gt $maxStage) {
+                $maxStage = $stage
+                Write-Output "X18_SHARED_STAGE=$stage"
+              }
+              Start-Sleep -Milliseconds 10
+            }
+            $stage = $view.ReadInt32(0)
+            if ($stage -gt $maxStage) { $maxStage = $stage }
+          }
+
+          if (-not $process.HasExited) {
+            $timedOut = $true
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            $process.WaitForExit()
+          } else {
+            $process.WaitForExit()
+          }
+
+          $exitCode = $process.ExitCode
+          if ($null -ne $view) { $view.Dispose() }
+          if ($null -ne $mapping) { $mapping.Dispose() }
+
+          $logCopy = Join-Path $outDir 'eden_log.txt'
+          if (Test-Path $logPath) {
+            Copy-Item $logPath $logCopy -Force
+          } else {
+            Set-Content -Path $logCopy -Value 'EDEN_LOG_MISSING'
+          }
+
+          $logText = Get-Content $logCopy -Raw -ErrorAction SilentlyContinue
+          $fallbackPre = $null -ne $logText -and $logText.Contains('IMP008_X18_FALLBACK_PRE')
+          $fallbackPost = $null -ne $logText -and $logText.Contains('IMP008_X18_FALLBACK_POST')
+          $cascade = $null -ne $logText -and $logText.Contains('4001000A')
+          $metadata = $null -ne $logText -and $logText.Contains('IMP008_CINC_X18_METADATA')
+          $caller = $null -ne $logText -and $logText.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
+
+          if ($maxStage -ge 2 -and -not $fallbackPre) {
+            $classification = 'TRY_REDIRECT_RETURNED_TRUE__HOST_RETURN_RESUME_BOUNDARY'
+          } elseif ($maxStage -ge 2 -and $fallbackPre) {
+            $classification = 'BOUNDARY_CROSSED_TO_FALLBACK_DISPATCH'
+          } elseif ($maxStage -eq 3) {
+            $classification = 'TRY_REDIRECT_RETURNED_FALSE'
+          } elseif ($maxStage -eq 1) {
+            $classification = 'ENTERED_X18_VEH__TRY_REDIRECT_DID_NOT_RETURN_TO_CALLER'
+          } elseif ($maxStage -eq 0) {
+            $classification = 'STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'
+          } else {
+            $classification = 'SHARED_STAGE_MAPPING_NOT_OBSERVED'
+          }
+
+          @(
+            "CLASSIFICATION=$classification",
+            "MAX_STAGE=$maxStage",
+            "EXIT_CODE=$exitCode",
+            "TIMED_OUT=$timedOut",
+            "METADATA=$metadata",
+            "CALLER_SETUP=$caller",
+            "FALLBACK_PRE=$fallbackPre",
+            "FALLBACK_POST=$fallbackPost",
+            "CASCADE_4001000A=$cascade",
+            'STAGE_1=ordinary-x18 VEH branch entered',
+            'STAGE_2=TryRedirect returned true before EXCEPTION_CONTINUE_EXECUTION',
+            'STAGE_3=TryRedirect returned false'
+          ) | Set-Content -Path $stagePath
+          Copy-Item $stagePath $classPath -Force
+          Get-Content $classPath
+
+      - name: Upload runtime observation
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: NCE-CINC-X18-SHARED-STAGE-RUNTIME-${{ github.sha }}
+          archive: false
+          path: runtime-output/*
+          if-no-files-found: warn
+          retention-days: 14
