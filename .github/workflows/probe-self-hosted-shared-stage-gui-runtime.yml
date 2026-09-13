@@ -1,0 +1,198 @@
+name: Probe Self-Hosted Shared Stage GUI Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-self-hosted-shared-stage-gui-runtime.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: probe-self-hosted-shared-stage-gui-runtime
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Download shared-stage Eden package
+        uses: actions/download-artifact@v7
+        with:
+          name: Eden-Windows-nce-cinc-x18-shared-stage-753d52b2fe1dbbcf9471b24da33a5c293b6dd7f7-arm64-clang-standard.zip
+          path: runtime/eden
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          run-id: 34769198199
+
+      - name: Download validated NCE-DIAG executables
+        uses: actions/download-artifact@v7
+        with:
+          name: NCE-DIAG-0.2.1-executables
+          path: runtime/nce-diag
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/NCE-DIAG
+          run-id: 34704427664
+
+      - name: Run shared-stage CINC through interactive Qt GUI path
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = Join-Path $env:GITHUB_WORKSPACE 'runtime-output'
+          if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue }
+          New-Item -ItemType Directory -Force $outDir | Out-Null
+
+          $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden.exe'
+          $cinc = Join-Path $env:GITHUB_WORKSPACE 'runtime/nce-diag/NCE-DIAG-CINC.nro'
+          if (-not (Test-Path $eden -PathType Leaf)) { throw "missing Eden GUI: $eden" }
+          if (-not (Test-Path $cinc -PathType Leaf)) { throw "missing CINC NRO: $cinc" }
+
+          $status = Join-Path $outDir 'runtime-status.txt'
+          $stageOut = Join-Path $outDir 'x18-stage.txt'
+          $logOut = Join-Path $outDir 'eden_log_gui.txt'
+          $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
+          if (Test-Path $logPath) { Remove-Item $logPath -Force -ErrorAction SilentlyContinue }
+
+          $p = Start-Process -FilePath $eden -PassThru
+          $windowReady = $false
+          $windowDeadline = [DateTime]::UtcNow.AddSeconds(10)
+          while ([DateTime]::UtcNow -lt $windowDeadline -and -not $p.HasExited) {
+            $p.Refresh()
+            if ($p.MainWindowHandle -ne 0) { $windowReady = $true; break }
+            Start-Sleep -Milliseconds 100
+          }
+
+          $appActivated = $false
+          $loadDialogInvoked = $false
+          $pathSubmitted = $false
+          if ($windowReady -and -not $p.HasExited) {
+            $wshell = New-Object -ComObject WScript.Shell
+            $appActivated = $wshell.AppActivate($p.Id)
+            Start-Sleep -Milliseconds 300
+            if ($appActivated) {
+              $wshell.SendKeys('%f')
+              Start-Sleep -Milliseconds 250
+              $wshell.SendKeys('o')
+              $loadDialogInvoked = $true
+              Start-Sleep -Milliseconds 700
+              $wshell.SendKeys('%n')
+              Start-Sleep -Milliseconds 200
+              $wshell.SendKeys($cinc)
+              $wshell.SendKeys('{ENTER}')
+              $pathSubmitted = $true
+            }
+          }
+
+          $mapping = $null
+          $view = $null
+          $stage = -1
+          $maxStage = -1
+          $deadline = [DateTime]::UtcNow.AddSeconds(30)
+          while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline -and $null -eq $mapping) {
+            try {
+              $mapping = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting(
+                'Local\EdenNceX18Stage',
+                [System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
+            } catch {
+              Start-Sleep -Milliseconds 25
+            }
+          }
+
+          if ($null -ne $mapping) {
+            $view = $mapping.CreateViewAccessor(0, 4, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
+            while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+              $stage = $view.ReadInt32(0)
+              if ($stage -gt $maxStage) { $maxStage = $stage }
+              if ($maxStage -ge 2) { break }
+              Start-Sleep -Milliseconds 10
+            }
+            $stage = $view.ReadInt32(0)
+            if ($stage -gt $maxStage) { $maxStage = $stage }
+          }
+
+          Start-Sleep -Milliseconds 300
+          $wasRunning = -not $p.HasExited
+          if ($wasRunning) {
+            $exitState = 'FORCED_STOP_AFTER_OBSERVATION'
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            try { $p.WaitForExit() } catch {}
+          } else {
+            $exitState = try { [string]$p.ExitCode } catch { 'UNAVAILABLE' }
+          }
+
+          if ($null -ne $view) { $view.Dispose() }
+          if ($null -ne $mapping) { $mapping.Dispose() }
+
+          if (Test-Path $logPath -PathType Leaf) {
+            Copy-Item $logPath $logOut -Force
+            $logText = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
+            if ($null -eq $logText) { $logText = '' }
+          } else {
+            $logText = ''
+            Set-Content $logOut 'EDEN_GUI_LOG_NOT_FOUND'
+          }
+
+          $n30 = $logText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=30')
+          $metadata = $logText.Contains('IMP008_CINC_X18_METADATA')
+          $caller = $logText.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
+          $fallbackPre = $logText.Contains('IMP008_X18_FALLBACK_PRE')
+          $fallbackPost = $logText.Contains('IMP008_X18_FALLBACK_POST')
+          $cascade = $logText.Contains('4001000A')
+
+          if ($maxStage -eq 3) {
+            $classification = 'TRY_REDIRECT_RETURNED_FALSE'
+          } elseif ($maxStage -ge 2 -and $fallbackPre) {
+            $classification = 'BOUNDARY_CROSSED_TO_FALLBACK_DISPATCH'
+          } elseif ($maxStage -ge 2) {
+            $classification = 'TRY_REDIRECT_RETURNED_TRUE__HOST_RETURN_RESUME_BOUNDARY'
+          } elseif ($maxStage -eq 1) {
+            $classification = 'ENTERED_X18_VEH__TRY_REDIRECT_DID_NOT_RETURN_TO_CALLER'
+          } elseif ($maxStage -eq 0) {
+            $classification = 'STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'
+          } else {
+            $classification = 'SHARED_STAGE_MAPPING_NOT_OBSERVED'
+          }
+
+          @(
+            "CLASSIFICATION=$classification",
+            "MAX_STAGE=$maxStage",
+            'LAUNCH_MODE=EDEN_QT_GUI_FILE_MENU',
+            'SHARED_STAGE_RUN=34769198199',
+            'SHARED_STAGE_HEAD=753d52b2fe1dbbcf9471b24da33a5c293b6dd7f7',
+            'NCE_DIAG_RUN=34704427664',
+            'NCE_DIAG_HEAD=f3b1dfb469fe50ddd5abbbb9b4405148a64c5f84',
+            "WINDOW_READY=$windowReady",
+            "APP_ACTIVATED=$appActivated",
+            "LOAD_DIALOG_INVOKED=$loadDialogInvoked",
+            "PATH_SUBMITTED=$pathSubmitted",
+            "EDEN_EXIT_STATE=$exitState",
+            "PROCESS_WAS_RUNNING_AT_OBSERVATION_END=$wasRunning",
+            "N30_REACHED=$n30",
+            "METADATA=$metadata",
+            "CALLER_SETUP=$caller",
+            "FALLBACK_PRE=$fallbackPre",
+            "FALLBACK_POST=$fallbackPost",
+            "CASCADE_4001000A=$cascade",
+            'STAGE_1=ordinary-x18 VEH branch entered',
+            'STAGE_2=TryRedirect returned true before EXCEPTION_CONTINUE_EXECUTION',
+            'STAGE_3=TryRedirect returned false'
+          ) | Set-Content $status
+          Copy-Item $status $stageOut -Force
+          Get-Content $status
+          Write-Output '--- EDEN GUI LOG TAIL ---'
+          Get-Content $logOut -ErrorAction SilentlyContinue | Select-Object -Last 180
+
+      - name: Upload shared-stage GUI runtime observation
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: SELF-HOSTED-SHARED-STAGE-GUI-RUNTIME
+          path: runtime-output/*
+          if-no-files-found: warn
+          retention-days: 14
