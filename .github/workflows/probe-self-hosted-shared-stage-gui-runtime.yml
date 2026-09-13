@@ -1,26 +1,19 @@
 name: Probe Self-Hosted Shared Stage GUI Runtime
-
 on:
   workflow_dispatch:
   push:
-    branches:
-      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
-    paths:
-      - .github/workflows/probe-self-hosted-shared-stage-gui-runtime.yml
-
+    branches: [exp/imp-008e-windows-nce-rasterizer-recovery-runtime]
+    paths: [.github/workflows/probe-self-hosted-shared-stage-gui-runtime.yml]
 permissions:
   contents: read
   actions: read
-
 concurrency:
   group: probe-self-hosted-shared-stage-gui-runtime
   cancel-in-progress: false
-
 jobs:
   runtime:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 10
-
     steps:
       - name: Download shared-stage Eden package
         uses: actions/download-artifact@v7
@@ -30,223 +23,67 @@ jobs:
           github-token: ${{ github.token }}
           repository: npark2860-cyber/Eden-Adreno-Lab
           run-id: 34769198199
-
-      - name: Try GUI File menu with two and three Down presses
+      - name: Run exact three-down GUI sequence
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $outDir = Join-Path $env:GITHUB_WORKSPACE 'runtime-output'
-          if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue }
-          New-Item -ItemType Directory -Force $outDir | Out-Null
-
-          $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden.exe'
-          $cinc = 'C:\Emulators\ryujinx\roms\NCE-DIAG-CINC.nro'
-          if (-not (Test-Path $eden -PathType Leaf)) { throw "missing Eden GUI: $eden" }
-          if (-not (Test-Path $cinc -PathType Leaf)) { throw "missing CINC NRO: $cinc" }
-
-          $status = Join-Path $outDir 'runtime-status.txt'
-          $stageOut = Join-Path $outDir 'x18-stage.txt'
-          $logOut = Join-Path $outDir 'eden_log_gui.txt'
-          $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
-
-          function Save-Screen([string]$path) {
-            try {
-              Add-Type -AssemblyName System.Windows.Forms
-              Add-Type -AssemblyName System.Drawing
-              $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-              $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-              $gfx = [System.Drawing.Graphics]::FromImage($bmp)
-              $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-              $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-              $gfx.Dispose()
-              $bmp.Dispose()
-            } catch {}
-          }
-
-          $selectedDown = -1
-          $p = $null
-          $mapping = $null
-          $view = $null
-          $stage = -1
-          $maxStage = -1
-          $bootGame = $false
-
-          foreach ($downCount in @(2, 3)) {
-            if (Test-Path $logPath) { Remove-Item $logPath -Force -ErrorAction SilentlyContinue }
-
-            Write-Output "MENU_ATTEMPT_DOWN_COUNT=$downCount"
-            $candidate = Start-Process -FilePath $eden -PassThru
-            $windowReady = $false
-            $windowDeadline = [DateTime]::UtcNow.AddSeconds(10)
-            while ([DateTime]::UtcNow -lt $windowDeadline -and -not $candidate.HasExited) {
-              $candidate.Refresh()
-              if ($candidate.MainWindowHandle -ne 0) { $windowReady = $true; break }
-              Start-Sleep -Milliseconds 100
-            }
-
-            if ($windowReady -and -not $candidate.HasExited) {
-              $wshell = New-Object -ComObject WScript.Shell
-              $activated = $wshell.AppActivate($candidate.Id)
-              Start-Sleep -Milliseconds 700
-              if ($activated) {
-                $wshell.SendKeys('%f')
-                Start-Sleep -Milliseconds 400
-                for ($i = 0; $i -lt $downCount; $i++) {
-                  $wshell.SendKeys('{DOWN}')
-                  Start-Sleep -Milliseconds 180
-                }
-                $wshell.SendKeys('{ENTER}')
-                Start-Sleep -Milliseconds 1200
-                $wshell.SendKeys('%n')
-                Start-Sleep -Milliseconds 250
-                $wshell.SendKeys($cinc)
-                Start-Sleep -Milliseconds 250
-                $wshell.SendKeys('{ENTER}')
-              }
-            }
-
-            $probeDeadline = [DateTime]::UtcNow.AddSeconds(8)
-            while (-not $candidate.HasExited -and [DateTime]::UtcNow -lt $probeDeadline) {
-              try {
-                $mapping = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting(
-                  'Local\EdenNceX18Stage',
-                  [System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
-                break
-              } catch {}
-
-              if (Test-Path $logPath -PathType Leaf) {
-                $probeText = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
-                if ($null -ne $probeText -and $probeText.Contains('BootGame: Eden starting...')) {
-                  $bootGame = $true
-                  break
-                }
-              }
-              Start-Sleep -Milliseconds 100
-            }
-
-            if ($null -ne $mapping -or $bootGame) {
-              $selectedDown = $downCount
-              $p = $candidate
-              break
-            }
-
-            Save-Screen (Join-Path $outDir ("gui-down-{0}.png" -f $downCount))
-            if (-not $candidate.HasExited) {
-              Stop-Process -Id $candidate.Id -Force -ErrorAction SilentlyContinue
-              try { $candidate.WaitForExit() } catch {}
-            }
-            Start-Sleep -Milliseconds 500
-          }
-
-          if ($null -ne $p) {
-            $deadline = [DateTime]::UtcNow.AddSeconds(30)
-            if ($null -eq $mapping) {
-              while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline -and $null -eq $mapping) {
-                try {
-                  $mapping = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting(
-                    'Local\EdenNceX18Stage',
-                    [System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
-                } catch {
-                  Start-Sleep -Milliseconds 25
-                }
-              }
-            }
-
-            if ($null -ne $mapping) {
-              $view = $mapping.CreateViewAccessor(0, 4, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
-              while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline) {
-                $stage = $view.ReadInt32(0)
-                if ($stage -gt $maxStage) { $maxStage = $stage }
-                if ($maxStage -ge 2) { break }
-                Start-Sleep -Milliseconds 10
-              }
-              $stage = $view.ReadInt32(0)
-              if ($stage -gt $maxStage) { $maxStage = $stage }
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:GITHUB_WORKSPACE 'runtime-output'
+          if(Test-Path $out){Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue}
+          New-Item -ItemType Directory -Force $out|Out-Null
+          $eden=Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden.exe'
+          $cinc='C:\Emulators\ryujinx\roms\NCE-DIAG-CINC.nro'
+          if(-not(Test-Path $eden -PathType Leaf)){throw "missing Eden GUI: $eden"}
+          if(-not(Test-Path $cinc -PathType Leaf)){throw "missing CINC NRO: $cinc"}
+          $logPath=Join-Path $env:APPDATA 'eden/log/eden_log.txt'
+          if(Test-Path $logPath){Remove-Item $logPath -Force -ErrorAction SilentlyContinue}
+          $p=Start-Process -FilePath $eden -PassThru
+          $ready=$false
+          $until=[DateTime]::UtcNow.AddSeconds(10)
+          while([DateTime]::UtcNow-lt$until -and -not$p.HasExited){$p.Refresh();if($p.MainWindowHandle-ne0){$ready=$true;break};Start-Sleep -Milliseconds 100}
+          $activated=$false
+          if($ready -and -not$p.HasExited){
+            $w=New-Object -ComObject WScript.Shell
+            $activated=$w.AppActivate($p.Id)
+            Start-Sleep -Milliseconds 700
+            if($activated){
+              1..3|ForEach-Object{$w.SendKeys('{DOWN}');Start-Sleep -Milliseconds 180}
+              $w.SendKeys('{ENTER}')
+              Start-Sleep -Milliseconds 1200
+              $w.SendKeys('%n')
+              Start-Sleep -Milliseconds 250
+              $w.SendKeys($cinc)
+              Start-Sleep -Milliseconds 250
+              $w.SendKeys('{ENTER}')
             }
           }
-
-          Start-Sleep -Milliseconds 300
-          if ($null -ne $p) {
-            $wasRunning = -not $p.HasExited
-            if ($wasRunning) {
-              $exitState = 'FORCED_STOP_AFTER_OBSERVATION'
-              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-              try { $p.WaitForExit() } catch {}
-            } else {
-              $exitState = try { ('0x{0:X8}' -f ([uint32]$p.ExitCode)) } catch { 'UNAVAILABLE' }
-            }
-          } else {
-            $wasRunning = $false
-            $exitState = 'NO_BOOTING_PROCESS'
+          $map=$null;$view=$null;$max=-1
+          $deadline=[DateTime]::UtcNow.AddSeconds(35)
+          while(-not$p.HasExited -and [DateTime]::UtcNow-lt$deadline -and $null-eq$map){try{$map=[System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting('Local\EdenNceX18Stage',[System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)}catch{Start-Sleep -Milliseconds 25}}
+          if($null-ne$map){
+            $view=$map.CreateViewAccessor(0,4,[System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
+            while(-not$p.HasExited -and [DateTime]::UtcNow-lt$deadline){$s=$view.ReadInt32(0);if($s-gt$max){$max=$s};if($max-ge2){break};Start-Sleep -Milliseconds 10}
+            $s=$view.ReadInt32(0);if($s-gt$max){$max=$s}
           }
-
-          if ($null -ne $view) { $view.Dispose() }
-          if ($null -ne $mapping) { $mapping.Dispose() }
-
-          if (Test-Path $logPath -PathType Leaf) {
-            Copy-Item $logPath $logOut -Force
-            $logText = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
-            if ($null -eq $logText) { $logText = '' }
-          } else {
-            $logText = ''
-            Set-Content $logOut 'EDEN_GUI_LOG_NOT_FOUND'
-          }
-
-          $bootGame = $logText.Contains('BootGame: Eden starting...')
-          $n30 = $logText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=30')
-          $metadata = $logText.Contains('IMP008_CINC_X18_METADATA')
-          $caller = $logText.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
-          $fallbackPre = $logText.Contains('IMP008_X18_FALLBACK_PRE')
-          $fallbackPost = $logText.Contains('IMP008_X18_FALLBACK_POST')
-          $cascade = $logText.Contains('4001000A')
-
-          if ($maxStage -eq 3) {
-            $classification = 'TRY_REDIRECT_RETURNED_FALSE'
-          } elseif ($maxStage -ge 2 -and $fallbackPre) {
-            $classification = 'BOUNDARY_CROSSED_TO_FALLBACK_DISPATCH'
-          } elseif ($maxStage -ge 2) {
-            $classification = 'TRY_REDIRECT_RETURNED_TRUE__HOST_RETURN_RESUME_BOUNDARY'
-          } elseif ($maxStage -eq 1) {
-            $classification = 'ENTERED_X18_VEH__TRY_REDIRECT_DID_NOT_RETURN_TO_CALLER'
-          } elseif ($maxStage -eq 0) {
-            $classification = 'STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'
-          } elseif (-not $bootGame) {
-            $classification = 'GUI_MENU_2_AND_3_DOWNS_DID_NOT_BOOT'
-          } else {
-            $classification = 'SHARED_STAGE_MAPPING_NOT_OBSERVED'
-          }
-
-          @(
-            "CLASSIFICATION=$classification",
-            "SELECTED_DOWN_COUNT=$selectedDown",
-            "MAX_STAGE=$maxStage",
-            'LAUNCH_MODE=EDEN_QT_GUI_FILE_MENU_POSITION_BATCH',
-            "GAME_PATH=$cinc",
-            'SHARED_STAGE_RUN=34769198199',
-            'SHARED_STAGE_HEAD=753d52b2fe1dbbcf9471b24da33a5c293b6dd7f7',
-            "BOOT_GAME=$bootGame",
-            "EDEN_EXIT_STATE=$exitState",
-            "PROCESS_WAS_RUNNING_AT_OBSERVATION_END=$wasRunning",
-            "N30_REACHED=$n30",
-            "METADATA=$metadata",
-            "CALLER_SETUP=$caller",
-            "FALLBACK_PRE=$fallbackPre",
-            "FALLBACK_POST=$fallbackPost",
-            "CASCADE_4001000A=$cascade",
-            'STAGE_1=ordinary-x18 VEH branch entered',
-            'STAGE_2=TryRedirect returned true before EXCEPTION_CONTINUE_EXECUTION',
-            'STAGE_3=TryRedirect returned false'
-          ) | Set-Content $status
-          Copy-Item $status $stageOut -Force
-          Get-Content $status
-          Write-Output '--- EDEN GUI LOG TAIL ---'
-          Get-Content $logOut -ErrorAction SilentlyContinue | Select-Object -Last 220
-
-      - name: Upload shared-stage GUI menu observation
+          $running=-not$p.HasExited
+          if($running){Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue;try{$p.WaitForExit()}catch{}}
+          if($null-ne$view){$view.Dispose()};if($null-ne$map){$map.Dispose()}
+          if(Test-Path $logPath -PathType Leaf){Copy-Item $logPath (Join-Path $out 'eden_log_gui.txt') -Force;$text=Get-Content $logPath -Raw -ErrorAction SilentlyContinue}else{$text=''}
+          if($null-eq$text){$text=''}
+          $boot=$text.Contains('BootGame: Eden starting...')
+          $n30=$text.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=30')
+          $meta=$text.Contains('IMP008_CINC_X18_METADATA')
+          $caller=$text.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
+          $pre=$text.Contains('IMP008_X18_FALLBACK_PRE')
+          $post=$text.Contains('IMP008_X18_FALLBACK_POST')
+          $cascade=$text.Contains('4001000A')
+          if($max-eq3){$class='TRY_REDIRECT_RETURNED_FALSE'}elseif($max-ge2 -and $pre){$class='BOUNDARY_CROSSED_TO_FALLBACK_DISPATCH'}elseif($max-ge2){$class='TRY_REDIRECT_RETURNED_TRUE__HOST_RETURN_RESUME_BOUNDARY'}elseif($max-eq1){$class='ENTERED_X18_VEH__TRY_REDIRECT_DID_NOT_RETURN_TO_CALLER'}elseif($max-eq0){$class='STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'}elseif(-not$boot){$class='THREE_DOWNS_NO_ALT_F_DID_NOT_BOOT'}else{$class='SHARED_STAGE_MAPPING_NOT_OBSERVED'}
+          @("CLASSIFICATION=$class","MAX_STAGE=$max",'LAUNCH_MODE=EDEN_QT_GUI_THREE_DOWNS_NO_ALT_F',"WINDOW_READY=$ready","APP_ACTIVATED=$activated","BOOT_GAME=$boot","N30_REACHED=$n30","METADATA=$meta","CALLER_SETUP=$caller","FALLBACK_PRE=$pre","FALLBACK_POST=$post","CASCADE_4001000A=$cascade")|Set-Content (Join-Path $out 'runtime-status.txt')
+          Get-Content (Join-Path $out 'runtime-status.txt')
+      - name: Upload observation
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: SELF-HOSTED-SHARED-STAGE-GUI-MENU-BATCH
+          name: SELF-HOSTED-SHARED-STAGE-GUI-THREE-DOWNS
           path: runtime-output/*
           if-no-files-found: warn
           retention-days: 14
