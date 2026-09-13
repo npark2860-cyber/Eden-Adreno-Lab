@@ -25,7 +25,7 @@ initialize_new = """void ArmNce::Initialize() {\n    InitializeWindowsX18StageMa
 text = replace_once(text, initialize_old, initialize_new, "shared-stage initialize")
 
 veh_old = """    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&\n        NCE::WindowsX18FallbackTrap::FindOriginalInstruction(\n            context.Pc, process->GetPostHandlers()).has_value()) {\n        params->lock.store(SpinLockLocked, std::memory_order_release);\n        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,\n                                                     process->GetPostHandlers())) {\n            return EXCEPTION_CONTINUE_EXECUTION;\n        }\n        params->lock.store(SpinLockUnlocked, std::memory_order_release);\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n"""
-veh_new = """    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&\n        NCE::WindowsX18FallbackTrap::FindOriginalInstruction(\n            context.Pc, process->GetPostHandlers()).has_value()) {\n        SetWindowsX18Stage(1);\n        params->lock.store(SpinLockLocked, std::memory_order_release);\n        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,\n                                                     process->GetPostHandlers())) {\n            SetWindowsX18Stage(2);\n            return EXCEPTION_CONTINUE_EXECUTION;\n        }\n        SetWindowsX18Stage(3);\n        params->lock.store(SpinLockUnlocked, std::memory_order_release);\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n"""
+veh_new = """    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&\n        NCE::WindowsX18FallbackTrap::FindOriginalInstruction(\n            context.Pc, process->GetPostHandlers()).has_value()) {\n        SetWindowsX18Stage(1);\n        params->lock.store(SpinLockLocked, std::memory_order_release);\n        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,\n                                                     process->GetPostHandlers())) {\n            SetWindowsX18Stage(2);\n            NCE::WindowsNceTransition::ContinueContext(context);\n        }\n        SetWindowsX18Stage(3);\n        params->lock.store(SpinLockUnlocked, std::memory_order_release);\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n"""
 text = replace_once(text, veh_old, veh_new, "ordinary-x18 shared-stage witness")
 
 resume_old = """        if (breadcrumb_post) {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(\n                &m_guest_ctx, reinterpret_cast<const void*>(breadcrumb_it->second)));\n        } else {\n            hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));\n        }\n        RestoreHostTebStackBounds(teb_stack_bounds);\n"""
@@ -45,5 +45,5 @@ gui_path.write_text(gui_text, encoding="utf-8")
 
 print("NCE_CINC_X18_SHARED_STAGE_INJECTION=PASS")
 print("NCE_CINC_X18_STAGE2_HOST_CONTINUATION_WITNESS=PASS")
-print("NCE_CINC_X18_SHARED_STAGE_SEMANTICS_UNCHANGED=PASS")
+print("NCE_CINC_X18_NTCONTINUE_CANDIDATE=PASS")
 print("NCE_CINC_X18_GUI_CLI_BOOT_DEFERRED=PASS")
