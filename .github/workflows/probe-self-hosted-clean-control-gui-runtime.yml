@@ -45,12 +45,22 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $outDir = Join-Path $env:GITHUB_WORKSPACE 'runtime-output'
+          if (Test-Path $outDir) {
+            Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
           New-Item -ItemType Directory -Force $outDir | Out-Null
 
           $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden.exe'
           $cinc = Join-Path $env:GITHUB_WORKSPACE 'runtime/nce-diag/NCE-DIAG-CINC.nro'
           if (-not (Test-Path $eden -PathType Leaf)) { throw "missing Eden GUI: $eden" }
           if (-not (Test-Path $cinc -PathType Leaf)) { throw "missing CINC NRO: $cinc" }
+
+          $runnerSession = (Get-Process -Id $PID).SessionId
+          $explorerSessions = @(
+            Get-Process explorer -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty SessionId -Unique
+          )
+          $explorerSessionText = if ($explorerSessions.Count -gt 0) { $explorerSessions -join ',' } else { 'NONE' }
 
           $status = Join-Path $outDir 'runtime-status.txt'
           $logOut = Join-Path $outDir 'eden_log_gui.txt'
@@ -59,6 +69,7 @@ jobs:
 
           # main_window.cpp accepts -g <game_path>; use the Qt frontend to match the validated manual run.
           $p = Start-Process -FilePath $eden -ArgumentList @('-g', $cinc) -PassThru
+          $edenSession = try { $p.SessionId } catch { -1 }
           $deadline = [DateTime]::UtcNow.AddSeconds(30)
           $n12 = $false
           $n30 = $false
@@ -95,8 +106,11 @@ jobs:
 
           $wasRunning = -not $p.HasExited
           if ($wasRunning) {
+            $exitState = 'FORCED_STOP_AFTER_OBSERVATION'
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
             try { $p.WaitForExit() } catch {}
+          } else {
+            $exitState = try { [string]$p.ExitCode } catch { 'UNAVAILABLE' }
           }
 
           if (Test-Path $logPath -PathType Leaf) {
@@ -137,6 +151,11 @@ jobs:
             'CLEAN_CONTROL_HEAD=01631df046d8c2b920c642a48261a8d430140392',
             'NCE_DIAG_RUN=34704427664',
             'NCE_DIAG_HEAD=f3b1dfb469fe50ddd5abbbb9b4405148a64c5f84',
+            "RUNNER_USER=$env:USERNAME",
+            "RUNNER_SESSION_ID=$runnerSession",
+            "EXPLORER_SESSION_IDS=$explorerSessionText",
+            "EDEN_SESSION_ID=$edenSession",
+            "EDEN_EXIT_STATE=$exitState",
             "PROCESS_WAS_RUNNING_AT_OBSERVATION_END=$wasRunning",
             "QT_FRONTEND=$qtFrontend",
             "ADRENO_VULKAN=$adrenoVulkan",
