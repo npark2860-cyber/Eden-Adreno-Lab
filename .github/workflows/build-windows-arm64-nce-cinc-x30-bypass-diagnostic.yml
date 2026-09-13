@@ -128,9 +128,16 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'saved-x19 diagnostic injection failed' }
           git diff --check
-          grep -Fq 'IMP008_CINC_SAVED_X19' src/core/arm/nce/arm_nce_windows.cpp
-          grep -Fq 'breadcrumb_index == 29 || breadcrumb_index == 30' src/core/arm/nce/arm_nce_windows.cpp
-          grep -Fq 'Common::ProcessAddress{m_guest_ctx.sp}' src/core/arm/nce/arm_nce_windows.cpp
+          if ($LASTEXITCODE -ne 0) { throw 'saved-x19 diagnostic diff check failed' }
+          if (-not (Select-String -Path 'src/core/arm/nce/arm_nce_windows.cpp' -Pattern 'IMP008_CINC_SAVED_X19' -SimpleMatch -Quiet)) {
+              throw 'missing saved-x19 marker'
+          }
+          if (-not (Select-String -Path 'src/core/arm/nce/arm_nce_windows.cpp' -Pattern 'breadcrumb_index == 29 || breadcrumb_index == 30' -SimpleMatch -Quiet)) {
+              throw 'missing n29/n30 saved-x19 condition'
+          }
+          if (-not (Select-String -Path 'src/core/arm/nce/arm_nce_windows.cpp' -Pattern 'Common::ProcessAddress{m_guest_ctx.sp}' -SimpleMatch -Quiet)) {
+              throw 'missing saved-x19 stack address'
+          }
           echo 'NCE_CINC_SAVED_X19_PATCH=PASS'
 
       - uses: actions/checkout@v7
