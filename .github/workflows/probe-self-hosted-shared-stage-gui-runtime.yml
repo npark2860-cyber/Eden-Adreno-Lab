@@ -1,4 +1,4 @@
-name: Probe Self-Hosted Shared Stage GUI Runtime
+name: Probe Self-Hosted Production GUI Runtime
 on:
   workflow_dispatch:
   push:
@@ -8,21 +8,21 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: probe-self-hosted-shared-stage-gui-runtime
+  group: probe-self-hosted-production-gui-runtime
   cancel-in-progress: false
 jobs:
   runtime:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 10
     steps:
-      - name: Download shared-stage Eden package
+      - name: Download production Eden package
         uses: actions/download-artifact@v7
         with:
-          name: Eden-Windows-nce-cinc-x18-shared-stage-8b7e0e35fca39ee8d45190e168b824984df5951e-arm64-clang-standard.zip
+          name: Eden-Windows-nce-production-05243ec0e2507074a7d29a3d4ef4da9da740c95a-arm64-clang-standard.zip
           path: runtime/eden
           github-token: ${{ github.token }}
           repository: npark2860-cyber/Eden-Adreno-Lab
-          run-id: 34775023412
+          run-id: 34778905214
       - name: Run exact three-down GUI sequence
         shell: powershell
         run: |
@@ -56,34 +56,40 @@ jobs:
               $w.SendKeys('{ENTER}')
             }
           }
-          $map=$null;$view=$null;$max=-1
+          $boot=$false;$guestExit=$false;$cascade=$false;$forceStop=$false;$text=''
           $deadline=[DateTime]::UtcNow.AddSeconds(35)
-          while(-not$p.HasExited -and [DateTime]::UtcNow-lt$deadline -and $null-eq$map){try{$map=[System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting('Local\EdenNceX18Stage',[System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)}catch{Start-Sleep -Milliseconds 25}}
-          if($null-ne$map){
-            $view=$map.CreateViewAccessor(0,4,[System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
-            while(-not$p.HasExited -and [DateTime]::UtcNow-lt$deadline){$s=$view.ReadInt32(0);if($s-gt$max){$max=$s};if($max-ge4 -or $max-eq3){break};Start-Sleep -Milliseconds 1}
-            $s=$view.ReadInt32(0);if($s-gt$max){$max=$s}
+          while(-not$p.HasExited -and [DateTime]::UtcNow-lt$deadline){
+            if(Test-Path $logPath -PathType Leaf){
+              try{$text=Get-Content $logPath -Raw -ErrorAction Stop}catch{$text=''}
+              if($null-eq$text){$text=''}
+              $boot=$text.Contains('BootGame: Eden starting...')
+              $guestExit=$text.Contains('ExitProcess: Process')
+              $cascade=$text.Contains('4001000A')
+              $forceStop=$text.Contains('Force stopping EmuThread')
+              if($guestExit -or $cascade){break}
+            }
+            Start-Sleep -Milliseconds 25
           }
           $running=-not$p.HasExited
           if($running){Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue;try{$p.WaitForExit()}catch{}}
-          if($null-ne$view){$view.Dispose()};if($null-ne$map){$map.Dispose()}
-          if(Test-Path $logPath -PathType Leaf){Copy-Item $logPath (Join-Path $out 'eden_log_gui.txt') -Force;$text=Get-Content $logPath -Raw -ErrorAction SilentlyContinue}else{$text=''}
-          if($null-eq$text){$text=''}
-          $boot=$text.Contains('BootGame: Eden starting...')
-          $n30=$text.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=30')
-          $meta=$text.Contains('IMP008_CINC_X18_METADATA')
-          $caller=$text.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
-          $pre=$text.Contains('IMP008_X18_FALLBACK_PRE')
-          $post=$text.Contains('IMP008_X18_FALLBACK_POST')
-          $cascade=$text.Contains('4001000A')
-          if($max-ge4){$class='HOST_CONTINUATION_REACHED_AFTER_TRY_REDIRECT_TRUE'}elseif($max-eq3){$class='TRY_REDIRECT_RETURNED_FALSE'}elseif($max-ge2 -and $pre){$class='BOUNDARY_CROSSED_TO_FALLBACK_DISPATCH_WITHOUT_STAGE4_OBSERVATION'}elseif($max-ge2){$class='TRY_REDIRECT_RETURNED_TRUE__HOST_CONTINUATION_NOT_OBSERVED'}elseif($max-eq1){$class='ENTERED_X18_VEH__TRY_REDIRECT_DID_NOT_RETURN_TO_CALLER'}elseif($max-eq0){$class='STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'}elseif(-not$boot){$class='THREE_DOWNS_NO_ALT_F_DID_NOT_BOOT'}else{$class='SHARED_STAGE_MAPPING_NOT_OBSERVED'}
-          @("CLASSIFICATION=$class","MAX_STAGE=$max",'STAGE_4=host continuation reached after successful TryRedirect','LAUNCH_MODE=EDEN_QT_GUI_THREE_DOWNS_NO_ALT_F',"WINDOW_READY=$ready","APP_ACTIVATED=$activated","BOOT_GAME=$boot","N30_REACHED=$n30","METADATA=$meta","CALLER_SETUP=$caller","FALLBACK_PRE=$pre","FALLBACK_POST=$post","CASCADE_4001000A=$cascade")|Set-Content (Join-Path $out 'runtime-status.txt')
+          if(Test-Path $logPath -PathType Leaf){
+            Copy-Item $logPath (Join-Path $out 'eden_log_gui.txt') -Force
+            $text=Get-Content $logPath -Raw -ErrorAction SilentlyContinue
+            if($null-eq$text){$text=''}
+            $boot=$text.Contains('BootGame: Eden starting...')
+            $guestExit=$text.Contains('ExitProcess: Process')
+            $cascade=$text.Contains('4001000A')
+            $forceStop=$text.Contains('Force stopping EmuThread')
+          }
+          if($boot -and $guestExit -and -not$cascade){$class='PRODUCTION_CINC_COMPLETED'}elseif(-not$boot){$class='THREE_DOWNS_NO_ALT_F_DID_NOT_BOOT'}elseif($cascade){$class='PRODUCTION_CINC_EXCEPTION_CASCADE'}elseif(-not$guestExit){$class='PRODUCTION_CINC_DID_NOT_COMPLETE'}else{$class='PRODUCTION_CINC_UNCLASSIFIED'}
+          @("CLASSIFICATION=$class",'LAUNCH_MODE=EDEN_QT_GUI_THREE_DOWNS_NO_ALT_F',"WINDOW_READY=$ready","APP_ACTIVATED=$activated","BOOT_GAME=$boot","GUEST_EXIT_PROCESS=$guestExit","FORCE_STOP_EMUTHREAD=$forceStop","CASCADE_4001000A=$cascade","EDEN_WAS_RUNNING_AT_OBSERVATION_END=$running",'PACKAGE_RUN=34778905214','PACKAGE_HEAD=05243ec0e2507074a7d29a3d4ef4da9da740c95a')|Set-Content (Join-Path $out 'runtime-status.txt')
           Get-Content (Join-Path $out 'runtime-status.txt')
+          if($class -ne 'PRODUCTION_CINC_COMPLETED'){exit 1}
       - name: Upload observation
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: SELF-HOSTED-SHARED-STAGE-GUI-THREE-DOWNS
+          name: SELF-HOSTED-PRODUCTION-GUI-THREE-DOWNS
           path: runtime-output/*
           if-no-files-found: warn
           retention-days: 14
