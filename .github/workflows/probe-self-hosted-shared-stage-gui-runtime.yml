@@ -56,8 +56,23 @@ jobs:
           $status = Join-Path $outDir 'runtime-status.txt'
           $stageOut = Join-Path $outDir 'x18-stage.txt'
           $logOut = Join-Path $outDir 'eden_log_gui.txt'
+          $screenOut = Join-Path $outDir 'gui-state.png'
           $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
           if (Test-Path $logPath) { Remove-Item $logPath -Force -ErrorAction SilentlyContinue }
+
+          function Save-Screen([string]$path) {
+            try {
+              Add-Type -AssemblyName System.Windows.Forms
+              Add-Type -AssemblyName System.Drawing
+              $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+              $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+              $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+              $gfx.Dispose()
+              $bmp.Dispose()
+            } catch {}
+          }
 
           $p = Start-Process -FilePath $eden -PassThru
           $windowReady = $false
@@ -74,18 +89,20 @@ jobs:
           if ($windowReady -and -not $p.HasExited) {
             $wshell = New-Object -ComObject WScript.Shell
             $appActivated = $wshell.AppActivate($p.Id)
-            Start-Sleep -Milliseconds 300
+            Start-Sleep -Milliseconds 1000
             if ($appActivated) {
               $wshell.SendKeys('%f')
-              Start-Sleep -Milliseconds 250
+              Start-Sleep -Milliseconds 600
               $wshell.SendKeys('o')
               $loadDialogInvoked = $true
-              Start-Sleep -Milliseconds 700
+              Start-Sleep -Milliseconds 2000
               $wshell.SendKeys('%n')
-              Start-Sleep -Milliseconds 200
+              Start-Sleep -Milliseconds 400
               $wshell.SendKeys($cinc)
+              Start-Sleep -Milliseconds 300
               $wshell.SendKeys('{ENTER}')
               $pathSubmitted = $true
+              Start-Sleep -Milliseconds 1200
             }
           }
 
@@ -117,6 +134,8 @@ jobs:
           }
 
           Start-Sleep -Milliseconds 300
+          if ($maxStage -lt 0) { Save-Screen $screenOut }
+
           $wasRunning = -not $p.HasExited
           if ($wasRunning) {
             $exitState = 'FORCED_STOP_AFTER_OBSERVATION'
@@ -138,6 +157,7 @@ jobs:
             Set-Content $logOut 'EDEN_GUI_LOG_NOT_FOUND'
           }
 
+          $bootGame = $logText.Contains('BootGame: Eden starting...')
           $n30 = $logText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=30')
           $metadata = $logText.Contains('IMP008_CINC_X18_METADATA')
           $caller = $logText.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
@@ -155,6 +175,8 @@ jobs:
             $classification = 'ENTERED_X18_VEH__TRY_REDIRECT_DID_NOT_RETURN_TO_CALLER'
           } elseif ($maxStage -eq 0) {
             $classification = 'STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'
+          } elseif (-not $bootGame) {
+            $classification = 'GUI_FILE_LOAD_NOT_STARTED'
           } else {
             $classification = 'SHARED_STAGE_MAPPING_NOT_OBSERVED'
           }
@@ -171,6 +193,7 @@ jobs:
             "APP_ACTIVATED=$appActivated",
             "LOAD_DIALOG_INVOKED=$loadDialogInvoked",
             "PATH_SUBMITTED=$pathSubmitted",
+            "BOOT_GAME=$bootGame",
             "EDEN_EXIT_STATE=$exitState",
             "PROCESS_WAS_RUNNING_AT_OBSERVATION_END=$wasRunning",
             "N30_REACHED=$n30",
