@@ -113,11 +113,22 @@ jobs:
 
           arm_path = Path("src/core/arm/nce/arm_nce_windows.cpp")
           arm = arm_path.read_text(encoding="utf-8")
+
+          # LOG_ERROR inside a VEH can itself raise Windows debug-print exceptions. The unknown
+          # observer also logs exceptions, so without this early filter 0x40010006/0x4001000A
+          # recursively re-enter the VEH and consume the guest stack.
+          filter_old = """    auto* const guest = NCE::WindowsExceptionContext::CurrentGuestContext();\n"""
+          filter_new = """    const auto diagnostic_code = exception->ExceptionRecord->ExceptionCode;\n    if (diagnostic_code == 0x40010006UL || diagnostic_code == 0x4001000AUL) {\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n\n    auto* const guest = NCE::WindowsExceptionContext::CurrentGuestContext();\n"""
+          if arm.count(filter_old) != 1:
+              raise SystemExit(f"debug-print filter anchor count={arm.count(filter_old)}")
+          arm = arm.replace(filter_old, filter_new, 1)
+
           arm_old = """        params->lock.store(SpinLockUnlocked, std::memory_order_release);\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n\n    if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {\n"""
           arm_new = """        params->lock.store(SpinLockUnlocked, std::memory_order_release);\n        return EXCEPTION_CONTINUE_SEARCH;\n    }\n\n    // Diagnostic-only BRK emitted by the svc 0x27 / module+0x7708 generated post-handler.\n    // Observe the real CPU register state at the final generated-code boundary, then skip the\n    // BRK and continue into the original direct branch without modifying guest registers.\n    const u64 diagnostic_break_pc =\n        reinterpret_cast<u64>(exception->ExceptionRecord->ExceptionAddress);\n    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&\n        NCE::WindowsPatchCodeMetadata::Contains(diagnostic_break_pc,\n                                                process->GetPostHandlers())) {\n        static std::atomic_uint32_t cinc_post_branch_probe_count{0};\n        const u32 probe_index =\n            cinc_post_branch_probe_count.fetch_add(1, std::memory_order_relaxed);\n        LOG_ERROR(Core_ARM,\n                  \"IMP008_CINC_POST_BRANCH_BRK n={} site={:016X} context_pc={:016X} sp={:016X} x16={:016X} x17={:016X} x30={:016X}\",\n                  probe_index, diagnostic_break_pc, context.Pc, context.Sp, context.X[16],\n                  context.X[17], context.X[30]);\n        context.Pc = diagnostic_break_pc + sizeof(u32);\n        return EXCEPTION_CONTINUE_EXECUTION;\n    }\n\n    if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {\n"""
           if arm.count(arm_old) != 1:
               raise SystemExit(f"VEH breakpoint anchor count={arm.count(arm_old)}")
-          arm_path.write_text(arm.replace(arm_old, arm_new, 1), encoding="utf-8")
+          arm = arm.replace(arm_old, arm_new, 1)
+          arm_path.write_text(arm, encoding="utf-8")
 
           print("NCE_CINC_POST_BRANCH_BRK_INJECTION=PASS")
           '@ | python -
@@ -131,6 +142,8 @@ jobs:
           git diff --check
           grep -Fq 'svc_id == 0x27U && module_dest == 0x7708U' src/core/arm/nce/patcher.cpp
           grep -Fq 'cg.dw(0xD43E0000U);' src/core/arm/nce/patcher.cpp
+          grep -Fq 'diagnostic_code == 0x40010006UL' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'diagnostic_code == 0x4001000AUL' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_CINC_POST_BRANCH_BRK' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'diagnostic_break_pc + sizeof(u32)' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
