@@ -1,0 +1,101 @@
+name: Probe Self-Hosted GUI Launch Control
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-self-hosted-gui-launch-control.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: probe-self-hosted-gui-launch-control
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Download validated CLEAN CONTROL Eden package
+        uses: actions/download-artifact@v7
+        with:
+          name: Eden-Windows-nce-cinc-x18-veh-clean-control-01631df046d8c2b920c642a48261a8d430140392-arm64-clang-standard.zip
+          path: runtime/eden
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          run-id: 34760701668
+
+      - name: Launch Qt GUI without game argument
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = Join-Path $env:GITHUB_WORKSPACE 'gui-launch-control-output'
+          if (Test-Path $outDir) {
+            Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          New-Item -ItemType Directory -Force $outDir | Out-Null
+
+          $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden.exe'
+          if (-not (Test-Path $eden -PathType Leaf)) { throw "missing Eden GUI: $eden" }
+
+          $runnerSession = (Get-Process -Id $PID).SessionId
+          $explorerSessions = @(
+            Get-Process explorer -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty SessionId -Unique
+          )
+          $explorerSessionText = if ($explorerSessions.Count -gt 0) { $explorerSessions -join ',' } else { 'NONE' }
+
+          $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
+          $beforeWrite = if (Test-Path $logPath -PathType Leaf) { (Get-Item $logPath).LastWriteTimeUtc } else { [DateTime]::MinValue }
+
+          $p = Start-Process -FilePath $eden -PassThru
+          $edenSession = try { $p.SessionId } catch { -1 }
+          Start-Sleep -Seconds 5
+
+          $wasRunning = -not $p.HasExited
+          if ($wasRunning) {
+            $exitState = 'RUNNING_AFTER_5S'
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            try { $p.WaitForExit() } catch {}
+          } else {
+            $exitState = try { [string]$p.ExitCode } catch { 'UNAVAILABLE' }
+          }
+
+          $logUpdated = $false
+          if (Test-Path $logPath -PathType Leaf) {
+            $logUpdated = (Get-Item $logPath).LastWriteTimeUtc -gt $beforeWrite
+            Copy-Item $logPath (Join-Path $outDir 'eden_log_gui_control.txt') -Force
+          } else {
+            Set-Content (Join-Path $outDir 'eden_log_gui_control.txt') 'EDEN_GUI_LOG_NOT_FOUND'
+          }
+
+          @(
+            'CONTROL=GUI_NO_GAME_ARGUMENT',
+            'CLEAN_CONTROL_RUN=34760701668',
+            'CLEAN_CONTROL_HEAD=01631df046d8c2b920c642a48261a8d430140392',
+            "RUNNER_USER=$env:USERNAME",
+            "RUNNER_SESSION_ID=$runnerSession",
+            "EXPLORER_SESSION_IDS=$explorerSessionText",
+            "EDEN_SESSION_ID=$edenSession",
+            "EDEN_EXIT_STATE=$exitState",
+            "PROCESS_WAS_RUNNING_AFTER_5S=$wasRunning",
+            "LOG_UPDATED=$logUpdated",
+            "LOG_PATH=$logPath"
+          ) | Set-Content (Join-Path $outDir 'control-status.txt')
+
+          Get-Content (Join-Path $outDir 'control-status.txt')
+
+      - name: Upload GUI launch control observation
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: SELF-HOSTED-GUI-LAUNCH-CONTROL
+          path: gui-launch-control-output/*
+          if-no-files-found: warn
+          retention-days: 14
