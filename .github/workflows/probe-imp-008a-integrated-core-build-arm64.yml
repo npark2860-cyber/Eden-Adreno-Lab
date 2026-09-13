@@ -15,7 +15,7 @@ permissions:
 jobs:
   integrated-core-build:
     runs-on: windows-11-arm
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     env:
       TARGET: arm64
@@ -111,3 +111,40 @@ jobs:
           set -euo pipefail
           cmake --build build --target core
           echo 'IMP008A_WINDOWS_NORMAL_ARM64_CORE_BUILD=PASS'
+
+      - name: Build full Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          echo 'IMP008A_WINDOWS_PRODUCTION_FULL_BUILD=PASS'
+
+      - name: Package Windows ARM64 Eden
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          ARTIFACT_REF: nce-production-${{ github.sha }}
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          echo 'IMP008A_WINDOWS_PRODUCTION_PACKAGE=PASS'
+
+      - name: Prepare package upload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path eden/artifacts -File)
+          if ($files.Count -ne 1) { throw "Expected one package; found $($files.Count)" }
+          New-Item -ItemType Directory -Force upload | Out-Null
+          Copy-Item $files[0].FullName upload/ -Force
+
+      - name: Upload production package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-PRODUCTION-${{ github.sha }}
+          archive: false
+          path: upload/*
+          retention-days: 14
