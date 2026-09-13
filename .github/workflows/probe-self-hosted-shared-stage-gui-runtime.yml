@@ -1,4 +1,4 @@
-name: Probe Self-Hosted Production GUI Runtime
+name: Probe Self-Hosted TEB-Only Production GUI Runtime
 on:
   workflow_dispatch:
   push:
@@ -15,14 +15,14 @@ jobs:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 10
     steps:
-      - name: Download production Eden package
+      - name: Download TEB-only Eden package
         uses: actions/download-artifact@v7
         with:
-          name: Eden-Windows-nce-production-05243ec0e2507074a7d29a3d4ef4da9da740c95a-arm64-clang-standard.zip
+          name: Eden-Windows-nce-teb-only-1d869709ff759087e44607382b5a920a4f388da5-arm64-clang-standard.zip
           path: runtime/eden
           github-token: ${{ github.token }}
           repository: npark2860-cyber/Eden-Adreno-Lab
-          run-id: 34778905214
+          run-id: 34780749517
       - name: Run exact three-down GUI sequence
         shell: powershell
         run: |
@@ -81,15 +81,15 @@ jobs:
             $cascade=$text.Contains('4001000A')
             $forceStop=$text.Contains('Force stopping EmuThread')
           }
-          if($boot -and $guestExit -and -not$cascade){$class='PRODUCTION_CINC_COMPLETED'}elseif(-not$boot){$class='THREE_DOWNS_NO_ALT_F_DID_NOT_BOOT'}elseif($cascade){$class='PRODUCTION_CINC_EXCEPTION_CASCADE'}elseif(-not$guestExit){$class='PRODUCTION_CINC_DID_NOT_COMPLETE'}else{$class='PRODUCTION_CINC_UNCLASSIFIED'}
-          @("CLASSIFICATION=$class",'LAUNCH_MODE=EDEN_QT_GUI_THREE_DOWNS_NO_ALT_F',"WINDOW_READY=$ready","APP_ACTIVATED=$activated","BOOT_GAME=$boot","GUEST_EXIT_PROCESS=$guestExit","FORCE_STOP_EMUTHREAD=$forceStop","CASCADE_4001000A=$cascade","EDEN_WAS_RUNNING_AT_OBSERVATION_END=$running",'PACKAGE_RUN=34778905214','PACKAGE_HEAD=05243ec0e2507074a7d29a3d4ef4da9da740c95a')|Set-Content (Join-Path $out 'runtime-status.txt')
+          if($boot -and $guestExit -and -not$cascade){$class='TEB_ONLY_CINC_COMPLETED'}elseif(-not$boot){$class='THREE_DOWNS_NO_ALT_F_DID_NOT_BOOT'}elseif($cascade){$class='TEB_ONLY_CINC_EXCEPTION_CASCADE'}elseif(-not$guestExit){$class='TEB_ONLY_CINC_DID_NOT_COMPLETE'}else{$class='TEB_ONLY_CINC_UNCLASSIFIED'}
+          @("CLASSIFICATION=$class",'LAUNCH_MODE=EDEN_QT_GUI_THREE_DOWNS_NO_ALT_F',"WINDOW_READY=$ready","APP_ACTIVATED=$activated","BOOT_GAME=$boot","GUEST_EXIT_PROCESS=$guestExit","FORCE_STOP_EMUTHREAD=$forceStop","CASCADE_4001000A=$cascade","EDEN_WAS_RUNNING_AT_OBSERVATION_END=$running",'PACKAGE_RUN=34780749517','PACKAGE_HEAD=1d869709ff759087e44607382b5a920a4f388da5')|Set-Content (Join-Path $out 'runtime-status.txt')
           Get-Content (Join-Path $out 'runtime-status.txt')
-          if($class -ne 'PRODUCTION_CINC_COMPLETED'){exit 1}
+          if($class -ne 'TEB_ONLY_CINC_COMPLETED'){exit 1}
       - name: Upload observation
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: SELF-HOSTED-PRODUCTION-GUI-THREE-DOWNS
+          name: SELF-HOSTED-TEB-ONLY-GUI-THREE-DOWNS
           path: runtime-output/*
           if-no-files-found: warn
           retention-days: 14
