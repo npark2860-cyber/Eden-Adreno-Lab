@@ -1,0 +1,61 @@
+name: Probe Self-Hosted NCE Runtime Inputs
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-self-hosted-nce-runtime-inputs.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: probe-self-hosted-nce-runtime-inputs
+  cancel-in-progress: false
+
+jobs:
+  inputs:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Download validated CINC clean-control Eden package
+        uses: actions/download-artifact@v7
+        with:
+          name: Eden-Windows-nce-cinc-x18-veh-clean-control-01631df046d8c2b920c642a48261a8d430140392-arm64-clang-standard.zip
+          path: runtime/eden
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          run-id: 34760701668
+
+      - name: Download validated NCE-DIAG executables
+        uses: actions/download-artifact@v7
+        with:
+          name: NCE-DIAG-0.2.1-executables
+          path: runtime/nce-diag
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/NCE-DIAG
+          run-id: 34704427664
+
+      - name: Verify exact runtime inputs
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden-cli.exe'
+          $gui = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden.exe'
+          $cinc = Join-Path $env:GITHUB_WORKSPACE 'runtime/nce-diag/NCE-DIAG-CINC.nro'
+          $suite = Join-Path $env:GITHUB_WORKSPACE 'runtime/nce-diag/NCE-DIAG.nro'
+          foreach ($path in @($eden, $gui, $cinc, $suite)) {
+            if (-not (Test-Path $path -PathType Leaf)) { throw "missing runtime input: $path" }
+            $item = Get-Item $path
+            $hash = Get-FileHash $path -Algorithm SHA256
+            Write-Output "INPUT=$($item.FullName) SIZE=$($item.Length) SHA256=$($hash.Hash)"
+          }
+          Write-Output 'CLEAN_CONTROL_RUN=34760701668'
+          Write-Output 'CLEAN_CONTROL_HEAD=01631df046d8c2b920c642a48261a8d430140392'
+          Write-Output 'NCE_DIAG_RUN=34704427664'
+          Write-Output 'NCE_DIAG_HEAD=f3b1dfb469fe50ddd5abbbb9b4405148a64c5f84'
+          Write-Output 'SELF_HOSTED_NCE_RUNTIME_INPUTS=PASS'
