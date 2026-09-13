@@ -1,4 +1,4 @@
-name: Build Windows ARM64 NCE CINC X30 Bypass Diagnostic
+name: Build Windows ARM64 NCE CINC Saved X19 Diagnostic
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-arm64-nce-cinc-x30-bypass-diagnostic
+  group: windows-arm64-nce-cinc-saved-x19-diagnostic
   cancel-in-progress: false
 
 jobs:
@@ -31,6 +31,7 @@ jobs:
       RELEASE_PGO_REPO: Eden-CI/PGO
       PROD_SHA: e9665e6457ba163f91a42d804862acac0d486378
       V3_WORKFLOW: .github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml
+      UNKNOWN_WORKFLOW: .github/workflows/build-windows-arm64-nce-unknown-exception-diagnostic.yml
       BREADCRUMB_WORKFLOW: .github/workflows/build-windows-arm64-nce-reentry-breadcrumb-diagnostic.yml
 
     steps:
@@ -48,69 +49,89 @@ jobs:
           git cat-file -e "$PROD_SHA^{commit}"
           git diff --quiet "$PROD_SHA" HEAD -- src/common src/core src/video_core CMakeLists.txt
           test -f "$V3_WORKFLOW"
+          test -f "$UNKNOWN_WORKFLOW"
           test -f "$BREADCRUMB_WORKFLOW"
-          grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' "$BREADCRUMB_WORKFLOW"
-          echo 'NCE_CINC_X30_BYPASS_GUARD=PASS'
+          grep -Fq 'IMP008_CINC_STACK_LR' "$BREADCRUMB_WORKFLOW"
+          echo 'NCE_CINC_SAVED_X19_GUARD=PASS'
 
-      - name: Replay validated V3
+      - name: Replay validated V3 and unknown observer
         shell: pwsh
         working-directory: eden
         run: |
           @'
           from pathlib import Path
           import textwrap
-          path = Path(".github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml")
-          text = path.read_text(encoding="utf-8")
-          start_marker = "          @'\n"
-          end_marker = "\n          '@ | python -"
-          start = text.index(start_marker) + len(start_marker)
-          end = text.index(end_marker, start)
-          exec(compile(textwrap.dedent(text[start:end]), f"<{path}>", "exec"), {})
-          print("NCE_CINC_X30_BYPASS_V3_REPLAY=PASS")
+
+          def replay(path, section=None):
+              text = Path(path).read_text(encoding="utf-8")
+              if section is not None:
+                  text = text[text.index(section):]
+              start_marker = "          @'\n"
+              end_marker = "\n          '@ | python -"
+              start = text.index(start_marker) + len(start_marker)
+              end = text.index(end_marker, start)
+              script = textwrap.dedent(text[start:end])
+              exec(compile(script, f"<{path}>", "exec"), {})
+
+          replay(".github/workflows/build-windows-arm64-nce-teb-bidirectional-return-validation.yml")
+          replay(".github/workflows/build-windows-arm64-nce-unknown-exception-diagnostic.yml",
+                 "      - name: Inject unknown guest exception observer")
+          print("NCE_CINC_SAVED_X19_BASE_REPLAY=PASS")
           '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'validated V3 replay failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'base diagnostic replay failed' }
 
-      - name: Replay breadcrumb instrumentation
+      - name: Replay breadcrumb and move one-shot probe to saved x19
         shell: pwsh
         working-directory: eden
         run: |
           @'
           from pathlib import Path
           import textwrap
-          path = Path(".github/workflows/build-windows-arm64-nce-reentry-breadcrumb-diagnostic.yml")
-          text = path.read_text(encoding="utf-8")
+
+          workflow_path = Path(".github/workflows/build-windows-arm64-nce-reentry-breadcrumb-diagnostic.yml")
+          workflow = workflow_path.read_text(encoding="utf-8")
           section = "      - name: Inject host-stack exception observer and reentry breadcrumbs"
-          text = text[text.index(section):]
+          workflow = workflow[workflow.index(section):]
           start_marker = "          @'\n"
           end_marker = "\n          '@ | python -"
-          start = text.index(start_marker) + len(start_marker)
-          end = text.index(end_marker, start)
-          exec(compile(textwrap.dedent(text[start:end]), "<breadcrumb-injection>", "exec"), {})
-          print("NCE_CINC_X30_BYPASS_BREADCRUMB_REPLAY=PASS")
-          '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'breadcrumb replay failed' }
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          exec(compile(script, "<validated-breadcrumb-injection>", "exec"), {})
 
-      - name: Inject svc27 x30 bypass
-        shell: pwsh
-        working-directory: eden
-        run: |
-          @'
-          from pathlib import Path
-          p = Path("src/core/arm/nce/patcher.cpp")
-          s = p.read_text(encoding="utf-8")
-          old = """    if (is_pre)\n        this->BranchToModulePre(module_dest);\n    else\n        this->BranchToModule(module_dest);\n#else\n"""
-          new = """    // Diagnostic-only semantic equivalent for the NCE-DIAG svcOutputDebugString\n    // return stub: module+0x7708 is `ret`, therefore B + RET is equivalent to BR x30.\n    // Bypass only this exact svc/destination pair to isolate the branch/RET boundary.\n    if (svc_id == 0x27U && module_dest == 0x7708U) {\n        cg.dw(0xD61F03C0U); // br x30\n    } else if (is_pre) {\n        this->BranchToModulePre(module_dest);\n    } else {\n        this->BranchToModule(module_dest);\n    }\n#else\n"""
-          if s.count(old) != 1:
-              raise SystemExit(f"svc branch anchor count={s.count(old)}")
-          p.write_text(s.replace(old, new, 1), encoding="utf-8")
-          print("NCE_CINC_X30_BYPASS_INJECTION=PASS")
+          path = Path("src/core/arm/nce/arm_nce_windows.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          old_cond = "breadcrumb_index == 30 && breadcrumb_post && m_guest_ctx.svc == 0x27U"
+          new_cond = "(breadcrumb_index == 29 || breadcrumb_index == 30) && breadcrumb_post && m_guest_ctx.svc == 0x27U"
+          if text.count(old_cond) != 1:
+              raise SystemExit(f"terminal condition anchor count={text.count(old_cond)}")
+          text = text.replace(old_cond, new_cond, 1)
+
+          replacements = [
+              ("static u64 cinc_saved_lr{};", "static u64 cinc_saved_x19{};"),
+              ("cinc_saved_lr = 0xFFFFFFFFFFFFFFFFULL;", "cinc_saved_x19 = 0xFFFFFFFFFFFFFFFFULL;"),
+              ("Common::ProcessAddress{m_guest_ctx.sp + 8}, &cinc_saved_lr, sizeof(cinc_saved_lr));",
+               "Common::ProcessAddress{m_guest_ctx.sp}, &cinc_saved_x19, sizeof(cinc_saved_x19));"),
+              ("IMP008_CINC_STACK_LR n={} sp={:016X} read={} saved_lr={:016X} x30={:016X}",
+               "IMP008_CINC_SAVED_X19 n={} sp={:016X} read={} saved_x19={:016X} x30={:016X}"),
+              ("breadcrumb_index, m_guest_ctx.sp, cinc_saved_lr_read, cinc_saved_lr,",
+               "breadcrumb_index, m_guest_ctx.sp, cinc_saved_lr_read, cinc_saved_x19,"),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f"saved-x19 anchor count={text.count(old)} for {old}")
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding="utf-8")
+          print("NCE_CINC_SAVED_X19_INJECTION=PASS")
           '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'x30 bypass injection failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'saved-x19 diagnostic injection failed' }
           git diff --check
-          grep -Fq 'svc_id == 0x27U && module_dest == 0x7708U' src/core/arm/nce/patcher.cpp
-          grep -Fq 'cg.dw(0xD61F03C0U);' src/core/arm/nce/patcher.cpp
-          grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
-          grep -Fq 'IMP008_CINC_STACK_LR' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008_CINC_SAVED_X19' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'breadcrumb_index == 29 || breadcrumb_index == 30' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'Common::ProcessAddress{m_guest_ctx.sp}' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_CINC_SAVED_X19_PATCH=PASS'
 
       - uses: actions/checkout@v7
         with:
@@ -121,6 +142,7 @@ jobs:
       - name: Install fixed CI scripts
         shell: bash
         run: |
+          set -euo pipefail
           rm -rf eden/.ci
           cp -a ci/.ci eden/.ci
 
@@ -146,8 +168,8 @@ jobs:
           set -euo pipefail
           ./.ci/build/configure.sh -DCCACHE_PATH=sccache
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
-          grep -Fq 'cg.dw(0xD61F03C0U);' src/core/arm/nce/patcher.cpp
-          echo 'NCE_CINC_X30_BYPASS_CONFIGURE=PASS'
+          grep -Fq 'IMP008_CINC_SAVED_X19' src/core/arm/nce/arm_nce_windows.cpp
+          echo 'NCE_CINC_SAVED_X19_CONFIGURE=PASS'
 
       - name: Build full Windows ARM64 Eden GUI
         shell: msys2 {0}
@@ -156,19 +178,19 @@ jobs:
           set -euo pipefail
           cmake --build build
           test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
-          echo 'NCE_CINC_X30_BYPASS_BUILD=PASS'
+          echo 'NCE_CINC_SAVED_X19_BUILD=PASS'
 
       - name: Package Windows ARM64 Eden
         shell: msys2 {0}
         working-directory: eden
         env:
-          ARTIFACT_REF: nce-cinc-x30-bypass-${{ github.sha }}
+          ARTIFACT_REF: nce-cinc-saved-x19-${{ github.sha }}
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
-          echo 'NCE_CINC_X30_BYPASS_PACKAGE=PASS'
+          echo 'NCE_CINC_SAVED_X19_PACKAGE=PASS'
 
       - name: Prepare upload
         shell: pwsh
@@ -180,7 +202,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-CINC-X30-BYPASS-${{ github.sha }}
+          name: Eden-Windows-ARM64-NCE-CINC-SAVED-X19-${{ github.sha }}
           archive: false
           path: upload/*
           retention-days: 14
