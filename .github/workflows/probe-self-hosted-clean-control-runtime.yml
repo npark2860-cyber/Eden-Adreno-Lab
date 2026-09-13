@@ -1,0 +1,119 @@
+name: Probe Self-Hosted Clean Control Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-self-hosted-clean-control-runtime.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: probe-self-hosted-clean-control-runtime
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Download validated CLEAN CONTROL Eden package
+        uses: actions/download-artifact@v7
+        with:
+          name: Eden-Windows-nce-cinc-x18-veh-clean-control-01631df046d8c2b920c642a48261a8d430140392-arm64-clang-standard.zip
+          path: runtime/eden
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          run-id: 34760701668
+
+      - name: Download validated NCE-DIAG executables
+        uses: actions/download-artifact@v7
+        with:
+          name: NCE-DIAG-0.2.1-executables
+          path: runtime/nce-diag
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/NCE-DIAG
+          run-id: 34704427664
+
+      - name: Run CLEAN CONTROL CINC headless
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = Join-Path $env:GITHUB_WORKSPACE 'runtime-output'
+          $isolatedAppData = Join-Path $outDir 'appdata'
+          $isolatedLocalAppData = Join-Path $outDir 'localappdata'
+          New-Item -ItemType Directory -Force $outDir,$isolatedAppData,$isolatedLocalAppData | Out-Null
+
+          $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden-cli.exe'
+          $cinc = Join-Path $env:GITHUB_WORKSPACE 'runtime/nce-diag/NCE-DIAG-CINC.nro'
+          if (-not (Test-Path $eden -PathType Leaf)) { throw "missing eden CLI: $eden" }
+          if (-not (Test-Path $cinc -PathType Leaf)) { throw "missing CINC NRO: $cinc" }
+
+          $env:APPDATA = $isolatedAppData
+          $env:LOCALAPPDATA = $isolatedLocalAppData
+
+          $stdout = Join-Path $outDir 'eden-cli.stdout.txt'
+          $stderr = Join-Path $outDir 'eden-cli.stderr.txt'
+          $status = Join-Path $outDir 'runtime-status.txt'
+
+          $p = Start-Process -FilePath $eden -ArgumentList @('--null-render', $cinc) `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+
+          $finished = $p.WaitForExit(30000)
+          if (-not $finished) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            $p.WaitForExit()
+          }
+
+          $exitCode = $p.ExitCode
+          $logCandidates = @(
+            (Join-Path $isolatedAppData 'eden/log/eden_log.txt'),
+            (Join-Path $isolatedAppData 'yuzu/log/yuzu_log.txt'),
+            (Join-Path $isolatedLocalAppData 'eden/log/eden_log.txt')
+          )
+          $logPath = $logCandidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+          $logOut = Join-Path $outDir 'eden_log.txt'
+          if ($logPath) {
+            Copy-Item $logPath $logOut -Force
+          } else {
+            Set-Content $logOut 'EDEN_LOG_NOT_FOUND'
+          }
+
+          $logText = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
+          $metadata = $null -ne $logText -and $logText.Contains('IMP008_CINC_X18_METADATA')
+          $caller = $null -ne $logText -and $logText.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
+          $fallbackPre = $null -ne $logText -and $logText.Contains('IMP008_X18_FALLBACK_PRE')
+          $fallbackPost = $null -ne $logText -and $logText.Contains('IMP008_X18_FALLBACK_POST')
+          $cascade = $null -ne $logText -and $logText.Contains('4001000A')
+
+          @(
+            'BASELINE=CINC_X18_VEH_CLEAN_CONTROL',
+            'CLEAN_CONTROL_RUN=34760701668',
+            'CLEAN_CONTROL_HEAD=01631df046d8c2b920c642a48261a8d430140392',
+            'NCE_DIAG_RUN=34704427664',
+            'NCE_DIAG_HEAD=f3b1dfb469fe50ddd5abbbb9b4405148a64c5f84',
+            "FINISHED_WITHIN_30S=$finished",
+            "EXIT_CODE=$exitCode",
+            "METADATA=$metadata",
+            "CALLER_SETUP=$caller",
+            "FALLBACK_PRE=$fallbackPre",
+            "FALLBACK_POST=$fallbackPost",
+            "CASCADE_4001000A=$cascade",
+            "LOG_PATH=$logPath"
+          ) | Set-Content $status
+          Get-Content $status
+
+      - name: Upload CLEAN CONTROL runtime observation
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: SELF-HOSTED-CLEAN-CONTROL-RUNTIME
+          archive: false
+          path: runtime-output/*
+          if-no-files-found: warn
+          retention-days: 14
