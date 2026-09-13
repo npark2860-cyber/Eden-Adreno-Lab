@@ -106,7 +106,7 @@ jobs:
           patcher_path = Path("src/core/arm/nce/patcher.cpp")
           patcher = patcher_path.read_text(encoding="utf-8")
           patcher_old = """    this->UnlockContext(cg);\n    cg.LDR(X16, X17, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 16);\n    cg.LDR(X17, X17, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 17);\n\n    if (is_pre)\n"""
-          patcher_new = """    this->UnlockContext(cg);\n    cg.LDR(X16, X17, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 16);\n    cg.LDR(X17, X17, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 17);\n\n    // Diagnostic-only: trap immediately before the direct branch for the NCE-DIAG\n    // svcOutputDebugString post-SVC destination (module + 0x7708). BRK #0x0E27.\n    if (svc_id == 0x27U && module_dest == 0x7708U) {\n        cg.dw(0xD421C4E0U);\n    }\n\n    if (is_pre)\n"""
+          patcher_new = """    this->UnlockContext(cg);\n    cg.LDR(X16, X17, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 16);\n    cg.LDR(X17, X17, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 17);\n\n    // Diagnostic-only: trap immediately before the direct branch for the NCE-DIAG\n    // svcOutputDebugString post-SVC destination (module + 0x7708). BRK #0xF000.\n    if (svc_id == 0x27U && module_dest == 0x7708U) {\n        cg.dw(0xD43E0000U);\n    }\n\n    if (is_pre)\n"""
           if patcher.count(patcher_old) != 1:
               raise SystemExit(f"post-handler branch anchor count={patcher.count(patcher_old)}")
           patcher_path.write_text(patcher.replace(patcher_old, patcher_new, 1), encoding="utf-8")
@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           git diff --check
           grep -Fq 'svc_id == 0x27U && module_dest == 0x7708U' src/core/arm/nce/patcher.cpp
-          grep -Fq 'cg.dw(0xD421C4E0U);' src/core/arm/nce/patcher.cpp
+          grep -Fq 'cg.dw(0xD43E0000U);' src/core/arm/nce/patcher.cpp
           grep -Fq 'IMP008_CINC_POST_BRANCH_BRK' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'diagnostic_break_pc + sizeof(u32)' src/core/arm/nce/arm_nce_windows.cpp
           grep -Fq 'IMP008_REENTRY_BREADCRUMB_PRE' src/core/arm/nce/arm_nce_windows.cpp
