@@ -82,7 +82,7 @@ jobs:
           diff --git a/src/core/arm/nce/arm_nce_windows.cpp b/src/core/arm/nce/arm_nce_windows.cpp
           --- a/src/core/arm/nce/arm_nce_windows.cpp
           +++ b/src/core/arm/nce/arm_nce_windows.cpp
-          @@ -278,13 +278,5 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
+          @@ -279,13 +279,5 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
                for (;;) {
                    NCE::CurrentNceContext::Install(thread_params);
           -
@@ -96,7 +96,7 @@ jobs:
                    if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
                        hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
                            &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
-          @@ -295,7 +287,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
+          @@ -293,7 +285,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
                        hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
                    }
           
