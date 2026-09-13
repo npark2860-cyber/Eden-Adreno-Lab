@@ -82,7 +82,7 @@ jobs:
           diff --git a/src/core/arm/nce/arm_nce_windows.cpp b/src/core/arm/nce/arm_nce_windows.cpp
           --- a/src/core/arm/nce/arm_nce_windows.cpp
           +++ b/src/core/arm/nce/arm_nce_windows.cpp
-          @@ -278,14 +278,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
+          @@ -278,13 +278,5 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
                for (;;) {
                    NCE::CurrentNceContext::Install(thread_params);
           -
