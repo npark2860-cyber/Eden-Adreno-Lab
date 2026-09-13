@@ -173,7 +173,7 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         params->lock.store(SpinLockLocked, std::memory_order_release);
         if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,
                                                      process->GetPostHandlers())) {
-            return EXCEPTION_CONTINUE_EXECUTION;
+            NCE::WindowsNceTransition::ContinueContext(context);
         }
         params->lock.store(SpinLockUnlocked, std::memory_order_release);
         return EXCEPTION_CONTINUE_SEARCH;
