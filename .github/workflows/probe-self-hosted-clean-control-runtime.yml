@@ -45,21 +45,22 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $outDir = Join-Path $env:GITHUB_WORKSPACE 'runtime-output'
-          $isolatedAppData = Join-Path $outDir 'appdata'
-          $isolatedLocalAppData = Join-Path $outDir 'localappdata'
-          New-Item -ItemType Directory -Force $outDir,$isolatedAppData,$isolatedLocalAppData | Out-Null
+          New-Item -ItemType Directory -Force $outDir | Out-Null
 
           $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden-cli.exe'
           $cinc = Join-Path $env:GITHUB_WORKSPACE 'runtime/nce-diag/NCE-DIAG-CINC.nro'
           if (-not (Test-Path $eden -PathType Leaf)) { throw "missing eden CLI: $eden" }
           if (-not (Test-Path $cinc -PathType Leaf)) { throw "missing CINC NRO: $cinc" }
 
-          $env:APPDATA = $isolatedAppData
-          $env:LOCALAPPDATA = $isolatedLocalAppData
-
           $stdout = Join-Path $outDir 'eden-cli.stdout.txt'
           $stderr = Join-Path $outDir 'eden-cli.stderr.txt'
           $status = Join-Path $outDir 'runtime-status.txt'
+          $logDelta = Join-Path $outDir 'eden_log_delta.txt'
+          $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
+
+          $beforeExists = Test-Path $logPath -PathType Leaf
+          $beforeLength = if ($beforeExists) { (Get-Item $logPath).Length } else { 0 }
+          $beforeWrite = if ($beforeExists) { (Get-Item $logPath).LastWriteTimeUtc } else { [DateTime]::MinValue }
 
           $p = Start-Process -FilePath $eden -ArgumentList @('--null-render', $cinc) `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
@@ -68,23 +69,32 @@ jobs:
           if (-not $finished) {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
             $p.WaitForExit()
-          }
-
-          $exitCode = $p.ExitCode
-          $logCandidates = @(
-            (Join-Path $isolatedAppData 'eden/log/eden_log.txt'),
-            (Join-Path $isolatedAppData 'yuzu/log/yuzu_log.txt'),
-            (Join-Path $isolatedLocalAppData 'eden/log/eden_log.txt')
-          )
-          $logPath = $logCandidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
-          $logOut = Join-Path $outDir 'eden_log.txt'
-          if ($logPath) {
-            Copy-Item $logPath $logOut -Force
           } else {
-            Set-Content $logOut 'EDEN_LOG_NOT_FOUND'
+            $p.WaitForExit()
+          }
+          $p.Refresh()
+          $exitCode = try { $p.ExitCode } catch { 'UNAVAILABLE' }
+
+          $afterExists = Test-Path $logPath -PathType Leaf
+          $afterLength = if ($afterExists) { (Get-Item $logPath).Length } else { 0 }
+          $afterWrite = if ($afterExists) { (Get-Item $logPath).LastWriteTimeUtc } else { [DateTime]::MinValue }
+
+          if ($afterExists -and $afterWrite -gt $beforeWrite) {
+            $bytes = [System.IO.File]::ReadAllBytes($logPath)
+            if ($beforeExists -and $afterLength -ge $beforeLength -and $beforeLength -lt $bytes.Length) {
+              $start = [int64]$beforeLength
+              $count = [int64]$bytes.Length - $start
+              $slice = New-Object byte[] $count
+              [Array]::Copy($bytes, $start, $slice, 0, $count)
+              [System.IO.File]::WriteAllBytes($logDelta, $slice)
+            } else {
+              [System.IO.File]::WriteAllBytes($logDelta, $bytes)
+            }
+          } else {
+            Set-Content $logDelta 'NO_NEW_EDEN_LOG_DATA'
           }
 
-          $logText = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
+          $logText = Get-Content $logDelta -Raw -ErrorAction SilentlyContinue
           $metadata = $null -ne $logText -and $logText.Contains('IMP008_CINC_X18_METADATA')
           $caller = $null -ne $logText -and $logText.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
           $fallbackPre = $null -ne $logText -and $logText.Contains('IMP008_X18_FALLBACK_PRE')
@@ -99,6 +109,10 @@ jobs:
             'NCE_DIAG_HEAD=f3b1dfb469fe50ddd5abbbb9b4405148a64c5f84',
             "FINISHED_WITHIN_30S=$finished",
             "EXIT_CODE=$exitCode",
+            "LOG_EXISTED_BEFORE=$beforeExists",
+            "LOG_EXISTS_AFTER=$afterExists",
+            "LOG_LENGTH_BEFORE=$beforeLength",
+            "LOG_LENGTH_AFTER=$afterLength",
             "METADATA=$metadata",
             "CALLER_SETUP=$caller",
             "FALLBACK_PRE=$fallbackPre",
@@ -106,14 +120,20 @@ jobs:
             "CASCADE_4001000A=$cascade",
             "LOG_PATH=$logPath"
           ) | Set-Content $status
+
           Get-Content $status
+          Write-Output '--- STDOUT ---'
+          Get-Content $stdout -ErrorAction SilentlyContinue | Select-Object -Last 80
+          Write-Output '--- STDERR ---'
+          Get-Content $stderr -ErrorAction SilentlyContinue | Select-Object -Last 80
+          Write-Output '--- EDEN LOG DELTA ---'
+          Get-Content $logDelta -ErrorAction SilentlyContinue | Select-Object -Last 120
 
       - name: Upload CLEAN CONTROL runtime observation
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: SELF-HOSTED-CLEAN-CONTROL-RUNTIME
-          archive: false
           path: runtime-output/*
           if-no-files-found: warn
           retention-days: 14
