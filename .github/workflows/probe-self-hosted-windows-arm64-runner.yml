@@ -1,0 +1,51 @@
+name: Probe Self-Hosted Windows ARM64 Runner
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-self-hosted-windows-arm64-runner.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-self-hosted-windows-arm64-runner
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Probe runner identity
+        shell: pwsh
+        run: |
+          Write-Output "RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Output "RUNNER_OS=$env:RUNNER_OS"
+          Write-Output "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Write-Output "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
+          Write-Output "GITHUB_SHA=$env:GITHUB_SHA"
+          Write-Output "PS_VERSION=$($PSVersionTable.PSVersion)"
+          [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+          [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+
+      - name: Verify ARM64 build prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @('git','python','cmake','ninja')
+          foreach ($tool in $required) {
+            $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+            if (-not $cmd) { throw "missing required tool: $tool" }
+            Write-Output "$tool=$($cmd.Source)"
+          }
+          Write-Output "SELF_HOSTED_WINDOWS_ARM64_RUNNER=PASS"
