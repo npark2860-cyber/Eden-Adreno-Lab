@@ -1,0 +1,162 @@
+name: Probe Self-Hosted Clean Control GUI Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-self-hosted-clean-control-gui-runtime.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: probe-self-hosted-clean-control-gui-runtime
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Download validated CLEAN CONTROL Eden package
+        uses: actions/download-artifact@v7
+        with:
+          name: Eden-Windows-nce-cinc-x18-veh-clean-control-01631df046d8c2b920c642a48261a8d430140392-arm64-clang-standard.zip
+          path: runtime/eden
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          run-id: 34760701668
+
+      - name: Download validated NCE-DIAG executables
+        uses: actions/download-artifact@v7
+        with:
+          name: NCE-DIAG-0.2.1-executables
+          path: runtime/nce-diag
+          github-token: ${{ github.token }}
+          repository: npark2860-cyber/NCE-DIAG
+          run-id: 34704427664
+
+      - name: Run CLEAN CONTROL CINC through Qt GUI frontend
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = Join-Path $env:GITHUB_WORKSPACE 'runtime-output'
+          New-Item -ItemType Directory -Force $outDir | Out-Null
+
+          $eden = Join-Path $env:GITHUB_WORKSPACE 'runtime/eden/eden.exe'
+          $cinc = Join-Path $env:GITHUB_WORKSPACE 'runtime/nce-diag/NCE-DIAG-CINC.nro'
+          if (-not (Test-Path $eden -PathType Leaf)) { throw "missing Eden GUI: $eden" }
+          if (-not (Test-Path $cinc -PathType Leaf)) { throw "missing CINC NRO: $cinc" }
+
+          $status = Join-Path $outDir 'runtime-status.txt'
+          $logOut = Join-Path $outDir 'eden_log_gui.txt'
+          $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
+          $beforeWrite = if (Test-Path $logPath -PathType Leaf) { (Get-Item $logPath).LastWriteTimeUtc } else { [DateTime]::MinValue }
+
+          # main_window.cpp accepts -g <game_path>; use the Qt frontend to match the validated manual run.
+          $p = Start-Process -FilePath $eden -ArgumentList @('-g', $cinc) -PassThru
+          $deadline = [DateTime]::UtcNow.AddSeconds(30)
+          $n12 = $false
+          $n30 = $false
+          $caller = $false
+          $metadata = $false
+          $fallbackPre = $false
+          $fallbackPost = $false
+          $cascade = $false
+          $lastText = ''
+
+          while ([DateTime]::UtcNow -lt $deadline) {
+            if (Test-Path $logPath -PathType Leaf) {
+              $item = Get-Item $logPath
+              if ($item.LastWriteTimeUtc -gt $beforeWrite) {
+                try {
+                  $lastText = Get-Content $logPath -Raw -ErrorAction Stop
+                } catch {
+                  $lastText = ''
+                }
+                $n12 = $lastText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=12')
+                $n30 = $lastText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=30')
+                $metadata = $lastText.Contains('IMP008_CINC_X18_METADATA')
+                $caller = $lastText.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
+                $fallbackPre = $lastText.Contains('IMP008_X18_FALLBACK_PRE')
+                $fallbackPost = $lastText.Contains('IMP008_X18_FALLBACK_POST')
+                $cascade = $lastText.Contains('4001000A')
+                if ($caller -or $fallbackPre -or $cascade) { break }
+              }
+            }
+            if ($p.HasExited) { break }
+            Start-Sleep -Milliseconds 100
+          }
+
+          $wasRunning = -not $p.HasExited
+          if ($wasRunning) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            try { $p.WaitForExit() } catch {}
+          }
+
+          if (Test-Path $logPath -PathType Leaf) {
+            Copy-Item $logPath $logOut -Force
+            $lastText = Get-Content $logOut -Raw -ErrorAction SilentlyContinue
+            if ($null -eq $lastText) { $lastText = '' }
+            $n12 = $lastText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=12')
+            $n30 = $lastText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=30')
+            $metadata = $lastText.Contains('IMP008_CINC_X18_METADATA')
+            $caller = $lastText.Contains('IMP008_CINC_CALLER_ARG_SETUP_APPLIED')
+            $fallbackPre = $lastText.Contains('IMP008_X18_FALLBACK_PRE')
+            $fallbackPost = $lastText.Contains('IMP008_X18_FALLBACK_POST')
+            $cascade = $lastText.Contains('4001000A')
+          } else {
+            Set-Content $logOut 'EDEN_GUI_LOG_NOT_FOUND'
+          }
+
+          $qtFrontend = $lastText.Contains('qt_common/qt_common.cpp') -or $lastText.Contains('yuzu/main_window.cpp')
+          $adrenoVulkan = $lastText.Contains('Adreno Vulkan Driver')
+
+          if ($caller -and $metadata -and -not $fallbackPre -and -not $cascade) {
+            $classification = 'GUI_BASELINE_REPRODUCED_CLEAN_CONTROL_X18_BOUNDARY'
+          } elseif ($n30) {
+            $classification = 'GUI_REACHED_N30_BUT_BOUNDARY_SIGNATURE_DIFFERS'
+          } elseif ($n12) {
+            $classification = 'GUI_ADVANCED_BEYOND_CLI_N11_BUT_NOT_TO_N30'
+          } elseif ($qtFrontend) {
+            $classification = 'GUI_STARTED_BUT_DID_NOT_ADVANCE_BEYOND_CLI_BOUNDARY'
+          } else {
+            $classification = 'GUI_FRONTEND_NOT_CONFIRMED_ON_RUNNER'
+          }
+
+          @(
+            "CLASSIFICATION=$classification",
+            'BASELINE=CINC_X18_VEH_CLEAN_CONTROL',
+            'LAUNCH_MODE=EDEN_QT_GUI',
+            'CLEAN_CONTROL_RUN=34760701668',
+            'CLEAN_CONTROL_HEAD=01631df046d8c2b920c642a48261a8d430140392',
+            'NCE_DIAG_RUN=34704427664',
+            'NCE_DIAG_HEAD=f3b1dfb469fe50ddd5abbbb9b4405148a64c5f84',
+            "PROCESS_WAS_RUNNING_AT_OBSERVATION_END=$wasRunning",
+            "QT_FRONTEND=$qtFrontend",
+            "ADRENO_VULKAN=$adrenoVulkan",
+            "N12_REACHED=$n12",
+            "N30_REACHED=$n30",
+            "METADATA=$metadata",
+            "CALLER_SETUP=$caller",
+            "FALLBACK_PRE=$fallbackPre",
+            "FALLBACK_POST=$fallbackPost",
+            "CASCADE_4001000A=$cascade",
+            "LOG_PATH=$logPath"
+          ) | Set-Content $status
+          Get-Content $status
+          Write-Output '--- EDEN GUI LOG TAIL ---'
+          Get-Content $logOut -ErrorAction SilentlyContinue | Select-Object -Last 160
+
+      - name: Upload GUI runtime observation
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: SELF-HOSTED-CLEAN-CONTROL-GUI-RUNTIME
+          path: runtime-output/*
+          if-no-files-found: warn
+          retention-days: 14
