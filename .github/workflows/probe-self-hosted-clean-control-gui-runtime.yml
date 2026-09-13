@@ -40,7 +40,7 @@ jobs:
           repository: npark2860-cyber/NCE-DIAG
           run-id: 34704427664
 
-      - name: Run CLEAN CONTROL CINC through Qt GUI frontend
+      - name: Run CLEAN CONTROL CINC through interactive Qt GUI path
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -55,21 +55,44 @@ jobs:
           if (-not (Test-Path $eden -PathType Leaf)) { throw "missing Eden GUI: $eden" }
           if (-not (Test-Path $cinc -PathType Leaf)) { throw "missing CINC NRO: $cinc" }
 
-          $runnerSession = (Get-Process -Id $PID).SessionId
-          $explorerSessions = @(
-            Get-Process explorer -ErrorAction SilentlyContinue |
-              Select-Object -ExpandProperty SessionId -Unique
-          )
-          $explorerSessionText = if ($explorerSessions.Count -gt 0) { $explorerSessions -join ',' } else { 'NONE' }
-
           $status = Join-Path $outDir 'runtime-status.txt'
           $logOut = Join-Path $outDir 'eden_log_gui.txt'
           $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
           $beforeWrite = if (Test-Path $logPath -PathType Leaf) { (Get-Item $logPath).LastWriteTimeUtc } else { [DateTime]::MinValue }
 
-          # main_window.cpp accepts -g <game_path>; use the Qt frontend to match the validated manual run.
-          $p = Start-Process -FilePath $eden -ArgumentList @('-g', $cinc) -PassThru
-          $edenSession = try { $p.SessionId } catch { -1 }
+          $p = Start-Process -FilePath $eden -PassThru
+          $windowReady = $false
+          $windowDeadline = [DateTime]::UtcNow.AddSeconds(10)
+          while ([DateTime]::UtcNow -lt $windowDeadline -and -not $p.HasExited) {
+            $p.Refresh()
+            if ($p.MainWindowHandle -ne 0) {
+              $windowReady = $true
+              break
+            }
+            Start-Sleep -Milliseconds 100
+          }
+
+          $appActivated = $false
+          $loadDialogInvoked = $false
+          $pathSubmitted = $false
+          if ($windowReady -and -not $p.HasExited) {
+            $wshell = New-Object -ComObject WScript.Shell
+            $appActivated = $wshell.AppActivate($p.Id)
+            Start-Sleep -Milliseconds 300
+            if ($appActivated) {
+              $wshell.SendKeys('%f')
+              Start-Sleep -Milliseconds 250
+              $wshell.SendKeys('o')
+              $loadDialogInvoked = $true
+              Start-Sleep -Milliseconds 700
+              $wshell.SendKeys('%n')
+              Start-Sleep -Milliseconds 200
+              $wshell.SendKeys($cinc)
+              $wshell.SendKeys('{ENTER}')
+              $pathSubmitted = $true
+            }
+          }
+
           $deadline = [DateTime]::UtcNow.AddSeconds(30)
           $n12 = $false
           $n30 = $false
@@ -137,8 +160,10 @@ jobs:
             $classification = 'GUI_REACHED_N30_BUT_BOUNDARY_SIGNATURE_DIFFERS'
           } elseif ($n12) {
             $classification = 'GUI_ADVANCED_BEYOND_CLI_N11_BUT_NOT_TO_N30'
+          } elseif (-not $windowReady -or -not $appActivated -or -not $pathSubmitted) {
+            $classification = 'GUI_INTERACTIVE_LOAD_AUTOMATION_NOT_ESTABLISHED'
           } elseif ($qtFrontend) {
-            $classification = 'GUI_STARTED_BUT_DID_NOT_ADVANCE_BEYOND_CLI_BOUNDARY'
+            $classification = 'GUI_INTERACTIVE_LOAD_STARTED_BUT_DID_NOT_REACH_N12'
           } else {
             $classification = 'GUI_FRONTEND_NOT_CONFIRMED_ON_RUNNER'
           }
@@ -146,15 +171,15 @@ jobs:
           @(
             "CLASSIFICATION=$classification",
             'BASELINE=CINC_X18_VEH_CLEAN_CONTROL',
-            'LAUNCH_MODE=EDEN_QT_GUI',
+            'LAUNCH_MODE=EDEN_QT_GUI_FILE_MENU',
             'CLEAN_CONTROL_RUN=34760701668',
             'CLEAN_CONTROL_HEAD=01631df046d8c2b920c642a48261a8d430140392',
             'NCE_DIAG_RUN=34704427664',
             'NCE_DIAG_HEAD=f3b1dfb469fe50ddd5abbbb9b4405148a64c5f84',
-            "RUNNER_USER=$env:USERNAME",
-            "RUNNER_SESSION_ID=$runnerSession",
-            "EXPLORER_SESSION_IDS=$explorerSessionText",
-            "EDEN_SESSION_ID=$edenSession",
+            "WINDOW_READY=$windowReady",
+            "APP_ACTIVATED=$appActivated",
+            "LOAD_DIALOG_INVOKED=$loadDialogInvoked",
+            "PATH_SUBMITTED=$pathSubmitted",
             "EDEN_EXIT_STATE=$exitState",
             "PROCESS_WAS_RUNNING_AT_OBSERVATION_END=$wasRunning",
             "QT_FRONTEND=$qtFrontend",
