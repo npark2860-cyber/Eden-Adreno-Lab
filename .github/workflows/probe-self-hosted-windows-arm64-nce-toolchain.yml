@@ -46,11 +46,14 @@ jobs:
           path: ci
 
       - name: Install fixed Eden CI scripts
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          rm -rf eden/.ci
-          cp -a ci/.ci eden/.ci
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path 'eden/.ci') {
+            Remove-Item 'eden/.ci' -Recurse -Force
+          }
+          Copy-Item 'ci/.ci' 'eden/.ci' -Recurse -Force
+          Write-Output 'SELF_HOSTED_CI_SCRIPT_INSTALL=PASS'
 
       - name: Set up CLANGARM64 toolchain
         id: msys2
