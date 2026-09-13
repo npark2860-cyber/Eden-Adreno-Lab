@@ -2,6 +2,11 @@ name: Probe IMP-008B E5 X18 Runtime Invariant
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-x18-runtime-invariant-arm64.yml
 
 permissions:
   contents: read
