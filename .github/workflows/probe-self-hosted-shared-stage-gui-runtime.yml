@@ -93,7 +93,9 @@ jobs:
             if ($appActivated) {
               $wshell.SendKeys('%f')
               Start-Sleep -Milliseconds 600
-              $wshell.SendKeys('o')
+              $wshell.SendKeys('{DOWN}')
+              Start-Sleep -Milliseconds 300
+              $wshell.SendKeys('{ENTER}')
               $loadDialogInvoked = $true
               Start-Sleep -Milliseconds 2000
               $wshell.SendKeys('%n')
