@@ -31,7 +31,7 @@ jobs:
           repository: npark2860-cyber/Eden-Adreno-Lab
           run-id: 34769198199
 
-      - name: Run shared-stage CINC directly from ROM path
+      - name: Try GUI File menu with two and three Down presses
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -49,61 +49,135 @@ jobs:
           $logOut = Join-Path $outDir 'eden_log_gui.txt'
           $logPath = Join-Path $env:APPDATA 'eden/log/eden_log.txt'
 
-          # Warm-up launch: user reports the first Eden launch on this machine can freeze/fail VM reservation.
-          $warm = Start-Process -FilePath $eden -PassThru
-          $warmDeadline = [DateTime]::UtcNow.AddSeconds(8)
-          while ([DateTime]::UtcNow -lt $warmDeadline -and -not $warm.HasExited) {
-            $warm.Refresh()
-            if ($warm.MainWindowHandle -ne 0) { break }
-            Start-Sleep -Milliseconds 100
+          function Save-Screen([string]$path) {
+            try {
+              Add-Type -AssemblyName System.Windows.Forms
+              Add-Type -AssemblyName System.Drawing
+              $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+              $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+              $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+              $gfx.Dispose()
+              $bmp.Dispose()
+            } catch {}
           }
-          Start-Sleep -Seconds 2
-          if (-not $warm.HasExited) {
-            Stop-Process -Id $warm.Id -Force -ErrorAction SilentlyContinue
-            try { $warm.WaitForExit() } catch {}
-          }
-          Start-Sleep -Milliseconds 800
 
-          if (Test-Path $logPath) { Remove-Item $logPath -Force -ErrorAction SilentlyContinue }
-
-          Write-Output "DIRECT_GAME_PATH=$cinc"
-          $p = Start-Process -FilePath $eden -ArgumentList @('-g', $cinc) -PassThru
-
+          $selectedDown = -1
+          $p = $null
           $mapping = $null
           $view = $null
           $stage = -1
           $maxStage = -1
-          $deadline = [DateTime]::UtcNow.AddSeconds(40)
-          while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline -and $null -eq $mapping) {
-            try {
-              $mapping = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting(
-                'Local\EdenNceX18Stage',
-                [System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
-            } catch {
-              Start-Sleep -Milliseconds 25
+          $bootGame = $false
+
+          foreach ($downCount in @(2, 3)) {
+            if (Test-Path $logPath) { Remove-Item $logPath -Force -ErrorAction SilentlyContinue }
+
+            Write-Output "MENU_ATTEMPT_DOWN_COUNT=$downCount"
+            $candidate = Start-Process -FilePath $eden -PassThru
+            $windowReady = $false
+            $windowDeadline = [DateTime]::UtcNow.AddSeconds(10)
+            while ([DateTime]::UtcNow -lt $windowDeadline -and -not $candidate.HasExited) {
+              $candidate.Refresh()
+              if ($candidate.MainWindowHandle -ne 0) { $windowReady = $true; break }
+              Start-Sleep -Milliseconds 100
             }
+
+            if ($windowReady -and -not $candidate.HasExited) {
+              $wshell = New-Object -ComObject WScript.Shell
+              $activated = $wshell.AppActivate($candidate.Id)
+              Start-Sleep -Milliseconds 700
+              if ($activated) {
+                $wshell.SendKeys('%f')
+                Start-Sleep -Milliseconds 400
+                for ($i = 0; $i -lt $downCount; $i++) {
+                  $wshell.SendKeys('{DOWN}')
+                  Start-Sleep -Milliseconds 180
+                }
+                $wshell.SendKeys('{ENTER}')
+                Start-Sleep -Milliseconds 1200
+                $wshell.SendKeys('%n')
+                Start-Sleep -Milliseconds 250
+                $wshell.SendKeys($cinc)
+                Start-Sleep -Milliseconds 250
+                $wshell.SendKeys('{ENTER}')
+              }
+            }
+
+            $probeDeadline = [DateTime]::UtcNow.AddSeconds(8)
+            while (-not $candidate.HasExited -and [DateTime]::UtcNow -lt $probeDeadline) {
+              try {
+                $mapping = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting(
+                  'Local\EdenNceX18Stage',
+                  [System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
+                break
+              } catch {}
+
+              if (Test-Path $logPath -PathType Leaf) {
+                $probeText = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
+                if ($null -ne $probeText -and $probeText.Contains('BootGame: Eden starting...')) {
+                  $bootGame = $true
+                  break
+                }
+              }
+              Start-Sleep -Milliseconds 100
+            }
+
+            if ($null -ne $mapping -or $bootGame) {
+              $selectedDown = $downCount
+              $p = $candidate
+              break
+            }
+
+            Save-Screen (Join-Path $outDir ("gui-down-{0}.png" -f $downCount))
+            if (-not $candidate.HasExited) {
+              Stop-Process -Id $candidate.Id -Force -ErrorAction SilentlyContinue
+              try { $candidate.WaitForExit() } catch {}
+            }
+            Start-Sleep -Milliseconds 500
           }
 
-          if ($null -ne $mapping) {
-            $view = $mapping.CreateViewAccessor(0, 4, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
-            while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+          if ($null -ne $p) {
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            if ($null -eq $mapping) {
+              while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline -and $null -eq $mapping) {
+                try {
+                  $mapping = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting(
+                    'Local\EdenNceX18Stage',
+                    [System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
+                } catch {
+                  Start-Sleep -Milliseconds 25
+                }
+              }
+            }
+
+            if ($null -ne $mapping) {
+              $view = $mapping.CreateViewAccessor(0, 4, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
+              while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+                $stage = $view.ReadInt32(0)
+                if ($stage -gt $maxStage) { $maxStage = $stage }
+                if ($maxStage -ge 2) { break }
+                Start-Sleep -Milliseconds 10
+              }
               $stage = $view.ReadInt32(0)
               if ($stage -gt $maxStage) { $maxStage = $stage }
-              if ($maxStage -ge 2) { break }
-              Start-Sleep -Milliseconds 10
             }
-            $stage = $view.ReadInt32(0)
-            if ($stage -gt $maxStage) { $maxStage = $stage }
           }
 
-          Start-Sleep -Milliseconds 500
-          $wasRunning = -not $p.HasExited
-          if ($wasRunning) {
-            $exitState = 'FORCED_STOP_AFTER_OBSERVATION'
-            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-            try { $p.WaitForExit() } catch {}
+          Start-Sleep -Milliseconds 300
+          if ($null -ne $p) {
+            $wasRunning = -not $p.HasExited
+            if ($wasRunning) {
+              $exitState = 'FORCED_STOP_AFTER_OBSERVATION'
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              try { $p.WaitForExit() } catch {}
+            } else {
+              $exitState = try { ('0x{0:X8}' -f ([uint32]$p.ExitCode)) } catch { 'UNAVAILABLE' }
+            }
           } else {
-            $exitState = try { ('0x{0:X8}' -f ([uint32]$p.ExitCode)) } catch { 'UNAVAILABLE' }
+            $wasRunning = $false
+            $exitState = 'NO_BOOTING_PROCESS'
           }
 
           if ($null -ne $view) { $view.Dispose() }
@@ -137,16 +211,17 @@ jobs:
           } elseif ($maxStage -eq 0) {
             $classification = 'STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'
           } elseif (-not $bootGame) {
-            $classification = 'DIRECT_GAME_PATH_BOOT_NOT_STARTED'
+            $classification = 'GUI_MENU_2_AND_3_DOWNS_DID_NOT_BOOT'
           } else {
             $classification = 'SHARED_STAGE_MAPPING_NOT_OBSERVED'
           }
 
           @(
             "CLASSIFICATION=$classification",
+            "SELECTED_DOWN_COUNT=$selectedDown",
             "MAX_STAGE=$maxStage",
-            'LAUNCH_MODE=EDEN_QT_GUI_DIRECT_G_ROM_PATH',
-            "DIRECT_GAME_PATH=$cinc",
+            'LAUNCH_MODE=EDEN_QT_GUI_FILE_MENU_POSITION_BATCH',
+            "GAME_PATH=$cinc",
             'SHARED_STAGE_RUN=34769198199',
             'SHARED_STAGE_HEAD=753d52b2fe1dbbcf9471b24da33a5c293b6dd7f7',
             "BOOT_GAME=$bootGame",
@@ -167,11 +242,11 @@ jobs:
           Write-Output '--- EDEN GUI LOG TAIL ---'
           Get-Content $logOut -ErrorAction SilentlyContinue | Select-Object -Last 220
 
-      - name: Upload shared-stage direct runtime observation
+      - name: Upload shared-stage GUI menu observation
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: SELF-HOSTED-SHARED-STAGE-DIRECT-ROM-RUNTIME
+          name: SELF-HOSTED-SHARED-STAGE-GUI-MENU-BATCH
           path: runtime-output/*
           if-no-files-found: warn
           retention-days: 14
