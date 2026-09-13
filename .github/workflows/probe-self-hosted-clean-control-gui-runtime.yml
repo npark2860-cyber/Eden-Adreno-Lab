@@ -78,6 +78,7 @@ jobs:
                 } catch {
                   $lastText = ''
                 }
+                if ($null -eq $lastText) { $lastText = '' }
                 $n12 = $lastText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=12')
                 $n30 = $lastText.Contains('IMP008_REENTRY_BREADCRUMB_PRE n=30')
                 $metadata = $lastText.Contains('IMP008_CINC_X18_METADATA')
