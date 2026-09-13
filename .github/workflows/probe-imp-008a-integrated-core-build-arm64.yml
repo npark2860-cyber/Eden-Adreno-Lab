@@ -1,4 +1,5 @@
 name: Probe IMP-008A Integrated Windows ARM64 Core Build
+# validation trigger: production x18 NtContinue fdedd023066b285caa9d8dea9cca5565b3fb370a
 
 on:
   workflow_dispatch:
