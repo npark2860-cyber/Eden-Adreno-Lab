@@ -18,11 +18,11 @@ jobs:
       - name: Download shared-stage Eden package
         uses: actions/download-artifact@v7
         with:
-          name: Eden-Windows-nce-cinc-x18-shared-stage-753d52b2fe1dbbcf9471b24da33a5c293b6dd7f7-arm64-clang-standard.zip
+          name: Eden-Windows-nce-cinc-x18-shared-stage-02d688c65e4a9375310024c357aa29f5a6cac81e-arm64-clang-standard.zip
           path: runtime/eden
           github-token: ${{ github.token }}
           repository: npark2860-cyber/Eden-Adreno-Lab
-          run-id: 34769198199
+          run-id: 34773095581
       - name: Run exact three-down GUI sequence
         shell: powershell
         run: |
@@ -61,7 +61,7 @@ jobs:
           while(-not$p.HasExited -and [DateTime]::UtcNow-lt$deadline -and $null-eq$map){try{$map=[System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting('Local\EdenNceX18Stage',[System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)}catch{Start-Sleep -Milliseconds 25}}
           if($null-ne$map){
             $view=$map.CreateViewAccessor(0,4,[System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
-            while(-not$p.HasExited -and [DateTime]::UtcNow-lt$deadline){$s=$view.ReadInt32(0);if($s-gt$max){$max=$s};if($max-ge2){break};Start-Sleep -Milliseconds 10}
+            while(-not$p.HasExited -and [DateTime]::UtcNow-lt$deadline){$s=$view.ReadInt32(0);if($s-gt$max){$max=$s};if($max-ge4 -or $max-eq3){break};Start-Sleep -Milliseconds 1}
             $s=$view.ReadInt32(0);if($s-gt$max){$max=$s}
           }
           $running=-not$p.HasExited
@@ -76,8 +76,8 @@ jobs:
           $pre=$text.Contains('IMP008_X18_FALLBACK_PRE')
           $post=$text.Contains('IMP008_X18_FALLBACK_POST')
           $cascade=$text.Contains('4001000A')
-          if($max-eq3){$class='TRY_REDIRECT_RETURNED_FALSE'}elseif($max-ge2 -and $pre){$class='BOUNDARY_CROSSED_TO_FALLBACK_DISPATCH'}elseif($max-ge2){$class='TRY_REDIRECT_RETURNED_TRUE__HOST_RETURN_RESUME_BOUNDARY'}elseif($max-eq1){$class='ENTERED_X18_VEH__TRY_REDIRECT_DID_NOT_RETURN_TO_CALLER'}elseif($max-eq0){$class='STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'}elseif(-not$boot){$class='THREE_DOWNS_NO_ALT_F_DID_NOT_BOOT'}else{$class='SHARED_STAGE_MAPPING_NOT_OBSERVED'}
-          @("CLASSIFICATION=$class","MAX_STAGE=$max",'LAUNCH_MODE=EDEN_QT_GUI_THREE_DOWNS_NO_ALT_F',"WINDOW_READY=$ready","APP_ACTIVATED=$activated","BOOT_GAME=$boot","N30_REACHED=$n30","METADATA=$meta","CALLER_SETUP=$caller","FALLBACK_PRE=$pre","FALLBACK_POST=$post","CASCADE_4001000A=$cascade")|Set-Content (Join-Path $out 'runtime-status.txt')
+          if($max-ge4){$class='HOST_CONTINUATION_REACHED_AFTER_TRY_REDIRECT_TRUE'}elseif($max-eq3){$class='TRY_REDIRECT_RETURNED_FALSE'}elseif($max-ge2 -and $pre){$class='BOUNDARY_CROSSED_TO_FALLBACK_DISPATCH_WITHOUT_STAGE4_OBSERVATION'}elseif($max-ge2){$class='TRY_REDIRECT_RETURNED_TRUE__HOST_CONTINUATION_NOT_OBSERVED'}elseif($max-eq1){$class='ENTERED_X18_VEH__TRY_REDIRECT_DID_NOT_RETURN_TO_CALLER'}elseif($max-eq0){$class='STAGE_MAP_INITIALIZED__ORDINARY_X18_BRANCH_NOT_OBSERVED'}elseif(-not$boot){$class='THREE_DOWNS_NO_ALT_F_DID_NOT_BOOT'}else{$class='SHARED_STAGE_MAPPING_NOT_OBSERVED'}
+          @("CLASSIFICATION=$class","MAX_STAGE=$max",'STAGE_4=host continuation reached after successful TryRedirect','LAUNCH_MODE=EDEN_QT_GUI_THREE_DOWNS_NO_ALT_F',"WINDOW_READY=$ready","APP_ACTIVATED=$activated","BOOT_GAME=$boot","N30_REACHED=$n30","METADATA=$meta","CALLER_SETUP=$caller","FALLBACK_PRE=$pre","FALLBACK_POST=$post","CASCADE_4001000A=$cascade")|Set-Content (Join-Path $out 'runtime-status.txt')
           Get-Content (Join-Path $out 'runtime-status.txt')
       - name: Upload observation
         if: always()
