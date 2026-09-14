@@ -181,7 +181,7 @@ jobs:
           grep -R -Fq 'windows_nce_entry.obj' build
           echo 'IMP008B_E5_NORMAL_CONFIGURE=PASS'
 
-      - name: Build and run E5 product-linked executable
+      - name: Build E5 product-linked executable
         shell: msys2 {0}
         working-directory: eden
         run: |
@@ -189,7 +189,16 @@ jobs:
           cmake --build build --target imp008b_e5_x18_runtime --parallel
           exe="$(find build -type f -name 'imp008b_e5_x18_runtime.exe' -print -quit)"
           test -n "$exe"
+          printf '%s\n' "$exe" > imp008b-e5.exe-path
           echo "IMP008B_E5_EXECUTABLE=$exe"
+          echo 'IMP008B_E5_BUILD=PASS'
+
+      - name: Launch and capture E5 runtime
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          exe="$(cat imp008b-e5.exe-path)"
           winexe="$(cygpath -w "$exe")"
           winout="$(cygpath -w imp008b-e5.out.log)"
           winerr="$(cygpath -w imp008b-e5.err.log)"
@@ -217,18 +226,102 @@ jobs:
           }"
           rc=$?
           set -e
+          printf '%s\n' "$rc" > imp008b-e5.rc
           cat imp008b-e5.out.log 2>/dev/null || true
           cat imp008b-e5.err.log >&2 2>/dev/null || true
           echo "IMP008B_E5_LAUNCH_RC=$rc"
+          if test -f imp008b-e5.out.log; then
+            cp imp008b-e5.out.log imp008b-e5.log
+          else
+            : > imp008b-e5.log
+          fi
+          echo 'IMP008B_E5_RUNTIME_CAPTURE=PASS'
+
+      - name: Gate E5 process exit zero
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          test -f imp008b-e5.rc
+          rc="$(cat imp008b-e5.rc)"
+          echo "IMP008B_E5_RECORDED_RC=$rc"
           test "$rc" -eq 0
-          cp imp008b-e5.out.log imp008b-e5.log
-          grep -Fq 'IMP008B_E5_REAL_PROCESS=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_REAL_KTHREAD=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_PHYSICAL_X18_TEB_BEFORE=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_PRE_RUNTHREAD=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_SVC_RETURN=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_ARCH_CONTEXT_COHERENT=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_PHYSICAL_X18_TEB_AFTER=PASS' imp008b-e5.log
-          grep -Fq 'IMP008B_E5_GATE=PASS' imp008b-e5.log
+
+      - name: Gate E5 REAL_PROCESS
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_REAL_PROCESS=PASS' imp008b-e5.log
+
+      - name: Gate E5 REAL_KTHREAD
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_REAL_KTHREAD=PASS' imp008b-e5.log
+
+      - name: Gate E5 PHYSICAL_X18_TEB_BEFORE
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_PHYSICAL_X18_TEB_BEFORE=PASS' imp008b-e5.log
+
+      - name: Gate E5 PRE_RUNTHREAD
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_PRE_RUNTHREAD=PASS' imp008b-e5.log
+
+      - name: Gate E2 RESTORE_ENTER
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E2_RESTORE_ENTER=PASS' imp008b-e5.log
+
+      - name: Gate E2 RESTORE_CONTEXT_MATCH
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E2_RESTORE_CONTEXT_MATCH=PASS' imp008b-e5.log
+
+      - name: Gate E2 BEFORE_NT_CONTINUE
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' imp008b-e5.log
+
+      - name: Gate E5 RUNTHREAD_RETURNED
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' imp008b-e5.log
+
+      - name: Gate E5 GUEST_X18_EXECUTED
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' imp008b-e5.log
+
+      - name: Gate E5 SVC_RETURN
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_SVC_RETURN=PASS' imp008b-e5.log
+
+      - name: Gate E5 ARCH_CONTEXT_COHERENT
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_ARCH_CONTEXT_COHERENT=PASS' imp008b-e5.log
+
+      - name: Gate E5 PHYSICAL_X18_TEB_AFTER
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_PHYSICAL_X18_TEB_AFTER=PASS' imp008b-e5.log
+
+      - name: Gate E5 final acceptance
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_GATE=PASS' imp008b-e5.log
