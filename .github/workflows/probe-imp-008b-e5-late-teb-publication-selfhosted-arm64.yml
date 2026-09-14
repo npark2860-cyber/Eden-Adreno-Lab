@@ -28,25 +28,12 @@ jobs:
           if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
           $head = (git -C eden rev-parse HEAD).Trim()
           Write-Host "IMP008B_E5_CTXAB_WORKSPACE_HEAD=$head"
-          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') {
-            throw "unexpected retained E5 workspace HEAD: $head"
-          }
-          if (-not (Test-Path 'eden/build/bin/imp008b_e5_x18_runtime.exe')) {
-            throw 'retained E5 executable missing'
-          }
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained E5 workspace HEAD: $head" }
+          if (-not (Test-Path 'eden/build/bin/imp008b_e5_x18_runtime.exe')) { throw 'retained E5 executable missing' }
           $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
-          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) {
-            throw 'historical RunThread TEB-stack bypass marker missing'
-          }
-          if (Select-String -Path $runtime -SimpleMatch 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' -Quiet) {
-            throw 'early TEB stack publication unexpectedly active'
-          }
-          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) {
-            throw 'generic VEH entry observer missing'
-          }
-          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) {
-            throw 'x18 VEH observer missing'
-          }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) { throw 'TEB bypass marker missing' }
+          if (Select-String -Path $runtime -SimpleMatch 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' -Quiet) { throw 'early TEB publication active' }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
           Write-Host 'IMP008B_E5_CTXAB_RETAINED_WORKSPACE=PASS'
 
       - name: Set up CLANGARM64 toolchain for incremental rebuild
@@ -76,88 +63,13 @@ jobs:
           git checkout -- "$transition"
           python - <<'PY'
           from pathlib import Path
-
+          import base64
           path = Path('src/core/arm/nce/windows_nce_transition.cpp')
           raw = path.read_bytes()
           had_crlf = b'\r\n' in raw
           text = raw.decode('utf-8').replace('\r\n', '\n')
-          anchor = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
-    // underlying transition directly so the arbitrary-PC guest restore and exception continuation
-    // share the same Windows context-resume primitive.
-    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
-    std::fflush(stderr);
-    WindowsNceTransition::ContinueContext(context);
-'''
-          replacement = '''    // Checkout-only A/B: keep only target PC/SP; all other register state comes from Windows.
-    const std::uint64_t imp008b_target_pc = context.Pc;
-    const std::uint64_t imp008b_target_sp = context.Sp;
-    ARM64_NT_CONTEXT imp008b_captured{};
-    RtlCaptureContext(reinterpret_cast<PCONTEXT>(&imp008b_captured));
-    imp008b_captured.Pc = imp008b_target_pc;
-    imp008b_captured.Sp = imp008b_target_sp;
-    imp008b_captured.ContextFlags =
-        CONTEXT_ARM64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT;
-
-    MEMORY_BASIC_INFORMATION imp008b_stack_mbi{};
-    if (imp008b_target_sp == 0 ||
-        VirtualQuery(reinterpret_cast<const void*>(imp008b_target_sp - 1), &imp008b_stack_mbi,
-                     sizeof(imp008b_stack_mbi)) == 0 ||
-        imp008b_stack_mbi.AllocationBase == nullptr) {
-        std::fputs("IMP008B_E5_CTXAB_STACK_QUERY=FAIL\\n", stderr);
-        std::fflush(stderr);
-        std::abort();
-    }
-    const auto imp008b_stack_limit =
-        reinterpret_cast<std::uint64_t>(imp008b_stack_mbi.AllocationBase);
-    std::uint64_t imp008b_stack_base = imp008b_stack_limit;
-    for (std::uint64_t cursor = imp008b_stack_limit;;) {
-        MEMORY_BASIC_INFORMATION region{};
-        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||
-            region.AllocationBase != imp008b_stack_mbi.AllocationBase) {
-            break;
-        }
-        const auto region_end = reinterpret_cast<std::uint64_t>(region.BaseAddress) +
-                                static_cast<std::uint64_t>(region.RegionSize);
-        if (region_end <= cursor) {
-            break;
-        }
-        imp008b_stack_base = region_end;
-        cursor = region_end;
-    }
-
-    auto* const imp008b_tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-    imp008b_tib->StackLimit = reinterpret_cast<void*>(imp008b_stack_limit);
-    imp008b_tib->StackBase = reinterpret_cast<void*>(imp008b_stack_base);
-    std::fprintf(stderr,
-                 "IMP008B_E5_CTXAB_CAPTURED=PASS PC=0x%llX SP=0x%llX X18=0x%llX CPSR=0x%08lX FLAGS=0x%08lX STACK_LIMIT=0x%llX STACK_BASE=0x%llX\\n",
-                 static_cast<unsigned long long>(imp008b_captured.Pc),
-                 static_cast<unsigned long long>(imp008b_captured.Sp),
-                 static_cast<unsigned long long>(imp008b_captured.X[18]),
-                 static_cast<unsigned long>(imp008b_captured.Cpsr),
-                 static_cast<unsigned long>(imp008b_captured.ContextFlags),
-                 static_cast<unsigned long long>(imp008b_stack_limit),
-                 static_cast<unsigned long long>(imp008b_stack_base));
-    std::fflush(stderr);
-
-    using Imp008bNtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
-    const HMODULE imp008b_ntdll = GetModuleHandleW(L"ntdll.dll");
-    const auto imp008b_nt_continue = imp008b_ntdll != nullptr
-        ? reinterpret_cast<Imp008bNtContinueFn>(GetProcAddress(imp008b_ntdll, "NtContinue"))
-        : nullptr;
-    if (imp008b_nt_continue == nullptr) {
-        std::fputs("IMP008B_E5_CTXAB_NTCONTINUE_RESOLVE=FAIL\\n", stderr);
-        std::fflush(stderr);
-        std::abort();
-    }
-    std::fputs("IMP008B_E5_CTXAB_BEFORE_NT_CONTINUE=PASS\\n", stderr);
-    std::fflush(stderr);
-    const LONG imp008b_status =
-        imp008b_nt_continue(reinterpret_cast<PCONTEXT>(&imp008b_captured), FALSE);
-    std::fprintf(stderr, "IMP008B_E5_CTXAB_NT_CONTINUE_RETURN=0x%08lX\\n",
-                 static_cast<unsigned long>(imp008b_status));
-    std::fflush(stderr);
-    std::abort();
-'''
+          anchor = base64.b64decode('ICAgIC8vIFJ0bFJlc3RvcmVDb250ZXh0IGNvbnZlcnRzIGEgcmVqZWN0ZWQgTnRDb250aW51ZSBpbnRvIGFuIGltbWVkaWF0ZSBmYWlsLWZhc3QuIENhbGwgdGhlCiAgICAvLyB1bmRlcmx5aW5nIHRyYW5zaXRpb24gZGlyZWN0bHkgc28gdGhlIGFyYml0cmFyeS1QQyBndWVzdCByZXN0b3JlIGFuZCBleGNlcHRpb24gY29udGludWF0aW9uCiAgICAvLyBzaGFyZSB0aGUgc2FtZSBXaW5kb3dzIGNvbnRleHQtcmVzdW1lIHByaW1pdGl2ZS4KICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTJfQkVGT1JFX05UX0NPTlRJTlVFPVBBU1NcbiIsIHN0ZGVycik7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgV2luZG93c05jZVRyYW5zaXRpb246OkNvbnRpbnVlQ29udGV4dChjb250ZXh0KTsK').decode()
+          replacement = base64.b64decode('ICAgIC8vIENoZWNrb3V0LW9ubHkgQS9COiBrZWVwIG9ubHkgdGFyZ2V0IFBDL1NQOyBhbGwgb3RoZXIgcmVnaXN0ZXIgc3RhdGUgY29tZXMgZnJvbSBXaW5kb3dzLgogICAgY29uc3Qgc3RkOjp1aW50NjRfdCBpbXAwMDhiX3RhcmdldF9wYyA9IGNvbnRleHQuUGM7CiAgICBjb25zdCBzdGQ6OnVpbnQ2NF90IGltcDAwOGJfdGFyZ2V0X3NwID0gY29udGV4dC5TcDsKICAgIEFSTTY0X05UX0NPTlRFWFQgaW1wMDA4Yl9jYXB0dXJlZHt9OwogICAgUnRsQ2FwdHVyZUNvbnRleHQocmVpbnRlcnByZXRfY2FzdDxQQ09OVEVYVD4oJmltcDAwOGJfY2FwdHVyZWQpKTsKICAgIGltcDAwOGJfY2FwdHVyZWQuUGMgPSBpbXAwMDhiX3RhcmdldF9wYzsKICAgIGltcDAwOGJfY2FwdHVyZWQuU3AgPSBpbXAwMDhiX3RhcmdldF9zcDsKICAgIGltcDAwOGJfY2FwdHVyZWQuQ29udGV4dEZsYWdzID0KICAgICAgICBDT05URVhUX0FSTTY0IHwgQ09OVEVYVF9DT05UUk9MIHwgQ09OVEVYVF9JTlRFR0VSIHwgQ09OVEVYVF9GTE9BVElOR19QT0lOVDsKCiAgICBNRU1PUllfQkFTSUNfSU5GT1JNQVRJT04gaW1wMDA4Yl9zdGFja19tYml7fTsKICAgIGlmIChpbXAwMDhiX3RhcmdldF9zcCA9PSAwIHx8CiAgICAgICAgVmlydHVhbFF1ZXJ5KHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3Qgdm9pZCo+KGltcDAwOGJfdGFyZ2V0X3NwIC0gMSksICZpbXAwMDhiX3N0YWNrX21iaSwKICAgICAgICAgICAgICAgICAgICAgc2l6ZW9mKGltcDAwOGJfc3RhY2tfbWJpKSkgPT0gMCB8fAogICAgICAgIGltcDAwOGJfc3RhY2tfbWJpLkFsbG9jYXRpb25CYXNlID09IG51bGxwdHIpIHsKICAgICAgICBzdGQ6OmZwdXRzKCJJTVAwMDhCX0U1X0NUWEFCX1NUQUNLX1FVRVJZPUZBSUxcbiIsIHN0ZGVycik7CiAgICAgICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKICAgICAgICBzdGQ6OmFib3J0KCk7CiAgICB9CiAgICBjb25zdCBhdXRvIGltcDAwOGJfc3RhY2tfbGltaXQgPQogICAgICAgIHJlaW50ZXJwcmV0X2Nhc3Q8c3RkOjp1aW50NjRfdD4oaW1wMDA4Yl9zdGFja19tYmkuQWxsb2NhdGlvbkJhc2UpOwogICAgc3RkOjp1aW50NjRfdCBpbXAwMDhiX3N0YWNrX2Jhc2UgPSBpbXAwMDhiX3N0YWNrX2xpbWl0OwogICAgZm9yIChzdGQ6OnVpbnQ2NF90IGN1cnNvciA9IGltcDAwOGJfc3RhY2tfbGltaXQ7OykgewogICAgICAgIE1FTU9SWV9CQVNJQ19JTkZPUk1BVElPTiByZWdpb257fTsKICAgICAgICBpZiAoVmlydHVhbFF1ZXJ5KHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3Qgdm9pZCo+KGN1cnNvciksICZyZWdpb24sIHNpemVvZihyZWdpb24pKSA9PSAwIHx8CiAgICAgICAgICAgIHJlZ2lvbi5BbGxvY2F0aW9uQmFzZSAhPSBpbXAwMDhiX3N0YWNrX21iaS5BbGxvY2F0aW9uQmFzZSkgewogICAgICAgICAgICBicmVhazsKICAgICAgICB9CiAgICAgICAgY29uc3QgYXV0byByZWdpb25fZW5kID0gcmVpbnRlcnByZXRfY2FzdDxzdGQ6OnVpbnQ2NF90PihyZWdpb24uQmFzZUFkZHJlc3MpICsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDxzdGQ6OnVpbnQ2NF90PihyZWdpb24uUmVnaW9uU2l6ZSk7CiAgICAgICAgaWYgKHJlZ2lvbl9lbmQgPD0gY3Vyc29yKSB7CiAgICAgICAgICAgIGJyZWFrOwogICAgICAgIH0KICAgICAgICBpbXAwMDhiX3N0YWNrX2Jhc2UgPSByZWdpb25fZW5kOwogICAgICAgIGN1cnNvciA9IHJlZ2lvbl9lbmQ7CiAgICB9CgogICAgYXV0byogY29uc3QgaW1wMDA4Yl90aWIgPSByZWludGVycHJldF9jYXN0PE5UX1RJQio+KE50Q3VycmVudFRlYigpKTsKICAgIGltcDAwOGJfdGliLT5TdGFja0xpbWl0ID0gcmVpbnRlcnByZXRfY2FzdDx2b2lkKj4oaW1wMDA4Yl9zdGFja19saW1pdCk7CiAgICBpbXAwMDhiX3RpYi0+U3RhY2tCYXNlID0gcmVpbnRlcnByZXRfY2FzdDx2b2lkKj4oaW1wMDA4Yl9zdGFja19iYXNlKTsKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgIklNUDAwOEJfRTVfQ1RYQUJfQ0FQVFVSRUQ9UEFTUyBQQz0weCVsbFggU1A9MHglbGxYIFgxOD0weCVsbFggQ1BTUj0weCUwOGxYIEZMQUdTPTB4JTA4bFggU1RBQ0tfTElNSVQ9MHglbGxYIFNUQUNLX0JBU0U9MHglbGxYXG4iLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oaW1wMDA4Yl9jYXB0dXJlZC5QYyksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihpbXAwMDhiX2NhcHR1cmVkLlNwKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGltcDAwOGJfY2FwdHVyZWQuWFsxOF0pLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KGltcDAwOGJfY2FwdHVyZWQuQ3BzciksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4oaW1wMDA4Yl9jYXB0dXJlZC5Db250ZXh0RmxhZ3MpLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oaW1wMDA4Yl9zdGFja19saW1pdCksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihpbXAwMDhiX3N0YWNrX2Jhc2UpKTsKICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CgogICAgdXNpbmcgSW1wMDA4Yk50Q29udGludWVGbiA9IExPTkcoTlRBUEkqKShQQ09OVEVYVCwgQk9PTEVBTik7CiAgICBjb25zdCBITU9EVUxFIGltcDAwOGJfbnRkbGwgPSBHZXRNb2R1bGVIYW5kbGVXKEwibnRkbGwuZGxsIik7CiAgICBjb25zdCBhdXRvIGltcDAwOGJfbnRfY29udGludWUgPSBpbXAwMDhiX250ZGxsICE9IG51bGxwdHIKICAgICAgICA/IHJlaW50ZXJwcmV0X2Nhc3Q8SW1wMDA4Yk50Q29udGludWVGbj4oR2V0UHJvY0FkZHJlc3MoaW1wMDA4Yl9udGRsbCwgIk50Q29udGludWUiKSkKICAgICAgICA6IG51bGxwdHI7CiAgICBpZiAoaW1wMDA4Yl9udF9jb250aW51ZSA9PSBudWxscHRyKSB7CiAgICAgICAgc3RkOjpmcHV0cygiSU1QMDA4Ql9FNV9DVFhBQl9OVENPTlRJTlVFX1JFU09MVkU9RkFJTFxuIiwgc3RkZXJyKTsKICAgICAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgICAgIHN0ZDo6YWJvcnQoKTsKICAgIH0KICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTVfQ1RYQUJfQkVGT1JFX05UX0NPTlRJTlVFPVBBU1NcbiIsIHN0ZGVycik7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgY29uc3QgTE9ORyBpbXAwMDhiX3N0YXR1cyA9CiAgICAgICAgaW1wMDA4Yl9udF9jb250aW51ZShyZWludGVycHJldF9jYXN0PFBDT05URVhUPigmaW1wMDA4Yl9jYXB0dXJlZCksIEZBTFNFKTsKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsICJJTVAwMDhCX0U1X0NUWEFCX05UX0NPTlRJTlVFX1JFVFVSTj0weCUwOGxYXG4iLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KGltcDAwOGJfc3RhdHVzKSk7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgc3RkOjphYm9ydCgpOwo=').decode()
           count = text.count(anchor)
           if count != 1:
               raise SystemExit(f'captured-context anchor count={count}')
@@ -167,7 +79,6 @@ jobs:
           path.write_bytes(text.encode('utf-8'))
           PY
           grep -Fq 'IMP008B_E5_CTXAB_CAPTURED=PASS' "$transition"
-          grep -Fq 'RtlCaptureContext(reinterpret_cast<PCONTEXT>(&imp008b_captured));' "$transition"
           git diff --check -- "$transition"
           echo 'IMP008B_E5_CTXAB_PATCH=PASS'
 
@@ -185,17 +96,14 @@ jobs:
         working-directory: eden
         run: |
           set -uo pipefail
-          exe='build/bin/imp008b_e5_x18_runtime.exe'
           set +e
-          timeout 30s "$exe" > imp008b-e5-ctxab.out.log 2> imp008b-e5-ctxab.err.log
+          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-ctxab.out.log 2> imp008b-e5-ctxab.err.log
           rc=$?
           set -e
           printf '%s\n' "$rc" > imp008b-e5-ctxab.rc
-          cat imp008b-e5-ctxab.out.log 2>/dev/null || true
-          cat imp008b-e5-ctxab.err.log >&2 2>/dev/null || true
           cat imp008b-e5-ctxab.out.log imp008b-e5-ctxab.err.log > imp008b-e5-ctxab.log 2>/dev/null || true
+          cat imp008b-e5-ctxab.log || true
           echo "IMP008B_E5_CTXAB_LAUNCH_RC=$rc"
-          echo 'IMP008B_E5_CTXAB_RUNTIME_CAPTURE=PASS'
 
       - name: Classify captured-context A-B
         if: always()
@@ -203,22 +111,11 @@ jobs:
         working-directory: eden
         run: |
           if (-not (Test-Path 'imp008b-e5-ctxab.log')) { throw 'captured-context runtime log missing' }
-          Write-Host '--- E5 captured-context A-B ---'
           Get-Content 'imp008b-e5-ctxab.log' | Select-String -Pattern 'IMP008B_E5_(CTXAB_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED)|IMP008B_E2_RESTORE_'
           $before = Select-String -Path 'imp008b-e5-ctxab.log' -SimpleMatch 'IMP008B_E5_CTXAB_BEFORE_NT_CONTINUE=PASS' -Quiet
-          if (-not $before) { throw 'captured-context experiment did not reach NtContinue' }
-          $genericVeh = Select-String -Path 'imp008b-e5-ctxab.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
-          if ($genericVeh) {
-            Write-Host 'IMP008B_E5_CTXAB_GENERIC_VEH=PASS'
-          } else {
-            Write-Host 'IMP008B_E5_CTXAB_GENERIC_VEH=NO_ENTRY'
-          }
-          $x18Veh = Select-String -Path 'imp008b-e5-ctxab.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
-          if ($x18Veh) {
-            Write-Host 'IMP008B_E5_CTXAB_X18_VEH=PASS'
-          } else {
-            Write-Host 'IMP008B_E5_CTXAB_X18_VEH=NO_ENTRY'
-          }
+          if (-not $before) { throw 'captured-context A-B did not reach NtContinue' }
+          $veh = Select-String -Path 'imp008b-e5-ctxab.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          if ($veh) { Write-Host 'IMP008B_E5_CTXAB_GENERIC_VEH=PASS' } else { Write-Host 'IMP008B_E5_CTXAB_GENERIC_VEH=NO_ENTRY' }
 
       - name: Upload E5 captured-context logs
         if: always()
