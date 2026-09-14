@@ -1,0 +1,280 @@
+name: Probe IMP-008B ARM64 Placeholder Stack Matrix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-arm64-placeholder-stack-matrix.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-arm64-placeholder-stack-matrix
+  cancel-in-progress: false
+
+jobs:
+  placeholder-stack-matrix:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Build native ARM64 placeholder probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <winternl.h>
+          #include <cstdint>
+          #include <cstdio>
+          #include <string>
+
+          #ifndef MEM_RESERVE_PLACEHOLDER
+          #define MEM_RESERVE_PLACEHOLDER 0x00040000
+          #endif
+          #ifndef MEM_REPLACE_PLACEHOLDER
+          #define MEM_REPLACE_PLACEHOLDER 0x00004000
+          #endif
+          #ifndef MEM_PRESERVE_PLACEHOLDER
+          #define MEM_PRESERVE_PLACEHOLDER 0x00000002
+          #endif
+
+          using NtContinueFn = LONG (NTAPI*)(PCONTEXT, BOOLEAN);
+          using VirtualAlloc2Fn = PVOID (WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG,
+                                                  MEM_EXTENDED_PARAMETER*, ULONG);
+          using MapViewOfFile3Fn = PVOID (WINAPI*)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T,
+                                                   ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
+          using ExitProcessFn = VOID (WINAPI*)(UINT);
+
+          static ExitProcessFn g_exit_process{};
+          static HANDLE g_process{};
+          static VirtualAlloc2Fn g_virtual_alloc2{};
+          static MapViewOfFile3Fn g_map_view3{};
+
+          static LONG CALLBACK ProbeVeh(PEXCEPTION_POINTERS ep) noexcept {
+              if (!ep || !ep->ExceptionRecord || !ep->ContextRecord || !g_exit_process)
+                  return EXCEPTION_CONTINUE_SEARCH;
+              const DWORD code = ep->ExceptionRecord->ExceptionCode;
+              ep->ContextRecord->Pc = reinterpret_cast<DWORD64>(g_exit_process);
+              ep->ContextRecord->X0 = code == EXCEPTION_BREAKPOINT ? 42u : 43u;
+              return EXCEPTION_CONTINUE_EXECUTION;
+          }
+
+          struct Region { std::uint8_t* base{}; std::size_t size{}; HANDLE section{}; };
+
+          static void DumpRegion(const char* name, void* p) {
+              MEMORY_BASIC_INFORMATION mbi{};
+              const SIZE_T q = VirtualQuery(p, &mbi, sizeof(mbi));
+              std::printf("IMP008B_PH_%s QUERY=%llu ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX STATE=0x%lX PROTECT=0x%lX TYPE=0x%lX\n",
+                          name, static_cast<unsigned long long>(q), p, mbi.BaseAddress,
+                          mbi.AllocationBase, static_cast<unsigned long long>(mbi.RegionSize),
+                          static_cast<unsigned long>(mbi.State),
+                          static_cast<unsigned long>(mbi.Protect),
+                          static_cast<unsigned long>(mbi.Type));
+              std::fflush(stdout);
+          }
+
+          static void* MakePrivateCode() {
+              auto* p = static_cast<std::uint32_t*>(VirtualAlloc(nullptr, 0x1000,
+                  MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+              if (!p) return nullptr;
+              p[0] = 0xD43E0000u;
+              p[1] = 0xD65F03C0u;
+              FlushInstructionCache(g_process, p, 8);
+              DWORD old{};
+              return VirtualProtect(p, 0x1000, PAGE_EXECUTE_READ, &old) ? p : nullptr;
+          }
+
+          static std::uint8_t* ReservePlaceholder() {
+              return static_cast<std::uint8_t*>(g_virtual_alloc2(
+                  g_process, nullptr, 0x10000, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+                  PAGE_NOACCESS, nullptr, 0));
+          }
+
+          static HANDLE MakeSection(std::size_t size) {
+              return CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE,
+                                        0, static_cast<DWORD>(size), nullptr);
+          }
+
+          static bool Split(std::uint8_t* arena, std::size_t offset, std::size_t size) {
+              return VirtualFreeEx(g_process, arena + offset, size,
+                                   MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) != FALSE;
+          }
+
+          static bool Replace(std::uint8_t* arena, std::size_t offset, std::size_t size,
+                              HANDLE section, DWORD final_protect) {
+              void* mapped = g_map_view3(section, g_process, arena + offset, 0, size,
+                                         MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE,
+                                         nullptr, 0);
+              if (mapped != arena + offset) return false;
+              DWORD old{};
+              return VirtualProtect(mapped, size, final_protect, &old) != FALSE;
+          }
+
+          static Region MakePlaceholderStack(std::size_t offset) {
+              Region r{};
+              auto* arena = ReservePlaceholder();
+              if (!arena || !Split(arena, offset, 0x1000)) return r;
+              r.section = MakeSection(0x1000);
+              if (!r.section || !Replace(arena, offset, 0x1000, r.section, PAGE_READWRITE)) return {};
+              r.base = arena + offset;
+              r.size = 0x1000;
+              return r;
+          }
+
+          static bool MakeAdjacentSplit(void*& code, Region& stack) {
+              auto* arena = ReservePlaceholder();
+              if (!arena) return false;
+              if (!Split(arena, 0, 0x1000)) return false;
+              HANDLE code_section = MakeSection(0x1000);
+              if (!code_section || !Replace(arena, 0, 0x1000, code_section, PAGE_READWRITE)) return false;
+              auto* words = reinterpret_cast<std::uint32_t*>(arena);
+              words[0] = 0xD43E0000u; words[1] = 0xD65F03C0u;
+              FlushInstructionCache(g_process, words, 8);
+              DWORD old{};
+              if (!VirtualProtect(arena, 0x1000, PAGE_EXECUTE_READ, &old)) return false;
+              if (!Split(arena, 0x1000, 0x1000)) return false;
+              stack.section = MakeSection(0x1000);
+              if (!stack.section || !Replace(arena, 0x1000, 0x1000, stack.section, PAGE_READWRITE)) return false;
+              code = arena;
+              stack.base = arena + 0x1000;
+              stack.size = 0x1000;
+              return true;
+          }
+
+          static bool MakeUnified8K(void*& code, Region& stack) {
+              auto* arena = ReservePlaceholder();
+              if (!arena || !Split(arena, 0, 0x2000)) return false;
+              HANDLE section = MakeSection(0x2000);
+              if (!section) return false;
+              void* mapped = g_map_view3(section, g_process, arena, 0, 0x2000,
+                                         MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE,
+                                         nullptr, 0);
+              if (mapped != arena) return false;
+              auto* words = reinterpret_cast<std::uint32_t*>(arena);
+              words[0] = 0xD43E0000u; words[1] = 0xD65F03C0u;
+              FlushInstructionCache(g_process, words, 8);
+              DWORD old{};
+              if (!VirtualProtect(arena, 0x1000, PAGE_EXECUTE_READ, &old)) return false;
+              if (!VirtualProtect(arena + 0x1000, 0x1000, PAGE_READWRITE, &old)) return false;
+              code = arena;
+              stack.base = arena + 0x1000;
+              stack.size = 0x1000;
+              stack.section = section;
+              return true;
+          }
+
+          [[noreturn]] static void Resume(NtContinueFn nt_continue, void* code, const Region& stack) {
+              auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+              tib->StackLimit = stack.base;
+              tib->StackBase = stack.base + stack.size;
+              CONTEXT ctx{};
+              RtlCaptureContext(&ctx);
+              ctx.ContextFlags = CONTEXT_FULL;
+              ctx.Pc = reinterpret_cast<DWORD64>(code);
+              ctx.Sp = (reinterpret_cast<DWORD64>(stack.base + stack.size - 0x20)) & ~0xFULL;
+              DumpRegion("CODE", code);
+              DumpRegion("STACK", reinterpret_cast<void*>(ctx.Sp));
+              std::printf("IMP008B_PH_BEFORE_NT PC=0x%llX SP=0x%llX TEB_LIMIT=%p TEB_BASE=%p\n",
+                          static_cast<unsigned long long>(ctx.Pc),
+                          static_cast<unsigned long long>(ctx.Sp), tib->StackLimit, tib->StackBase);
+              std::fflush(stdout);
+              const LONG status = nt_continue(&ctx, FALSE);
+              ExitProcess(0x80u | (static_cast<unsigned long>(status) & 0x7Fu));
+          }
+
+          int main(int argc, char** argv) {
+              if (argc != 2) return 2;
+              g_process = GetCurrentProcess();
+              HMODULE kb = GetModuleHandleW(L"kernelbase.dll");
+              HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+              g_virtual_alloc2 = reinterpret_cast<VirtualAlloc2Fn>(GetProcAddress(kb, "VirtualAlloc2"));
+              g_map_view3 = reinterpret_cast<MapViewOfFile3Fn>(GetProcAddress(kb, "MapViewOfFile3"));
+              const auto nt_continue = reinterpret_cast<NtContinueFn>(GetProcAddress(nt, "NtContinue"));
+              g_exit_process = reinterpret_cast<ExitProcessFn>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ExitProcess"));
+              if (!g_virtual_alloc2 || !g_map_view3 || !nt_continue || !g_exit_process) return 3;
+              if (!AddVectoredExceptionHandler(1, ProbeVeh)) return 4;
+
+              const std::string mode = argv[1];
+              void* code = nullptr;
+              Region stack{};
+              if (mode == "stack-placeholder-0") {
+                  code = MakePrivateCode(); stack = MakePlaceholderStack(0);
+              } else if (mode == "stack-placeholder-1000") {
+                  code = MakePrivateCode(); stack = MakePlaceholderStack(0x1000);
+              } else if (mode == "adjacent-split") {
+                  if (!MakeAdjacentSplit(code, stack)) return 10;
+              } else if (mode == "adjacent-unified8k") {
+                  if (!MakeUnified8K(code, stack)) return 11;
+              } else {
+                  return 5;
+              }
+              if (!code || !stack.base) return 6;
+              Resume(nt_continue, code, stack);
+          }
+          '@ | Set-Content -Path arm64_placeholder_probe.cpp -Encoding utf8
+
+          $vsdev = Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\*\Community\Common7\Tools\VsDevCmd.bat" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $vsdev) { throw 'VsDevCmd.bat not found' }
+          $cmd = '"' + $vsdev.FullName + '" -arch=arm64 -host_arch=arm64 >nul && cl.exe /nologo /std:c++20 /O2 /EHsc arm64_placeholder_probe.cpp /Fe:arm64_placeholder_probe.exe'
+          cmd.exe /d /s /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "compile failed rc=$LASTEXITCODE" }
+          Write-Host 'IMP008B_PH_BUILD=PASS'
+
+      - name: Run placeholder matrix
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cases = @('stack-placeholder-0','stack-placeholder-1000','adjacent-split','adjacent-unified8k')
+          $rows = @()
+          foreach ($case in $cases) {
+            $out = ".\ph-$case.out.log"
+            $err = ".\ph-$case.err.log"
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = (Resolve-Path '.\arm64_placeholder_probe.exe').Path
+            $psi.Arguments = $case
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $p = New-Object System.Diagnostics.Process
+            $p.StartInfo = $psi
+            [void]$p.Start()
+            $stdout = $p.StandardOutput.ReadToEnd()
+            $stderr = $p.StandardError.ReadToEnd()
+            if (-not $p.WaitForExit(5000)) { $p.Kill(); $p.WaitForExit(); $signed = 2147483647; $hex = 'TIMEOUT' }
+            else { $signed = $p.ExitCode; $hex = ('0x{0:X8}' -f ([uint32]$p.ExitCode)) }
+            $stdout | Set-Content $out -Encoding utf8
+            $stderr | Set-Content $err -Encoding utf8
+            if ($stdout) { Write-Host $stdout }
+            if ($stderr) { Write-Host $stderr }
+            $line = "IMP008B_PH_CASE=$case EXIT_SIGNED=$signed EXIT_HEX=$hex"
+            Write-Host $line
+            $rows += $line
+          }
+          $rows | Set-Content -Path imp008b-placeholder-matrix.log -Encoding utf8
+          Write-Host 'IMP008B_PH_MATRIX=PASS'
+
+      - name: Classify placeholder matrix
+        if: always()
+        shell: powershell
+        run: |
+          Get-Content imp008b-placeholder-matrix.log
+          foreach ($case in @('stack-placeholder-0','stack-placeholder-1000','adjacent-split','adjacent-unified8k')) {
+            $pass = Select-String -Path imp008b-placeholder-matrix.log -SimpleMatch "IMP008B_PH_CASE=$case EXIT_SIGNED=42" -Quiet
+            if ($pass) { Write-Host "IMP008B_PH_CLASS=$case VEH_PASS" } else { Write-Host "IMP008B_PH_CLASS=$case VEH_FAIL" }
+          }
+
+      - name: Upload placeholder logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008b-arm64-placeholder-stack-matrix
+          path: |
+            imp008b-placeholder-matrix.log
+            ph-*.out.log
+            ph-*.err.log
+          if-no-files-found: warn
