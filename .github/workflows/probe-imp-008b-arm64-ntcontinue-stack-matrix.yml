@@ -19,7 +19,6 @@ jobs:
   ntcontinue-stack-matrix:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 20
-
     steps:
       - name: Build minimal native ARM64 probe
         shell: powershell
@@ -30,20 +29,15 @@ jobs:
           #include <windows.h>
           #include <winternl.h>
           #include <cstdint>
-          #include <cstdio>
-          #include <cstring>
           #include <string>
 
           using NtContinueFn = LONG (NTAPI*)(PCONTEXT, BOOLEAN);
           using ExitProcessFn = VOID (WINAPI*)(UINT);
-
           static ExitProcessFn g_exit_process = nullptr;
 
           static LONG CALLBACK ProbeVeh(PEXCEPTION_POINTERS ep) noexcept {
-              if (ep == nullptr || ep->ExceptionRecord == nullptr || ep->ContextRecord == nullptr ||
-                  g_exit_process == nullptr) {
+              if (!ep || !ep->ExceptionRecord || !ep->ContextRecord || !g_exit_process)
                   return EXCEPTION_CONTINUE_SEARCH;
-              }
               const DWORD code = ep->ExceptionRecord->ExceptionCode;
               auto* const ctx = ep->ContextRecord;
               ctx->Pc = reinterpret_cast<DWORD64>(g_exit_process);
@@ -52,15 +46,14 @@ jobs:
           }
 
           static void* MakePrivateCode() {
-              auto* p = static_cast<std::uint32_t*>(
-                  VirtualAlloc(nullptr, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+              auto* p = static_cast<std::uint32_t*>(VirtualAlloc(
+                  nullptr, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
               if (!p) return nullptr;
-              p[0] = 0xD43E0000u; // brk #0xF000 -- Windows ARM64 debugger breakpoint encoding
+              p[0] = 0xD43E0000u; // brk #0xF000
               p[1] = 0xD65F03C0u; // ret
               FlushInstructionCache(GetCurrentProcess(), p, 8);
               DWORD old_protect{};
-              if (!VirtualProtect(p, 0x1000, PAGE_EXECUTE_READ, &old_protect)) return nullptr;
-              return p;
+              return VirtualProtect(p, 0x1000, PAGE_EXECUTE_READ, &old_protect) ? p : nullptr;
           }
 
           static void* MakeMappedCode(HANDLE& section) {
@@ -74,15 +67,10 @@ jobs:
               p[1] = 0xD65F03C0u;
               FlushInstructionCache(GetCurrentProcess(), p, 8);
               DWORD old_protect{};
-              if (!VirtualProtect(p, 0x1000, PAGE_EXECUTE_READ, &old_protect)) return nullptr;
-              return p;
+              return VirtualProtect(p, 0x1000, PAGE_EXECUTE_READ, &old_protect) ? p : nullptr;
           }
 
-          struct StackRegion {
-              void* base{};
-              std::size_t size{};
-              HANDLE section{};
-          };
+          struct StackRegion { void* base{}; std::size_t size{}; HANDLE section{}; };
 
           static StackRegion MakePrivateStack(std::size_t size) {
               StackRegion r{};
@@ -102,9 +90,9 @@ jobs:
           }
 
           static void PublishTebStack(const StackRegion& stack) {
-              auto* const teb = NtCurrentTeb();
-              teb->NtTib.StackLimit = stack.base;
-              teb->NtTib.StackBase = static_cast<std::uint8_t*>(stack.base) + stack.size;
+              auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+              tib->StackLimit = stack.base;
+              tib->StackBase = static_cast<std::uint8_t*>(stack.base) + stack.size;
           }
 
           [[noreturn]] static void ResumeWithNtContinue(NtContinueFn nt_continue, void* code,
@@ -114,7 +102,7 @@ jobs:
               RtlCaptureContext(&ctx);
               ctx.ContextFlags = CONTEXT_FULL;
               ctx.Pc = reinterpret_cast<DWORD64>(code);
-              if (stack != nullptr) {
+              if (stack) {
                   const auto top = reinterpret_cast<std::uintptr_t>(stack->base) + stack->size;
                   ctx.Sp = static_cast<DWORD64>((top - 0x20u) & ~std::uintptr_t{0xFu});
                   if (publish_teb) PublishTebStack(*stack);
@@ -137,38 +125,31 @@ jobs:
               void* code = (mode == "nt-host-mappedcode") ? MakeMappedCode(code_section)
                                                           : MakePrivateCode();
               if (!code) return 5;
-
               if (mode == "direct-host") {
                   reinterpret_cast<void(*)()>(code)();
                   return 6;
               }
-              if (mode == "nt-host" || mode == "nt-host-mappedcode") {
+              if (mode == "nt-host" || mode == "nt-host-mappedcode")
                   ResumeWithNtContinue(nt_continue, code, nullptr, false);
-              }
               if (mode == "nt-private-64k-noteb") {
-                  const auto stack = MakePrivateStack(0x10000);
-                  if (!stack.base) return 7;
-                  ResumeWithNtContinue(nt_continue, code, &stack, false);
+                  const auto s = MakePrivateStack(0x10000); if (!s.base) return 7;
+                  ResumeWithNtContinue(nt_continue, code, &s, false);
               }
               if (mode == "nt-private-4k-teb") {
-                  const auto stack = MakePrivateStack(0x1000);
-                  if (!stack.base) return 7;
-                  ResumeWithNtContinue(nt_continue, code, &stack, true);
+                  const auto s = MakePrivateStack(0x1000); if (!s.base) return 7;
+                  ResumeWithNtContinue(nt_continue, code, &s, true);
               }
               if (mode == "nt-private-64k-teb") {
-                  const auto stack = MakePrivateStack(0x10000);
-                  if (!stack.base) return 7;
-                  ResumeWithNtContinue(nt_continue, code, &stack, true);
+                  const auto s = MakePrivateStack(0x10000); if (!s.base) return 7;
+                  ResumeWithNtContinue(nt_continue, code, &s, true);
               }
               if (mode == "nt-mapped-4k-teb") {
-                  const auto stack = MakeMappedStack(0x1000);
-                  if (!stack.base) return 8;
-                  ResumeWithNtContinue(nt_continue, code, &stack, true);
+                  const auto s = MakeMappedStack(0x1000); if (!s.base) return 8;
+                  ResumeWithNtContinue(nt_continue, code, &s, true);
               }
               if (mode == "nt-mapped-64k-teb") {
-                  const auto stack = MakeMappedStack(0x10000);
-                  if (!stack.base) return 8;
-                  ResumeWithNtContinue(nt_continue, code, &stack, true);
+                  const auto s = MakeMappedStack(0x10000); if (!s.base) return 8;
+                  ResumeWithNtContinue(nt_continue, code, &s, true);
               }
               return 9;
           }
@@ -188,16 +169,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Continue'
-          $cases = @(
-            'direct-host',
-            'nt-host',
-            'nt-host-mappedcode',
-            'nt-private-64k-noteb',
-            'nt-private-4k-teb',
-            'nt-private-64k-teb',
-            'nt-mapped-4k-teb',
-            'nt-mapped-64k-teb'
-          )
+          $cases = @('direct-host','nt-host','nt-host-mappedcode','nt-private-64k-noteb','nt-private-4k-teb','nt-private-64k-teb','nt-mapped-4k-teb','nt-mapped-64k-teb')
           $rows = @()
           foreach ($case in $cases) {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -208,13 +180,9 @@ jobs:
             $p.StartInfo = $psi
             [void]$p.Start()
             if (-not $p.WaitForExit(5000)) {
-              $p.Kill()
-              $p.WaitForExit()
-              $signed = 0x7FFFFFFF
-              $hex = 'TIMEOUT'
+              $p.Kill(); $p.WaitForExit(); $signed = 0x7FFFFFFF; $hex = 'TIMEOUT'
             } else {
-              $signed = $p.ExitCode
-              $hex = ('0x{0:X8}' -f ([uint32]$p.ExitCode))
+              $signed = $p.ExitCode; $hex = ('0x{0:X8}' -f ([uint32]$p.ExitCode))
             }
             $line = "IMP008B_NTSTACK_CASE=$case EXIT_SIGNED=$signed EXIT_HEX=$hex"
             Write-Host $line
