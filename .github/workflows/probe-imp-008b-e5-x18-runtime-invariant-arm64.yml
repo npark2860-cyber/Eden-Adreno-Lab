@@ -127,14 +127,16 @@ jobs:
         }
         params->lock.store(SpinLockUnlocked, std::memory_order_release);
         return EXCEPTION_CONTINUE_SEARCH;
-'''
+          '''
+          rold = rold.replace('\n          ', '\n')
           rnew = '''        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,
                                                      process->GetPostHandlers())) {
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         params->lock.store(SpinLockUnlocked, std::memory_order_release);
         return EXCEPTION_CONTINUE_SEARCH;
-'''
+          '''
+          rnew = rnew.replace('\n          ', '\n')
           rcount = rtext.count(rold)
           if rcount != 1:
               raise SystemExit(f'historical x18 VEH return anchor count={rcount}')
