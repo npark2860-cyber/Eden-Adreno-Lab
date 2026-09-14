@@ -1,0 +1,202 @@
+name: Probe IMP-008B ARM64 Placeholder Private Stack
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-arm64-placeholder-private-stack.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-arm64-placeholder-private-stack
+  cancel-in-progress: false
+
+jobs:
+  placeholder-private-stack:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Build native ARM64 private replacement probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <winternl.h>
+          #include <cstdint>
+          #include <cstdio>
+          #include <string>
+
+          #ifndef MEM_RESERVE_PLACEHOLDER
+          #define MEM_RESERVE_PLACEHOLDER 0x00040000
+          #endif
+          #ifndef MEM_REPLACE_PLACEHOLDER
+          #define MEM_REPLACE_PLACEHOLDER 0x00004000
+          #endif
+          #ifndef MEM_PRESERVE_PLACEHOLDER
+          #define MEM_PRESERVE_PLACEHOLDER 0x00000002
+          #endif
+
+          using NtContinueFn = LONG (NTAPI*)(PCONTEXT, BOOLEAN);
+          using VirtualAlloc2Fn = PVOID (WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG,
+                                                  MEM_EXTENDED_PARAMETER*, ULONG);
+          using ExitProcessFn = VOID (WINAPI*)(UINT);
+
+          static HANDLE g_process{};
+          static VirtualAlloc2Fn g_virtual_alloc2{};
+          static ExitProcessFn g_exit_process{};
+
+          static LONG CALLBACK Veh(PEXCEPTION_POINTERS ep) noexcept {
+              if (!ep || !ep->ExceptionRecord || !ep->ContextRecord || !g_exit_process)
+                  return EXCEPTION_CONTINUE_SEARCH;
+              const DWORD code = ep->ExceptionRecord->ExceptionCode;
+              ep->ContextRecord->Pc = reinterpret_cast<DWORD64>(g_exit_process);
+              ep->ContextRecord->X0 = code == EXCEPTION_BREAKPOINT ? 42u : 43u;
+              return EXCEPTION_CONTINUE_EXECUTION;
+          }
+
+          static void Dump(const char* tag, void* p) {
+              MEMORY_BASIC_INFORMATION mbi{};
+              VirtualQuery(p, &mbi, sizeof(mbi));
+              std::printf("IMP008B_PRIV_%s ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX STATE=0x%lX PROTECT=0x%lX TYPE=0x%lX\n",
+                          tag, p, mbi.BaseAddress, mbi.AllocationBase,
+                          static_cast<unsigned long long>(mbi.RegionSize),
+                          static_cast<unsigned long>(mbi.State),
+                          static_cast<unsigned long>(mbi.Protect),
+                          static_cast<unsigned long>(mbi.Type));
+              std::fflush(stdout);
+          }
+
+          static void* MakeCode() {
+              auto* p = static_cast<std::uint32_t*>(VirtualAlloc(nullptr, 0x1000,
+                  MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+              if (!p) return nullptr;
+              p[0] = 0xD43E0000u;
+              p[1] = 0xD65F03C0u;
+              FlushInstructionCache(g_process, p, 8);
+              DWORD old{};
+              return VirtualProtect(p, 0x1000, PAGE_EXECUTE_READ, &old) ? p : nullptr;
+          }
+
+          static void* MakePrivateStack(std::size_t offset, ULONG replace_flags) {
+              auto* arena = static_cast<std::uint8_t*>(g_virtual_alloc2(
+                  g_process, nullptr, 0x10000, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+                  PAGE_NOACCESS, nullptr, 0));
+              if (!arena) {
+                  std::printf("IMP008B_PRIV_RESERVE_FAIL=%lu\n", GetLastError());
+                  return nullptr;
+              }
+              if (!VirtualFreeEx(g_process, arena + offset, 0x1000,
+                                 MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
+                  std::printf("IMP008B_PRIV_SPLIT_FAIL=%lu\n", GetLastError());
+                  return nullptr;
+              }
+              SetLastError(0);
+              void* p = g_virtual_alloc2(g_process, arena + offset, 0x1000,
+                                         replace_flags, PAGE_READWRITE, nullptr, 0);
+              std::printf("IMP008B_PRIV_REPLACE FLAGS=0x%lX PTR=%p ERROR=%lu OFFSET=0x%llX\n",
+                          static_cast<unsigned long>(replace_flags), p, GetLastError(),
+                          static_cast<unsigned long long>(offset));
+              std::fflush(stdout);
+              return p;
+          }
+
+          [[noreturn]] static void Resume(NtContinueFn nt_continue, void* code, void* stack) {
+              auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+              tib->StackLimit = stack;
+              tib->StackBase = static_cast<std::uint8_t*>(stack) + 0x1000;
+              CONTEXT ctx{};
+              RtlCaptureContext(&ctx);
+              ctx.ContextFlags = CONTEXT_FULL;
+              ctx.Pc = reinterpret_cast<DWORD64>(code);
+              ctx.Sp = (reinterpret_cast<DWORD64>(tib->StackBase) - 0x20) & ~0xFULL;
+              Dump("STACK", reinterpret_cast<void*>(ctx.Sp));
+              std::printf("IMP008B_PRIV_BEFORE_NT PC=0x%llX SP=0x%llX LIMIT=%p BASE=%p\n",
+                          static_cast<unsigned long long>(ctx.Pc),
+                          static_cast<unsigned long long>(ctx.Sp), tib->StackLimit, tib->StackBase);
+              std::fflush(stdout);
+              const LONG status = nt_continue(&ctx, FALSE);
+              ExitProcess(0x80u | (static_cast<unsigned long>(status) & 0x7Fu));
+          }
+
+          int main(int argc, char** argv) {
+              if (argc != 2) return 2;
+              g_process = GetCurrentProcess();
+              HMODULE kb = GetModuleHandleW(L"kernelbase.dll");
+              HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+              g_virtual_alloc2 = reinterpret_cast<VirtualAlloc2Fn>(GetProcAddress(kb, "VirtualAlloc2"));
+              const auto nt_continue = reinterpret_cast<NtContinueFn>(GetProcAddress(nt, "NtContinue"));
+              g_exit_process = reinterpret_cast<ExitProcessFn>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ExitProcess"));
+              if (!g_virtual_alloc2 || !nt_continue || !g_exit_process) return 3;
+              if (!AddVectoredExceptionHandler(1, Veh)) return 4;
+
+              const std::string mode = argv[1];
+              std::size_t offset = mode.find("1000") != std::string::npos ? 0x1000 : 0;
+              ULONG flags = MEM_REPLACE_PLACEHOLDER;
+              if (mode.find("reservecommit") != std::string::npos)
+                  flags |= MEM_RESERVE | MEM_COMMIT;
+              else if (mode.find("commit") != std::string::npos)
+                  flags |= MEM_COMMIT;
+              void* code = MakeCode();
+              void* stack = MakePrivateStack(offset, flags);
+              if (!code || !stack) return 10;
+              Resume(nt_continue, code, stack);
+          }
+          '@ | Set-Content -Path arm64_private_stack_probe.cpp -Encoding utf8
+
+          $vsdev = Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\*\Community\Common7\Tools\VsDevCmd.bat" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $vsdev) { throw 'VsDevCmd.bat not found' }
+          $cmd = '"' + $vsdev.FullName + '" -arch=arm64 -host_arch=arm64 >nul && cl.exe /nologo /std:c++20 /O2 /EHsc arm64_private_stack_probe.cpp /Fe:arm64_private_stack_probe.exe'
+          cmd.exe /d /s /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "compile failed rc=$LASTEXITCODE" }
+          Write-Host 'IMP008B_PRIV_BUILD=PASS'
+
+      - name: Run private replacement matrix
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cases = @('replace-0','replace-1000','commit-0','commit-1000','reservecommit-0','reservecommit-1000')
+          $rows = @()
+          foreach ($case in $cases) {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = (Resolve-Path '.\arm64_private_stack_probe.exe').Path
+            $psi.Arguments = $case
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $p = New-Object System.Diagnostics.Process
+            $p.StartInfo = $psi
+            [void]$p.Start()
+            $stdout = $p.StandardOutput.ReadToEnd()
+            $stderr = $p.StandardError.ReadToEnd()
+            $p.WaitForExit()
+            if ($stdout) { Write-Host $stdout }
+            if ($stderr) { Write-Host $stderr }
+            $signed = $p.ExitCode
+            $line = "IMP008B_PRIV_CASE=$case EXIT_SIGNED=$signed"
+            Write-Host $line
+            $rows += $line
+          }
+          $rows | Set-Content -Path imp008b-private-stack-matrix.log -Encoding utf8
+
+      - name: Classify private replacement matrix
+        if: always()
+        shell: powershell
+        run: |
+          Get-Content imp008b-private-stack-matrix.log
+          $pass = Select-String -Path imp008b-private-stack-matrix.log -Pattern 'EXIT_SIGNED=42' -Quiet
+          if ($pass) { Write-Host 'IMP008B_PRIV_ANY_VEH=PASS' } else { Write-Host 'IMP008B_PRIV_ANY_VEH=FAIL' }
+
+      - name: Upload private replacement log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008b-arm64-placeholder-private-stack
+          path: imp008b-private-stack-matrix.log
+          if-no-files-found: warn
