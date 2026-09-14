@@ -71,7 +71,7 @@ jobs:
           fi
           echo 'IMP008B_E5_SCOPE_SOURCE=PASS'
 
-      - name: Apply checkout-only E5 inline NtContinue restore A/B
+      - name: Apply checkout-only E5 inline NtContinue plus historical x18 VEH return A/B
         shell: bash
         working-directory: eden
         run: |
@@ -118,6 +118,27 @@ jobs:
           if count != 1:
               raise SystemExit(f'inline NtContinue restore anchor count={count}')
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          runtime = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          rtext = runtime.read_text(encoding='utf-8')
+          rold = '''        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,
+                                                     process->GetPostHandlers())) {
+            NCE::WindowsNceTransition::ContinueContext(context);
+        }
+        params->lock.store(SpinLockUnlocked, std::memory_order_release);
+        return EXCEPTION_CONTINUE_SEARCH;
+'''
+          rnew = '''        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,
+                                                     process->GetPostHandlers())) {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        params->lock.store(SpinLockUnlocked, std::memory_order_release);
+        return EXCEPTION_CONTINUE_SEARCH;
+'''
+          rcount = rtext.count(rold)
+          if rcount != 1:
+              raise SystemExit(f'historical x18 VEH return anchor count={rcount}')
+          runtime.write_text(rtext.replace(rold, rnew, 1), encoding='utf-8')
           PY
           grep -Fq 'const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);' "$transition"
           grep -Fq '[[noreturn]] void WindowsNceTransition::ContinueContext' "$transition"
@@ -127,12 +148,16 @@ jobs:
           fi
           grep -Fq 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' "$runtime"
           grep -Fq 'RestoreHostTebStackBounds(teb_stack_bounds)' "$runtime"
-          grep -Fq 'NCE::WindowsNceTransition::ContinueContext(context);' "$runtime"
-          git diff --check -- "$transition"
+          grep -Fq 'return EXCEPTION_CONTINUE_EXECUTION;' "$runtime"
+          if grep -A3 -F 'WindowsX18FallbackTrap::TryRedirect(exception, *guest,' "$runtime" | grep -Fq 'NCE::WindowsNceTransition::ContinueContext(context);'; then
+            echo 'IMP008B_E5_X18_HISTORICAL_VEH_RETURN=FAIL' >&2
+            exit 62
+          fi
+          git diff --check -- "$transition" "$runtime"
           echo 'IMP008B_E5_INLINE_NTCONTINUE_AB=APPLIED'
           echo 'IMP008B_E5_PRODUCTION_TEB_PATH=PRESERVED'
-          echo 'IMP008B_E5_X18_CONTINUE_SEMANTIC=PRESERVED'
-          git diff -- "$transition"
+          echo 'IMP008B_E5_X18_HISTORICAL_VEH_RETURN_AB=APPLIED'
+          git diff -- "$transition" "$runtime"
 
       - name: Add E5 target to checkout only
         shell: bash
