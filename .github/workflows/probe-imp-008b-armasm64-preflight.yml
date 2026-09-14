@@ -1,0 +1,76 @@
+name: Probe IMP-008B ARMASM64 Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-armasm64-preflight.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-armasm64-preflight
+  cancel-in-progress: false
+
+jobs:
+  armasm64-preflight:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Discover Visual Studio ARM64 assembler
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host "IMP008B_ARMASM64_RUNNER_NAME=${{ runner.name }}"
+          Write-Host "IMP008B_ARMASM64_RUNNER_OS=${{ runner.os }}"
+          Write-Host "IMP008B_ARMASM64_RUNNER_ARCH=${{ runner.arch }}"
+
+          $candidatePaths = New-Object System.Collections.Generic.List[string]
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (Test-Path $vswhere) {
+            Write-Host "IMP008B_ARMASM64_VSWHERE=$vswhere"
+            $installations = @(& $vswhere -products * -property installationPath)
+            foreach ($installation in $installations) {
+              if ([string]::IsNullOrWhiteSpace($installation)) { continue }
+              Write-Host "IMP008B_ARMASM64_VS_INSTALL=$installation"
+              $pattern = Join-Path $installation 'VC\Tools\MSVC\*\bin\Hostarm64\arm64\armasm64.exe'
+              Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | ForEach-Object {
+                $candidatePaths.Add($_.FullName)
+              }
+            }
+          } else {
+            Write-Host 'IMP008B_ARMASM64_VSWHERE=MISSING'
+          }
+
+          $roots = @(
+            (Join-Path $env:ProgramFiles 'Microsoft Visual Studio\2022'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022')
+          )
+          foreach ($root in $roots) {
+            if (-not (Test-Path $root)) { continue }
+            Get-ChildItem -Path $root -Filter armasm64.exe -File -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\VC\\Tools\\MSVC\\[^\\]+\\bin\\Hostarm64\\arm64\\armasm64\.exe$' } |
+              ForEach-Object { $candidatePaths.Add($_.FullName) }
+          }
+
+          $candidates = @($candidatePaths | Sort-Object -Unique -Descending)
+          if ($candidates.Count -eq 0) {
+            Write-Host 'IMP008B_E5_ARMASM64_PRESENT=FAIL'
+            throw 'Visual Studio ARM64 armasm64.exe was not found on DREAMPAINTER'
+          }
+
+          foreach ($candidate in $candidates) {
+            Write-Host "IMP008B_ARMASM64_CANDIDATE=$candidate"
+          }
+
+          $selected = $candidates[0]
+          $version = (Get-Item $selected).VersionInfo.FileVersion
+          Write-Host 'IMP008B_E5_ARMASM64_PRESENT=PASS'
+          Write-Host "IMP008B_E5_ARMASM64_PATH=$selected"
+          Write-Host "IMP008B_E5_ARMASM64_VERSION=$version"
