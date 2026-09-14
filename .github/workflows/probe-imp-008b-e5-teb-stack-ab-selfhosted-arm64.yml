@@ -42,11 +42,23 @@ jobs:
           }
           Write-Host 'IMP008B_E5_AB_RETAINED_WORKSPACE=PASS'
 
-      - name: Set up retained CLANGARM64 shell
+      - name: Set up CLANGARM64 toolchain for incremental rebuild
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANGARM64
-          update: false
+          update: true
+          cache: false
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
 
       - name: Apply checkout-only historical RunThread TEB-stack bypass
         shell: msys2 {0}
@@ -84,9 +96,12 @@ jobs:
 
           text = text.replace(install, '', 1)
           text = text.replace(restore, historical_restore, 1)
+          install_anchor = '        NCE::CurrentNceContext::Install(thread_params);\n'
+          if text.count(install_anchor) != 1:
+              raise SystemExit(f'CurrentNceContext install anchor count={text.count(install_anchor)}')
           text = text.replace(
-              '        NCE::CurrentNceContext::Install(thread_params);\n',
-              '        NCE::CurrentNceContext::Install(thread_params);\n'
+              install_anchor,
+              install_anchor +
               '        std::fputs("IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS\\n", stderr);\n'
               '        std::fflush(stderr);\n',
               1)
