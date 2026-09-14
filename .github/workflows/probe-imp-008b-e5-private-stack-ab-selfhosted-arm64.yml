@@ -1,0 +1,299 @@
+name: Probe IMP-008B E5 Private Stack A-B Selfhosted ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-private-stack-ab-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-private-stack-ab-selfhosted-arm64
+  cancel-in-progress: false
+
+jobs:
+  e5-private-stack-ab:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 60
+    steps:
+      - name: Verify retained E5 diagnostic workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          Write-Host "IMP008B_E5_PRIV_WORKSPACE_HEAD=$head"
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained E5 workspace HEAD: $head" }
+          $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) { throw 'historical RunThread TEB bypass missing' }
+          if (Select-String -Path $runtime -SimpleMatch 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' -Quiet) { throw 'early TEB publication unexpectedly active' }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
+          if (-not (Test-Path 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp')) { throw 'E5 probe source missing' }
+          Write-Host 'IMP008B_E5_PRIV_RETAINED_WORKSPACE=PASS'
+
+      - name: Set up CLANGARM64 toolchain for incremental rebuild
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Apply standard guest context plus late TEB and private-stack A-B
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          transition='src/core/arm/nce/windows_nce_transition.cpp'
+          probe='probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          git checkout -- "$transition" "$probe"
+          python - <<'PY'
+          from pathlib import Path
+
+          def read_norm(path):
+              raw = path.read_bytes()
+              return raw.decode('utf-8').replace('\r\n', '\n'), b'\r\n' in raw
+
+          def write_norm(path, text, crlf):
+              if crlf:
+                  text = text.replace('\n', '\r\n')
+              path.write_bytes(text.encode('utf-8'))
+
+          # 1) Restore the normal guest register context, but publish guest TEB stack bounds only
+          # at the last possible moment before NtContinue.
+          p = Path('src/core/arm/nce/windows_nce_transition.cpp')
+          text, crlf = read_norm(p)
+          old = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
+    // underlying transition directly so the arbitrary-PC guest restore and exception continuation
+    // share the same Windows context-resume primitive.
+    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
+    std::fflush(stderr);
+    WindowsNceTransition::ContinueContext(context);
+'''
+          new = '''    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_continue = ntdll != nullptr
+                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
+                                 : nullptr;
+    if (nt_continue == nullptr) {
+        std::fputs("IMP008B_E5_PRIV_NTCONTINUE_RESOLVE=FAIL\\n", stderr);
+        std::fflush(stderr);
+        std::abort();
+    }
+
+    MEMORY_BASIC_INFORMATION stack_mbi{};
+    if (context.Sp == 0 ||
+        VirtualQuery(reinterpret_cast<const void*>(context.Sp - 1), &stack_mbi,
+                     sizeof(stack_mbi)) == 0 ||
+        stack_mbi.State != MEM_COMMIT) {
+        std::fputs("IMP008B_E5_PRIV_STACK_QUERY=FAIL\\n", stderr);
+        std::fflush(stderr);
+        std::abort();
+    }
+    const auto stack_limit = reinterpret_cast<std::uintptr_t>(stack_mbi.BaseAddress);
+    const auto stack_base = stack_limit + static_cast<std::uintptr_t>(stack_mbi.RegionSize);
+    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+
+    std::fprintf(stderr,
+                 "IMP008B_E5_PRIV_LATE_TEB_PLAN=PASS PC=0x%llX SP=0x%llX LIMIT=0x%llX BASE=0x%llX TYPE=0x%lX\\n",
+                 static_cast<unsigned long long>(context.Pc),
+                 static_cast<unsigned long long>(context.Sp),
+                 static_cast<unsigned long long>(stack_limit),
+                 static_cast<unsigned long long>(stack_base),
+                 static_cast<unsigned long>(stack_mbi.Type));
+    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
+    std::fflush(stderr);
+
+    // No Windows/runtime call is allowed between publishing guest bounds and NtContinue.
+    tib->StackLimit = reinterpret_cast<void*>(stack_limit);
+    tib->StackBase = reinterpret_cast<void*>(stack_base);
+    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
+    std::fprintf(stderr, "IMP008B_E5_PRIV_NTCONTINUE_RETURN=0x%08lX\\n",
+                 static_cast<unsigned long>(status));
+    std::fflush(stderr);
+    std::abort();
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'late TEB anchor count={text.count(old)}')
+          text = text.replace(old, new, 1)
+          write_norm(p, text, crlf)
+
+          # 2) Convert only the E5 guest stack page from the HostMemory mapped-view VAD into a
+          # normal private VAD at the exact same guest virtual address. Preserve its contents.
+          p = Path('probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp')
+          text, crlf = read_norm(p)
+          if '#include <array>\n' not in text:
+              text = text.replace('#include <cstddef>\n', '#include <array>\n#include <cstddef>\n#include <cstring>\n', 1)
+
+          anchor = '''std::uint64_t ReadPhysicalX18() {
+    std::uint64_t value{};
+    asm volatile("mov %0, x18" : "=r"(value));
+    return value;
+}
+'''
+          helper = anchor + '''
+#ifndef MEM_REPLACE_PLACEHOLDER
+#define MEM_REPLACE_PLACEHOLDER 0x00004000
+#endif
+#ifndef MEM_PRESERVE_PLACEHOLDER
+#define MEM_PRESERVE_PLACEHOLDER 0x00000002
+#endif
+
+using Imp008bVirtualAlloc2Fn = PVOID(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG,
+                                              MEM_EXTENDED_PARAMETER*, ULONG);
+using Imp008bUnmapViewOfFile2Fn = BOOL(WINAPI*)(HANDLE, PVOID, ULONG);
+
+bool PromoteGuestStackPageToPrivate(u64 page_address) {
+    auto* const page = reinterpret_cast<std::byte*>(page_address);
+    std::array<std::byte, PageSize> snapshot{};
+    std::memcpy(snapshot.data(), page, snapshot.size());
+
+    MEMORY_BASIC_INFORMATION before{};
+    if (VirtualQuery(page, &before, sizeof(before)) == 0 || before.State != MEM_COMMIT) {
+        return false;
+    }
+
+    const HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
+    const auto virtual_alloc2 = kernelbase != nullptr
+        ? reinterpret_cast<Imp008bVirtualAlloc2Fn>(GetProcAddress(kernelbase, "VirtualAlloc2"))
+        : nullptr;
+    const auto unmap_view2 = kernelbase != nullptr
+        ? reinterpret_cast<Imp008bUnmapViewOfFile2Fn>(GetProcAddress(kernelbase, "UnmapViewOfFile2"))
+        : nullptr;
+    if (virtual_alloc2 == nullptr || unmap_view2 == nullptr) {
+        return false;
+    }
+
+    std::fprintf(stderr,
+                 "IMP008B_E5_PRIV_STACK_BEFORE ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX TYPE=0x%lX PROTECT=0x%lX\\n",
+                 page, before.BaseAddress, before.AllocationBase,
+                 static_cast<unsigned long long>(before.RegionSize),
+                 static_cast<unsigned long>(before.Type),
+                 static_cast<unsigned long>(before.Protect));
+    std::fflush(stderr);
+
+    if (!unmap_view2(GetCurrentProcess(), page, MEM_PRESERVE_PLACEHOLDER)) {
+        std::fprintf(stderr, "IMP008B_E5_PRIV_UNMAP_FAIL=%lu\\n",
+                     static_cast<unsigned long>(GetLastError()));
+        std::fflush(stderr);
+        return false;
+    }
+
+    constexpr ULONG replace_flags = MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER;
+    void* const replacement = virtual_alloc2(GetCurrentProcess(), page, PageSize,
+                                             replace_flags, PAGE_READWRITE, nullptr, 0);
+    if (replacement != page) {
+        std::fprintf(stderr, "IMP008B_E5_PRIV_REPLACE_FAIL PTR=%p ERROR=%lu\\n",
+                     replacement, static_cast<unsigned long>(GetLastError()));
+        std::fflush(stderr);
+        return false;
+    }
+
+    std::memcpy(page, snapshot.data(), snapshot.size());
+    MEMORY_BASIC_INFORMATION after{};
+    if (VirtualQuery(page, &after, sizeof(after)) == 0) {
+        return false;
+    }
+    std::fprintf(stderr,
+                 "IMP008B_E5_PRIV_STACK_AFTER ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX TYPE=0x%lX PROTECT=0x%lX\\n",
+                 page, after.BaseAddress, after.AllocationBase,
+                 static_cast<unsigned long long>(after.RegionSize),
+                 static_cast<unsigned long>(after.Type),
+                 static_cast<unsigned long>(after.Protect));
+    std::fflush(stderr);
+    return after.State == MEM_COMMIT && after.Type == MEM_PRIVATE && after.Protect == PAGE_READWRITE;
+}
+'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'private stack helper anchor count={text.count(anchor)}')
+          text = text.replace(anchor, helper, 1)
+
+          call_anchor = '''    const u64 guest_pc = load_base_u64 + GuestCodeOffset;
+    const u64 guest_sp = load_base_u64 + InitialImageSize - 0x20;
+    Kernel::Svc::ThreadContext context{};
+'''
+          call_new = '''    const u64 guest_pc = load_base_u64 + GuestCodeOffset;
+    const u64 guest_sp = load_base_u64 + InitialImageSize - 0x20;
+    const u64 guest_stack_page = guest_sp & ~static_cast<u64>(PageSize - 1);
+    if (!PromoteGuestStackPageToPrivate(guest_stack_page)) {
+        return Fail("IMP008B_E5_PRIVATE_STACK_PROMOTE");
+    }
+    Trace("IMP008B_E5_PRIVATE_STACK_READY");
+    Kernel::Svc::ThreadContext context{};
+'''
+          if text.count(call_anchor) != 1:
+              raise SystemExit(f'private stack call anchor count={text.count(call_anchor)}')
+          text = text.replace(call_anchor, call_new, 1)
+          write_norm(p, text, crlf)
+          PY
+          grep -Fq 'IMP008B_E5_PRIV_LATE_TEB_PLAN=PASS' "$transition"
+          grep -Fq 'PromoteGuestStackPageToPrivate' "$probe"
+          grep -Fq 'IMP008B_E5_PRIVATE_STACK_READY' "$probe"
+          git diff --check -- "$transition" "$probe"
+          echo 'IMP008B_E5_PRIV_PATCH=PASS'
+
+      - name: Rebuild E5 target incrementally
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e5_x18_runtime --parallel
+          test -f build/bin/imp008b_e5_x18_runtime.exe
+          echo 'IMP008B_E5_PRIV_INCREMENTAL_BUILD=PASS'
+
+      - name: Launch E5 private-stack A-B runtime
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          set +e
+          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-private.out.log 2> imp008b-e5-private.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-private.rc
+          cat imp008b-e5-private.out.log imp008b-e5-private.err.log > imp008b-e5-private.log 2>/dev/null || true
+          cat imp008b-e5-private.log || true
+          echo "IMP008B_E5_PRIV_LAUNCH_RC=$rc"
+          echo 'IMP008B_E5_PRIV_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify E5 private-stack boundary
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-private.log')) { throw 'private-stack runtime log missing' }
+          Get-Content 'imp008b-e5-private.log' | Select-String -Pattern 'IMP008B_E5_(PRIVATE_STACK|PRIV_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|EXCEPTION_)|IMP008B_E2_'
+          $private = Select-String -Path 'imp008b-e5-private.log' -SimpleMatch 'IMP008B_E5_PRIVATE_STACK_READY=PASS' -Quiet
+          if (-not $private) { throw 'guest stack was not converted to MEM_PRIVATE' }
+          $generic = Select-String -Path 'imp008b-e5-private.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          $x18 = Select-String -Path 'imp008b-e5-private.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
+          $returned = Select-String -Path 'imp008b-e5-private.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          if ($generic) { Write-Host 'IMP008B_E5_PRIV_GENERIC_VEH=PASS' } else { Write-Host 'IMP008B_E5_PRIV_GENERIC_VEH=NO_ENTRY' }
+          if ($x18) { Write-Host 'IMP008B_E5_PRIV_X18_VEH=PASS' } else { Write-Host 'IMP008B_E5_PRIV_X18_VEH=NO_ENTRY' }
+          if ($returned) { Write-Host 'IMP008B_E5_PRIV_RUNTHREAD_RETURNED=PASS' } else { Write-Host 'IMP008B_E5_PRIV_RUNTHREAD_RETURNED=NO' }
+
+      - name: Upload E5 private-stack logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-private-stack-ab-selfhosted
+          path: |
+            eden/imp008b-e5-private.log
+            eden/imp008b-e5-private.out.log
+            eden/imp008b-e5-private.err.log
+            eden/imp008b-e5-private.rc
+          if-no-files-found: warn
