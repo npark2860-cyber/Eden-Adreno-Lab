@@ -1,0 +1,157 @@
+name: Probe IMP-008B E5 TEB Stack A-B Selfhosted ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-teb-stack-ab-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-teb-stack-ab-selfhosted-arm64
+  cancel-in-progress: false
+
+jobs:
+  e5-teb-stack-ab:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Verify retained E5 workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          Write-Host "IMP008B_E5_AB_WORKSPACE_HEAD=$head"
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') {
+            throw "unexpected retained E5 workspace HEAD: $head"
+          }
+          if (-not (Test-Path 'eden/build/bin/imp008b_e5_x18_runtime.exe')) {
+            throw 'retained E5 executable missing'
+          }
+          if (-not (Select-String -Path 'eden/src/core/arm/nce/arm_nce_windows.cpp' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) {
+            throw 'retained checkout-only x18 VEH observer missing'
+          }
+          if (-not (Select-String -Path 'eden/src/core/arm/nce/windows_nce_transition.cpp' -SimpleMatch 'const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);' -Quiet)) {
+            throw 'retained checkout-only inline NtContinue baseline missing'
+          }
+          Write-Host 'IMP008B_E5_AB_RETAINED_WORKSPACE=PASS'
+
+      - name: Set up retained CLANGARM64 shell
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+
+      - name: Apply checkout-only historical RunThread TEB-stack bypass
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          raw = path.read_bytes()
+          had_crlf = b'\r\n' in raw
+          text = raw.decode('utf-8').replace('\r\n', '\n')
+
+          install = '''        WindowsTebStackBounds teb_stack_bounds{};
+          if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
+              NCE::CurrentNceContext::Clear();
+              hr = HaltReason::PrefetchAbort;
+              break;
+          }
+
+          '''.replace('\n          ', '\n')
+          restore = '''
+          RestoreHostTebStackBounds(teb_stack_bounds);
+          NCE::CurrentNceContext::Clear();
+          '''.replace('\n          ', '\n')
+          historical_restore = '''
+          NCE::CurrentNceContext::Clear();
+          '''.replace('\n          ', '\n')
+
+          if text.count(install) != 1:
+              raise SystemExit(f'TEB install block count={text.count(install)}')
+          if text.count(restore) != 1:
+              raise SystemExit(f'TEB restore block count={text.count(restore)}')
+
+          text = text.replace(install, '', 1)
+          text = text.replace(restore, historical_restore, 1)
+          text = text.replace(
+              '        NCE::CurrentNceContext::Install(thread_params);\n',
+              '        NCE::CurrentNceContext::Install(thread_params);\n'
+              '        std::fputs("IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS\\n", stderr);\n'
+              '        std::fflush(stderr);\n',
+              1)
+
+          if had_crlf:
+              text = text.replace('\n', '\r\n')
+          path.write_bytes(text.encode('utf-8'))
+          PY
+          grep -Fq 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' src/core/arm/nce/arm_nce_windows.cpp
+          if grep -Fq 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' src/core/arm/nce/arm_nce_windows.cpp; then
+            echo 'TEB stack publication still present in RunThread' >&2
+            exit 71
+          fi
+          git diff --check -- src/core/arm/nce/arm_nce_windows.cpp
+          echo 'IMP008B_E5_AB_TEB_STACK_BYPASS=PASS'
+
+      - name: Rebuild E5 target incrementally
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e5_x18_runtime --parallel
+          test -f build/bin/imp008b_e5_x18_runtime.exe
+          echo 'IMP008B_E5_AB_INCREMENTAL_BUILD=PASS'
+
+      - name: Launch E5 A-B runtime
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          exe='build/bin/imp008b_e5_x18_runtime.exe'
+          set +e
+          timeout 30s "$exe" > imp008b-e5-ab.out.log 2> imp008b-e5-ab.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-ab.rc
+          cat imp008b-e5-ab.out.log 2>/dev/null || true
+          cat imp008b-e5-ab.err.log >&2 2>/dev/null || true
+          cat imp008b-e5-ab.out.log imp008b-e5-ab.err.log > imp008b-e5-ab.log 2>/dev/null || true
+          echo "IMP008B_E5_AB_LAUNCH_RC=$rc"
+          echo 'IMP008B_E5_AB_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify E5 A-B boundary
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-ab.log')) { throw 'A-B runtime log missing' }
+          Write-Host '--- E5 TEB-stack A/B boundary ---'
+          Get-Content 'imp008b-e5-ab.log' | Select-String -Pattern 'IMP008B_E5_AB_|IMP008B_E5_(PRE_RUNTHREAD|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|EXCEPTION_)|IMP008B_E2_(RESTORE_|BEFORE_NT_CONTINUE)'
+          $beforeNt = Select-String -Path 'imp008b-e5-ab.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet
+          if ($beforeNt) {
+            Write-Host 'IMP008B_E5_AB_BEFORE_NT_CONTINUE=PASS'
+          } else {
+            throw 'TEB-stack bypass did not recover BEFORE_NT_CONTINUE boundary'
+          }
+
+      - name: Upload E5 A-B logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-teb-stack-ab-selfhosted
+          path: |
+            eden/imp008b-e5-ab.log
+            eden/imp008b-e5-ab.out.log
+            eden/imp008b-e5-ab.err.log
+            eden/imp008b-e5-ab.rc
+          if-no-files-found: warn
