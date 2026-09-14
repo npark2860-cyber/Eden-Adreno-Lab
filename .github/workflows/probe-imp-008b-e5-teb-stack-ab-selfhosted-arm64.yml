@@ -86,29 +86,49 @@ jobs:
               '        NCE::CurrentNceContext::Clear();\n'
           )
           historical_restore = '        NCE::CurrentNceContext::Clear();\n'
-
-          if text.count(install) != 1:
-              raise SystemExit(f'TEB install block count={text.count(install)}')
-          if text.count(restore) != 1:
-              raise SystemExit(f'TEB restore block count={text.count(restore)}')
-
-          text = text.replace(install, '', 1)
-          text = text.replace(restore, historical_restore, 1)
           install_anchor = '        NCE::CurrentNceContext::Install(thread_params);\n'
-          if text.count(install_anchor) != 1:
-              raise SystemExit(f'CurrentNceContext install anchor count={text.count(install_anchor)}')
-          text = text.replace(
-              install_anchor,
-              install_anchor +
-              '        std::fputs("IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS\\n", stderr);\n'
-              '        std::fflush(stderr);\n',
-              1)
+          marker = 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS'
+
+          if marker not in text:
+              if text.count(install) != 1:
+                  raise SystemExit(f'TEB install block count={text.count(install)}')
+              if text.count(restore) != 1:
+                  raise SystemExit(f'TEB restore block count={text.count(restore)}')
+              if text.count(install_anchor) != 1:
+                  raise SystemExit(f'CurrentNceContext install anchor count={text.count(install_anchor)}')
+              text = text.replace(install, '', 1)
+              text = text.replace(restore, historical_restore, 1)
+              text = text.replace(
+                  install_anchor,
+                  install_anchor +
+                  '        std::fputs("IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS\\n", stderr);\n'
+                  '        std::fflush(stderr);\n',
+                  1)
+          else:
+              if install in text or restore in text:
+                  raise SystemExit('historical marker present but TEB stack publication still active')
+
+          old_install_helper = '[[nodiscard]] bool InstallGuestTebStackBounds('
+          new_install_helper = '[[nodiscard, maybe_unused]] bool InstallGuestTebStackBounds('
+          if new_install_helper not in text:
+              if text.count(old_install_helper) != 1:
+                  raise SystemExit(f'InstallGuestTebStackBounds definition count={text.count(old_install_helper)}')
+              text = text.replace(old_install_helper, new_install_helper, 1)
+
+          old_restore_helper = 'void RestoreHostTebStackBounds('
+          new_restore_helper = '[[maybe_unused]] void RestoreHostTebStackBounds('
+          if new_restore_helper not in text:
+              if text.count(old_restore_helper) != 1:
+                  raise SystemExit(f'RestoreHostTebStackBounds definition count={text.count(old_restore_helper)}')
+              text = text.replace(old_restore_helper, new_restore_helper, 1)
 
           if had_crlf:
               text = text.replace('\n', '\r\n')
           path.write_bytes(text.encode('utf-8'))
           PY
           grep -Fq 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq '[[nodiscard, maybe_unused]] bool InstallGuestTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq '[[maybe_unused]] void RestoreHostTebStackBounds' src/core/arm/nce/arm_nce_windows.cpp
           if grep -Fq 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' src/core/arm/nce/arm_nce_windows.cpp; then
             echo 'TEB stack publication still present in RunThread' >&2
             exit 71
