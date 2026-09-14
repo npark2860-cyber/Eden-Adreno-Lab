@@ -114,8 +114,19 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
+          def read_normalized(path: Path):
+              raw = path.read_bytes()
+              had_crlf = b'\r\n' in raw
+              text = raw.decode('utf-8').replace('\r\n', '\n')
+              return text, had_crlf
+
+          def write_preserving(path: Path, text: str, had_crlf: bool):
+              if had_crlf:
+                  text = text.replace('\n', '\r\n')
+              path.write_bytes(text.encode('utf-8'))
+
           transition = Path('src/core/arm/nce/windows_nce_transition.cpp')
-          text = transition.read_text(encoding='utf-8')
+          text, transition_crlf = read_normalized(transition)
           old = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
               // underlying transition directly so the arbitrary-PC guest restore and exception continuation
               // share the same Windows context-resume primitive.
@@ -149,10 +160,10 @@ jobs:
           count = text.count(old)
           if count != 1:
               raise SystemExit(f'inline NtContinue restore anchor count={count}')
-          transition.write_text(text.replace(old, new, 1), encoding='utf-8')
+          write_preserving(transition, text.replace(old, new, 1), transition_crlf)
 
           runtime = Path('src/core/arm/nce/arm_nce_windows.cpp')
-          rtext = runtime.read_text(encoding='utf-8')
+          rtext, runtime_crlf = read_normalized(runtime)
           if '#include <cstdio>\n' not in rtext:
               include_anchor = '#include <cstdint>\n'
               if rtext.count(include_anchor) != 1:
@@ -212,7 +223,7 @@ jobs:
           rcount = rtext.count(rold)
           if rcount != 1:
               raise SystemExit(f'x18 VEH observer anchor count={rcount}')
-          runtime.write_text(rtext.replace(rold, rnew, 1), encoding='utf-8')
+          write_preserving(runtime, rtext.replace(rold, rnew, 1), runtime_crlf)
           PY
 
           grep -Fq 'const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);' "$transition"
@@ -255,6 +266,17 @@ jobs:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           set -euo pipefail
+          utf8_locale="$(locale -a | grep -iE '^(C|en_US)\.(UTF-8|utf8)$' | head -n1 || true)"
+          if [ -z "$utf8_locale" ]; then
+            echo 'No UTF-8 locale available in MSYS2' >&2
+            locale -a >&2
+            exit 64
+          fi
+          export LANG="$utf8_locale"
+          export LC_ALL="$utf8_locale"
+          echo "IMP008B_E5_UTF8_LOCALE=$utf8_locale"
+          locale
+          locale charmap | grep -qi 'UTF-8'
           ./.ci/build/configure.sh -DCCACHE_PATH=sccache
           test -f build/compile_commands.json
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
