@@ -1,0 +1,54 @@
+name: Probe IMP-008B ARM64 E5 Stack Shape Matrix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-arm64-e5-stack-shape-matrix.yml
+
+permissions:
+  contents: read
+
+jobs:
+  stack-shape:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Build native ARM64 stack-shape probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <winternl.h>
+          #include <cstdint>
+          #include <cstdio>
+          #include <string>
+          #ifndef MEM_RESERVE_PLACEHOLDER
+          #define MEM_RESERVE_PLACEHOLDER 0x00040000
+          #endif
+          #ifndef MEM_REPLACE_PLACEHOLDER
+          #define MEM_REPLACE_PLACEHOLDER 0x00004000
+          #endif
+          #ifndef MEM_PRESERVE_PLACEHOLDER
+          #define MEM_PRESERVE_PLACEHOLDER 0x00000002
+          #endif
+          using VA2=PVOID(WINAPI*)(HANDLE,PVOID,SIZE_T,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG); using MV3=PVOID(WINAPI*)(HANDLE,HANDLE,PVOID,ULONG64,SIZE_T,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG); using NTC=LONG(NTAPI*)(PCONTEXT,BOOLEAN); using ExitFn=VOID(WINAPI*)(UINT);
+          static ExitFn g_exit{}; static LONG CALLBACK Veh(PEXCEPTION_POINTERS ep) noexcept {if(!ep||!ep->ExceptionRecord||!ep->ContextRecord||!g_exit)return EXCEPTION_CONTINUE_SEARCH;ep->ContextRecord->Pc=(DWORD64)g_exit;ep->ContextRecord->X0=ep->ExceptionRecord->ExceptionCode==EXCEPTION_BREAKPOINT?42u:43u;return EXCEPTION_CONTINUE_EXECUTION;}
+          static void Dump(const char*t,void*p){MEMORY_BASIC_INFORMATION m{};VirtualQuery(p,&m,sizeof(m));std::printf("IMP008B_SS_%s ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX STATE=0x%lX PROTECT=0x%lX TYPE=0x%lX\n",t,p,m.BaseAddress,m.AllocationBase,(unsigned long long)m.RegionSize,(unsigned long)m.State,(unsigned long)m.Protect,(unsigned long)m.Type);std::fflush(stdout);}
+          int main(int argc,char**argv){if(argc!=2)return 2;std::string mode=argv[1];bool gap=mode.find("gap")!=std::string::npos;bool eight=mode.find("8k")!=std::string::npos;HANDLE proc=GetCurrentProcess();HMODULE kb=GetModuleHandleW(L"kernelbase.dll"),nt=GetModuleHandleW(L"ntdll.dll");auto va2=(VA2)GetProcAddress(kb,"VirtualAlloc2");auto mv3=(MV3)GetProcAddress(kb,"MapViewOfFile3");auto ntc=(NTC)GetProcAddress(nt,"NtContinue");g_exit=(ExitFn)GetProcAddress(GetModuleHandleW(L"kernel32.dll"),"ExitProcess");if(!va2||!mv3||!ntc||!g_exit||!AddVectoredExceptionHandler(1,Veh))return 3;
+            auto* arena=(std::uint8_t*)va2(proc,nullptr,0x10000,MEM_RESERVE|MEM_RESERVE_PLACEHOLDER,PAGE_NOACCESS,nullptr,0);if(!arena)return 4;if(!VirtualFreeEx(proc,arena,0x1000,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))return 5;HANDLE sec=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_EXECUTE_READWRITE,0,0x1000,nullptr);if(!sec)return 6;if(mv3(sec,proc,arena,0,0x1000,MEM_REPLACE_PLACEHOLDER,PAGE_EXECUTE_READWRITE,nullptr,0)!=arena)return 7;auto*w=(std::uint32_t*)arena;for(int i=0;i<9;i++)w[i]=0xD503201Fu;w[9]=0xD43E0000u;DWORD old{};FlushInstructionCache(proc,arena,40);if(!VirtualProtect(arena,0x1000,PAGE_EXECUTE_READ,&old))return 8;
+            SIZE_T stackSize=eight?0x2000:0x1000;SIZE_T stackOff=gap?0x2000:0x1000;if(!VirtualFreeEx(proc,arena+stackOff,stackSize,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))return 9;void*stack=va2(proc,arena+stackOff,stackSize,MEM_RESERVE|MEM_COMMIT|MEM_REPLACE_PLACEHOLDER,PAGE_READWRITE,nullptr,0);if(stack!=arena+stackOff)return 10;auto*sp=arena+stackOff+stackSize-0x20;Dump("CODE",arena+0x24);Dump("STACK",sp);if(gap)Dump("GAP",arena+0x1000);
+            CONTEXT c{};RtlCaptureContext(&c);c.ContextFlags=CONTEXT_FULL;c.Pc=(DWORD64)(arena+0x24);c.Sp=(DWORD64)sp;std::printf("IMP008B_SS_BEFORE MODE=%s PC=0x%llX SP=0x%llX LIMIT=%p BASE=%p CPSR=0x%08lX\n",mode.c_str(),(unsigned long long)c.Pc,(unsigned long long)c.Sp,stack,arena+stackOff+stackSize,(unsigned long)c.Cpsr);std::fflush(stdout);auto*tib=(NT_TIB*)NtCurrentTeb();tib->StackLimit=stack;tib->StackBase=arena+stackOff+stackSize;LONG st=ntc(&c,FALSE);ExitProcess(0x80u|(static_cast<unsigned long>(st)&0x7Fu));}
+          '@ | Set-Content arm64_stack_shape.cpp -Encoding utf8
+          $vsdev=Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\*\Community\Common7\Tools\VsDevCmd.bat" -ErrorAction SilentlyContinue|Sort-Object FullName -Descending|Select-Object -First 1;if(-not $vsdev){throw 'VsDevCmd missing'};$cmd='"'+$vsdev.FullName+'" -arch=arm64 -host_arch=arm64 >nul && cl.exe /nologo /std:c++20 /O2 /EHsc arm64_stack_shape.cpp /Fe:arm64_stack_shape.exe';cmd.exe /d /s /c $cmd;if($LASTEXITCODE-ne 0){throw "compile rc=$LASTEXITCODE"}
+      - name: Run stack-shape matrix
+        shell: powershell
+        run: |
+          $rows=@();foreach($case in @('adj-4k','gap-4k','adj-8k','gap-8k')){$psi=New-Object System.Diagnostics.ProcessStartInfo;$psi.FileName=(Resolve-Path '.\arm64_stack_shape.exe').Path;$psi.Arguments=$case;$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$p=New-Object System.Diagnostics.Process;$p.StartInfo=$psi;[void]$p.Start();$o=$p.StandardOutput.ReadToEnd();$e=$p.StandardError.ReadToEnd();$p.WaitForExit();if($o){Write-Host $o};if($e){Write-Host $e};$line="IMP008B_SS_CASE=$case EXIT_SIGNED=$($p.ExitCode)";Write-Host $line;$rows+=$line};$rows|Set-Content imp008b-stack-shape.log -Encoding utf8
+      - name: Show results
+        shell: powershell
+        run: Get-Content imp008b-stack-shape.log
