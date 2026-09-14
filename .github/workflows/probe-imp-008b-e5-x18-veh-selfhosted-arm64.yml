@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: probe-imp-008b-e5-x18-veh-selfhosted-arm64
+  cancel-in-progress: false
+
 jobs:
   e5-x18-veh-selfhosted:
     runs-on: [self-hosted, Windows, ARM64]
@@ -55,13 +59,35 @@ jobs:
           path: ci
 
       - name: Install fixed Eden CI scripts
-        shell: bash
+        shell: powershell
         run: |
-          rm -rf eden/.ci
-          cp -a ci/.ci eden/.ci
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path 'eden/.ci') {
+            Remove-Item 'eden/.ci' -Recurse -Force
+          }
+          Copy-Item 'ci/.ci' 'eden/.ci' -Recurse -Force
+          Write-Output 'IMP008B_E5_SELFHOSTED_CI_SCRIPT_INSTALL=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
 
       - name: Verify E5 source contract
-        shell: bash
+        shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
@@ -79,7 +105,7 @@ jobs:
           echo 'IMP008B_E5_SELFHOSTED_SCOPE_SOURCE=PASS'
 
       - name: Apply checkout-only E5 baseline plus x18 VEH boundary observer
-        shell: bash
+        shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
@@ -204,7 +230,7 @@ jobs:
           git diff -- "$transition" "$runtime"
 
       - name: Add E5 target to checkout only
-        shell: bash
+        shell: msys2 {0}
         working-directory: eden
         run: |
           cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
@@ -221,24 +247,6 @@ jobs:
           target_link_libraries(imp008b_e5_x18_runtime PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
           CMAKE
           echo 'IMP008B_E5_TARGET_WIRING=PASS'
-
-      - name: Set up normal Eden CLANGARM64 toolchain
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: CLANGARM64
-          update: true
-          install: >-
-            git make autoconf libtool automake-wrapper patch jq
-            pactoys ninja
-          pacboy: >-
-            qt6-tools:p qt6-translations:p qt6-svg:p
-            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
-            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
-            vulkan-memory-allocator:p vulkan-devel:p glslang:p
-            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
-            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
-            libwebp:p libtiff:p brotli:p
 
       - name: Configure normal Windows ARM64 product build
         shell: msys2 {0}
@@ -308,47 +316,63 @@ jobs:
 
       - name: Gate E5 PRE_RUNTHREAD
         if: always()
-        shell: msys2 {0}
+        shell: powershell
         working-directory: eden
-        run: grep -Fq 'IMP008B_E5_PRE_RUNTHREAD=PASS' imp008b-e5.log
+        run: |
+          if (-not (Test-Path 'imp008b-e5.log')) { throw 'imp008b-e5.log missing' }
+          if (-not (Select-String -Path 'imp008b-e5.log' -SimpleMatch 'IMP008B_E5_PRE_RUNTHREAD=PASS' -Quiet)) { throw 'PRE_RUNTHREAD missing' }
 
       - name: Gate E2 BEFORE_NT_CONTINUE
         if: always()
-        shell: msys2 {0}
+        shell: powershell
         working-directory: eden
-        run: grep -Fq 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' imp008b-e5.log
+        run: |
+          if (-not (Test-Path 'imp008b-e5.log')) { throw 'imp008b-e5.log missing' }
+          if (-not (Select-String -Path 'imp008b-e5.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet)) { throw 'BEFORE_NT_CONTINUE missing' }
 
       - name: Gate tagged x18 VEH entry
         if: always()
-        shell: msys2 {0}
+        shell: powershell
         working-directory: eden
-        run: grep -Fq 'IMP008B_E5_X18_VEH_ENTER=PASS' imp008b-e5.log
+        run: |
+          if (-not (Test-Path 'imp008b-e5.log')) { throw 'imp008b-e5.log missing' }
+          if (-not (Select-String -Path 'imp008b-e5.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) { throw 'tagged x18 VEH entry missing' }
 
       - name: Gate x18 TryRedirect
         if: always()
-        shell: msys2 {0}
+        shell: powershell
         working-directory: eden
-        run: grep -Fq 'IMP008B_E5_X18_TRYREDIRECT=PASS' imp008b-e5.log
+        run: |
+          if (-not (Test-Path 'imp008b-e5.log')) { throw 'imp008b-e5.log missing' }
+          if (-not (Select-String -Path 'imp008b-e5.log' -SimpleMatch 'IMP008B_E5_X18_TRYREDIRECT=PASS' -Quiet)) { throw 'x18 TryRedirect PASS missing' }
 
       - name: Gate x18 VEH historical return
         if: always()
-        shell: msys2 {0}
+        shell: powershell
         working-directory: eden
-        run: grep -Fq 'IMP008B_E5_X18_VEH_RETURN=PASS' imp008b-e5.log
+        run: |
+          if (-not (Test-Path 'imp008b-e5.log')) { throw 'imp008b-e5.log missing' }
+          if (-not (Select-String -Path 'imp008b-e5.log' -SimpleMatch 'IMP008B_E5_X18_VEH_RETURN=PASS' -Quiet)) { throw 'x18 VEH return missing' }
 
       - name: Gate E5 RUNTHREAD_RETURNED
         if: always()
-        shell: msys2 {0}
+        shell: powershell
         working-directory: eden
-        run: grep -Fq 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' imp008b-e5.log
+        run: |
+          if (-not (Test-Path 'imp008b-e5.log')) { throw 'imp008b-e5.log missing' }
+          if (-not (Select-String -Path 'imp008b-e5.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet)) { throw 'RUNTHREAD_RETURNED missing' }
 
       - name: Print self-hosted E5 summary
         if: always()
-        shell: msys2 {0}
+        shell: powershell
         working-directory: eden
         run: |
-          echo '--- E5 self-hosted boundary summary ---'
-          grep -E 'IMP008B_E5_(PRE_RUNTHREAD|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|EXCEPTION_)|IMP008B_E2_(RESTORE_|BEFORE_NT_CONTINUE)' imp008b-e5.log || true
+          Write-Host '--- E5 self-hosted boundary summary ---'
+          if (Test-Path 'imp008b-e5.log') {
+            Get-Content 'imp008b-e5.log' | Select-String -Pattern 'IMP008B_E5_(PRE_RUNTHREAD|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|EXCEPTION_)|IMP008B_E2_(RESTORE_|BEFORE_NT_CONTINUE)'
+          } else {
+            Write-Host 'imp008b-e5.log missing'
+          }
 
       - name: Upload self-hosted E5 logs
         if: always()
