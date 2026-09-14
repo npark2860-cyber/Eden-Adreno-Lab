@@ -1,0 +1,227 @@
+name: Probe IMP-008B E5 Pre-Nt Bytes Map Selfhosted ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-pre-nt-bytes-map-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-pre-nt-bytes-map-selfhosted-arm64
+  cancel-in-progress: false
+
+jobs:
+  e5-pre-nt-bytes-map:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Verify retained E5 diagnostic workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          Write-Host "IMP008B_E5_PRENT_WORKSPACE_HEAD=$head"
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') {
+            throw "unexpected retained E5 workspace HEAD: $head"
+          }
+          if (-not (Test-Path 'eden/build/bin/imp008b_e5_x18_runtime.exe')) {
+            throw 'retained E5 executable missing'
+          }
+          $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) {
+            throw 'historical RunThread TEB-stack bypass marker missing'
+          }
+          if (Select-String -Path $runtime -SimpleMatch 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' -Quiet) {
+            throw 'early TEB stack publication unexpectedly active'
+          }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) {
+            throw 'generic VEH observer missing'
+          }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) {
+            throw 'x18 VEH observer missing'
+          }
+          Write-Host 'IMP008B_E5_PRENT_RETAINED_WORKSPACE=PASS'
+
+      - name: Set up CLANGARM64 toolchain for incremental rebuild
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Restore historical transition baseline and add observation only
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          transition='src/core/arm/nce/windows_nce_transition.cpp'
+          git checkout -- "$transition"
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/core/arm/nce/windows_nce_transition.cpp')
+          raw = path.read_bytes()
+          had_crlf = b'\r\n' in raw
+          text = raw.decode('utf-8').replace('\r\n', '\n')
+
+          old = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
+              // underlying transition directly so the arbitrary-PC guest restore and exception continuation
+              // share the same Windows context-resume primitive.
+              std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
+              std::fflush(stderr);
+              WindowsNceTransition::ContinueContext(context);
+          '''
+          old = old.replace('\n            ', '\n')
+
+          new = '''    // E5 checkout-only historical transition baseline plus observation-only diagnostics.
+              using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
+              const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+              const auto nt_continue = ntdll != nullptr
+                                           ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
+                                           : nullptr;
+              if (nt_continue == nullptr) {
+                  std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RESOLVE_ERROR=%lu\\n",
+                               static_cast<unsigned long>(GetLastError()));
+                  std::fflush(stderr);
+                  std::abort();
+              }
+
+              std::uint32_t imp008b_e5_w0{};
+              std::uint32_t imp008b_e5_w1{};
+              std::uint32_t imp008b_e5_w2{};
+              std::memcpy(&imp008b_e5_w0, reinterpret_cast<const void*>(context.Pc),
+                          sizeof(imp008b_e5_w0));
+              std::memcpy(&imp008b_e5_w1, reinterpret_cast<const void*>(context.Pc + 4),
+                          sizeof(imp008b_e5_w1));
+              std::memcpy(&imp008b_e5_w2, reinterpret_cast<const void*>(context.Pc + 8),
+                          sizeof(imp008b_e5_w2));
+              std::fprintf(stderr,
+                           "IMP008B_E5_PRENT_PC_WORDS=PASS PC=0x%llX W0=0x%08lX W1=0x%08lX W2=0x%08lX\\n",
+                           static_cast<unsigned long long>(context.Pc),
+                           static_cast<unsigned long>(imp008b_e5_w0),
+                           static_cast<unsigned long>(imp008b_e5_w1),
+                           static_cast<unsigned long>(imp008b_e5_w2));
+
+              const auto imp008b_e5_dump_mapping = [](const char* name, std::uint64_t address) noexcept {
+                  MEMORY_BASIC_INFORMATION mbi{};
+                  const SIZE_T size =
+                      VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof(mbi));
+                  std::fprintf(stderr,
+                               "IMP008B_E5_PRENT_VQ_%s ADDR=0x%llX QUERY=%llu BASE=%p ALLOC=%p REGION=0x%llX STATE=0x%lX PROTECT=0x%lX TYPE=0x%lX\\n",
+                               name, static_cast<unsigned long long>(address),
+                               static_cast<unsigned long long>(size), mbi.BaseAddress,
+                               mbi.AllocationBase,
+                               static_cast<unsigned long long>(mbi.RegionSize),
+                               static_cast<unsigned long>(mbi.State),
+                               static_cast<unsigned long>(mbi.Protect),
+                               static_cast<unsigned long>(mbi.Type));
+              };
+              const std::uint64_t imp008b_e5_page_base = context.Pc & ~std::uint64_t{0xFFF};
+              imp008b_e5_dump_mapping("PC", context.Pc);
+              imp008b_e5_dump_mapping("PAGE_END", imp008b_e5_page_base + 0xFFC);
+              imp008b_e5_dump_mapping("PAGE2", imp008b_e5_page_base + 0x1000);
+              imp008b_e5_dump_mapping("SP", context.Sp);
+              std::fflush(stderr);
+
+              std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
+              std::fflush(stderr);
+              const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
+              std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RETURN=0x%08lX\\n",
+                           static_cast<unsigned long>(status));
+              std::fflush(stderr);
+              std::abort();
+          '''
+          new = new.replace('\n            ', '\n')
+
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'historical NtContinue anchor count={count}')
+          text = text.replace(old, new, 1)
+          if had_crlf:
+              text = text.replace('\n', '\r\n')
+          path.write_bytes(text.encode('utf-8'))
+          PY
+          grep -Fq 'IMP008B_E5_PRENT_PC_WORDS=PASS' "$transition"
+          grep -Fq 'IMP008B_E5_PRENT_VQ_%s' "$transition"
+          grep -Fq 'const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);' "$transition"
+          if grep -Fq 'IMP008B_E5_LATE_TEB_PLAN=PASS' "$transition"; then
+            echo 'late TEB experiment leaked into observation baseline' >&2
+            exit 64
+          fi
+          git diff --check -- "$transition"
+          echo 'IMP008B_E5_PRENT_OBSERVER=APPLIED'
+
+      - name: Rebuild E5 target incrementally
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e5_x18_runtime --parallel
+          test -f build/bin/imp008b_e5_x18_runtime.exe
+          echo 'IMP008B_E5_PRENT_INCREMENTAL_BUILD=PASS'
+
+      - name: Launch E5 pre-Nt observation runtime
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          exe='build/bin/imp008b_e5_x18_runtime.exe'
+          set +e
+          timeout 30s "$exe" > imp008b-e5-prent.out.log 2> imp008b-e5-prent.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-prent.rc
+          cat imp008b-e5-prent.out.log 2>/dev/null || true
+          cat imp008b-e5-prent.err.log >&2 2>/dev/null || true
+          cat imp008b-e5-prent.out.log imp008b-e5-prent.err.log > imp008b-e5-prent.log 2>/dev/null || true
+          echo "IMP008B_E5_PRENT_LAUNCH_RC=$rc"
+          echo 'IMP008B_E5_PRENT_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify E5 pre-Nt observation boundary
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-prent.log')) { throw 'pre-Nt runtime log missing' }
+          Write-Host '--- E5 pre-Nt code/mapping observation ---'
+          Get-Content 'imp008b-e5-prent.log' | Select-String -Pattern 'IMP008B_E5_(PRENT_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED)|IMP008B_E2_(RESTORE_|BEFORE_NT_CONTINUE)'
+          $words = Select-String -Path 'imp008b-e5-prent.log' -SimpleMatch 'IMP008B_E5_PRENT_PC_WORDS=PASS' -Quiet
+          if (-not $words) { throw 'pre-Nt instruction words were not captured' }
+          $beforeNt = Select-String -Path 'imp008b-e5-prent.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet
+          if (-not $beforeNt) { throw 'historical baseline no longer reaches BEFORE_NT_CONTINUE' }
+          $genericVeh = Select-String -Path 'imp008b-e5-prent.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          if ($genericVeh) {
+            Write-Host 'IMP008B_E5_PRENT_GENERIC_VEH=PASS'
+          } else {
+            Write-Host 'IMP008B_E5_PRENT_GENERIC_VEH=NO_ENTRY'
+          }
+
+      - name: Upload E5 pre-Nt observation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-pre-nt-bytes-map-selfhosted
+          path: |
+            eden/imp008b-e5-prent.log
+            eden/imp008b-e5-prent.out.log
+            eden/imp008b-e5-prent.err.log
+            eden/imp008b-e5-prent.rc
+          if-no-files-found: warn
