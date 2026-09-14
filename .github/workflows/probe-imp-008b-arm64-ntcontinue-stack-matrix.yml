@@ -1,0 +1,243 @@
+name: Probe IMP-008B ARM64 NtContinue Stack Matrix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-arm64-ntcontinue-stack-matrix.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-arm64-ntcontinue-stack-matrix
+  cancel-in-progress: false
+
+jobs:
+  ntcontinue-stack-matrix:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Build minimal native ARM64 probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <winternl.h>
+          #include <cstdint>
+          #include <cstdio>
+          #include <cstring>
+          #include <string>
+
+          using NtContinueFn = LONG (NTAPI*)(PCONTEXT, BOOLEAN);
+          using ExitProcessFn = VOID (WINAPI*)(UINT);
+
+          static ExitProcessFn g_exit_process = nullptr;
+
+          static LONG CALLBACK ProbeVeh(PEXCEPTION_POINTERS ep) noexcept {
+              if (ep == nullptr || ep->ExceptionRecord == nullptr || ep->ContextRecord == nullptr ||
+                  g_exit_process == nullptr) {
+                  return EXCEPTION_CONTINUE_SEARCH;
+              }
+              const DWORD code = ep->ExceptionRecord->ExceptionCode;
+              auto* const ctx = ep->ContextRecord;
+              ctx->Pc = reinterpret_cast<DWORD64>(g_exit_process);
+              ctx->X0 = (code == EXCEPTION_BREAKPOINT) ? 42u : 43u;
+              return EXCEPTION_CONTINUE_EXECUTION;
+          }
+
+          static void* MakePrivateCode() {
+              auto* p = static_cast<std::uint32_t*>(
+                  VirtualAlloc(nullptr, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+              if (!p) return nullptr;
+              p[0] = 0xD43E0000u; // brk #0xF000 -- Windows ARM64 debugger breakpoint encoding
+              p[1] = 0xD65F03C0u; // ret
+              FlushInstructionCache(GetCurrentProcess(), p, 8);
+              DWORD old_protect{};
+              if (!VirtualProtect(p, 0x1000, PAGE_EXECUTE_READ, &old_protect)) return nullptr;
+              return p;
+          }
+
+          static void* MakeMappedCode(HANDLE& section) {
+              section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE,
+                                           0, 0x1000, nullptr);
+              if (!section) return nullptr;
+              auto* p = static_cast<std::uint32_t*>(MapViewOfFile(
+                  section, FILE_MAP_READ | FILE_MAP_WRITE | FILE_MAP_EXECUTE, 0, 0, 0x1000));
+              if (!p) return nullptr;
+              p[0] = 0xD43E0000u;
+              p[1] = 0xD65F03C0u;
+              FlushInstructionCache(GetCurrentProcess(), p, 8);
+              DWORD old_protect{};
+              if (!VirtualProtect(p, 0x1000, PAGE_EXECUTE_READ, &old_protect)) return nullptr;
+              return p;
+          }
+
+          struct StackRegion {
+              void* base{};
+              std::size_t size{};
+              HANDLE section{};
+          };
+
+          static StackRegion MakePrivateStack(std::size_t size) {
+              StackRegion r{};
+              r.base = VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+              r.size = r.base ? size : 0;
+              return r;
+          }
+
+          static StackRegion MakeMappedStack(std::size_t size) {
+              StackRegion r{};
+              r.section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                             0, static_cast<DWORD>(size), nullptr);
+              if (!r.section) return r;
+              r.base = MapViewOfFile(r.section, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, size);
+              r.size = r.base ? size : 0;
+              return r;
+          }
+
+          static void PublishTebStack(const StackRegion& stack) {
+              auto* const teb = NtCurrentTeb();
+              teb->NtTib.StackLimit = stack.base;
+              teb->NtTib.StackBase = static_cast<std::uint8_t*>(stack.base) + stack.size;
+          }
+
+          [[noreturn]] static void ResumeWithNtContinue(NtContinueFn nt_continue, void* code,
+                                                        const StackRegion* stack,
+                                                        bool publish_teb) {
+              CONTEXT ctx{};
+              RtlCaptureContext(&ctx);
+              ctx.ContextFlags = CONTEXT_FULL;
+              ctx.Pc = reinterpret_cast<DWORD64>(code);
+              if (stack != nullptr) {
+                  const auto top = reinterpret_cast<std::uintptr_t>(stack->base) + stack->size;
+                  ctx.Sp = static_cast<DWORD64>((top - 0x20u) & ~std::uintptr_t{0xFu});
+                  if (publish_teb) PublishTebStack(*stack);
+              }
+              const LONG status = nt_continue(&ctx, FALSE);
+              ExitProcess(static_cast<UINT>(0x80u | (static_cast<unsigned long>(status) & 0x7Fu)));
+          }
+
+          int main(int argc, char** argv) {
+              if (argc != 2) return 2;
+              g_exit_process = reinterpret_cast<ExitProcessFn>(
+                  GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ExitProcess"));
+              const auto nt_continue = reinterpret_cast<NtContinueFn>(
+                  GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtContinue"));
+              if (!g_exit_process || !nt_continue) return 3;
+              if (!AddVectoredExceptionHandler(1, ProbeVeh)) return 4;
+
+              const std::string mode = argv[1];
+              HANDLE code_section{};
+              void* code = (mode == "nt-host-mappedcode") ? MakeMappedCode(code_section)
+                                                          : MakePrivateCode();
+              if (!code) return 5;
+
+              if (mode == "direct-host") {
+                  reinterpret_cast<void(*)()>(code)();
+                  return 6;
+              }
+              if (mode == "nt-host" || mode == "nt-host-mappedcode") {
+                  ResumeWithNtContinue(nt_continue, code, nullptr, false);
+              }
+              if (mode == "nt-private-64k-noteb") {
+                  const auto stack = MakePrivateStack(0x10000);
+                  if (!stack.base) return 7;
+                  ResumeWithNtContinue(nt_continue, code, &stack, false);
+              }
+              if (mode == "nt-private-4k-teb") {
+                  const auto stack = MakePrivateStack(0x1000);
+                  if (!stack.base) return 7;
+                  ResumeWithNtContinue(nt_continue, code, &stack, true);
+              }
+              if (mode == "nt-private-64k-teb") {
+                  const auto stack = MakePrivateStack(0x10000);
+                  if (!stack.base) return 7;
+                  ResumeWithNtContinue(nt_continue, code, &stack, true);
+              }
+              if (mode == "nt-mapped-4k-teb") {
+                  const auto stack = MakeMappedStack(0x1000);
+                  if (!stack.base) return 8;
+                  ResumeWithNtContinue(nt_continue, code, &stack, true);
+              }
+              if (mode == "nt-mapped-64k-teb") {
+                  const auto stack = MakeMappedStack(0x10000);
+                  if (!stack.base) return 8;
+                  ResumeWithNtContinue(nt_continue, code, &stack, true);
+              }
+              return 9;
+          }
+          '@ | Set-Content -Path arm64_ntcontinue_probe.cpp -Encoding utf8
+
+          $vsdev = Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\*\Community\Common7\Tools\VsDevCmd.bat" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $vsdev) { throw 'VsDevCmd.bat not found' }
+          Write-Host "IMP008B_NTSTACK_VSDEV=$($vsdev.FullName)"
+          $cmd = '"' + $vsdev.FullName + '" -arch=arm64 -host_arch=arm64 >nul && cl.exe /nologo /std:c++20 /O2 /EHsc arm64_ntcontinue_probe.cpp /Fe:arm64_ntcontinue_probe.exe'
+          cmd.exe /d /s /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "native ARM64 probe compile failed rc=$LASTEXITCODE" }
+          if (-not (Test-Path '.\arm64_ntcontinue_probe.exe')) { throw 'probe exe missing' }
+          Write-Host 'IMP008B_NTSTACK_BUILD=PASS'
+
+      - name: Run NtContinue stack matrix
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cases = @(
+            'direct-host',
+            'nt-host',
+            'nt-host-mappedcode',
+            'nt-private-64k-noteb',
+            'nt-private-4k-teb',
+            'nt-private-64k-teb',
+            'nt-mapped-4k-teb',
+            'nt-mapped-64k-teb'
+          )
+          $rows = @()
+          foreach ($case in $cases) {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = (Resolve-Path '.\arm64_ntcontinue_probe.exe').Path
+            $psi.Arguments = $case
+            $psi.UseShellExecute = $false
+            $p = New-Object System.Diagnostics.Process
+            $p.StartInfo = $psi
+            [void]$p.Start()
+            if (-not $p.WaitForExit(5000)) {
+              $p.Kill()
+              $p.WaitForExit()
+              $signed = 0x7FFFFFFF
+              $hex = 'TIMEOUT'
+            } else {
+              $signed = $p.ExitCode
+              $hex = ('0x{0:X8}' -f ([uint32]$p.ExitCode))
+            }
+            $line = "IMP008B_NTSTACK_CASE=$case EXIT_SIGNED=$signed EXIT_HEX=$hex"
+            Write-Host $line
+            $rows += $line
+          }
+          $rows | Set-Content -Path imp008b-ntcontinue-stack-matrix.log -Encoding utf8
+          Write-Host 'IMP008B_NTSTACK_MATRIX=PASS'
+
+      - name: Classify matrix
+        if: always()
+        shell: powershell
+        run: |
+          if (-not (Test-Path 'imp008b-ntcontinue-stack-matrix.log')) { throw 'matrix log missing' }
+          Get-Content 'imp008b-ntcontinue-stack-matrix.log'
+          $direct = Select-String -Path 'imp008b-ntcontinue-stack-matrix.log' -SimpleMatch 'IMP008B_NTSTACK_CASE=direct-host EXIT_SIGNED=42' -Quiet
+          $nthost = Select-String -Path 'imp008b-ntcontinue-stack-matrix.log' -SimpleMatch 'IMP008B_NTSTACK_CASE=nt-host EXIT_SIGNED=42' -Quiet
+          if ($direct) { Write-Host 'IMP008B_NTSTACK_DIRECT_VEH=PASS' } else { Write-Host 'IMP008B_NTSTACK_DIRECT_VEH=FAIL' }
+          if ($nthost) { Write-Host 'IMP008B_NTSTACK_NTCONTINUE_HOST_VEH=PASS' } else { Write-Host 'IMP008B_NTSTACK_NTCONTINUE_HOST_VEH=FAIL' }
+
+      - name: Upload matrix log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008b-arm64-ntcontinue-stack-matrix
+          path: imp008b-ntcontinue-stack-matrix.log
+          if-no-files-found: warn
