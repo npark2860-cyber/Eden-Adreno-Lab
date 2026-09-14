@@ -32,7 +32,6 @@ jobs:
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) { throw 'historical RunThread TEB bypass missing' }
           if (Select-String -Path $runtime -SimpleMatch 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' -Quiet) { throw 'early TEB publication unexpectedly active' }
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
-          if (-not (Test-Path 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp')) { throw 'E5 probe source missing' }
           Write-Host 'IMP008B_E5_PRIV_RETAINED_WORKSPACE=PASS'
 
       - name: Set up CLANGARM64 toolchain for incremental rebuild
@@ -42,209 +41,44 @@ jobs:
           update: true
           cache: false
           install: >-
-            git make autoconf libtool automake-wrapper patch jq
-            pactoys ninja
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
           pacboy: >-
-            qt6-tools:p qt6-translations:p qt6-svg:p
-            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
-            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
-            vulkan-memory-allocator:p vulkan-devel:p glslang:p
-            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
-            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
-            libwebp:p libtiff:p brotli:p
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p
+            toolchain:p clang:p python-pip:p lld:p openssl:p boost:p fmt:p lz4:p
+            nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p
+            glslang:p enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p
+            xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p libwebp:p
+            libtiff:p brotli:p
 
-      - name: Apply standard guest context plus late TEB and private-stack A-B
-        shell: msys2 {0}
-        working-directory: eden
+      - name: Apply private-stack single-variable A-B
+        shell: powershell
         run: |
-          set -euo pipefail
-          transition='src/core/arm/nce/windows_nce_transition.cpp'
-          probe='probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
-          git checkout -- "$transition" "$probe"
-          python - <<'PY'
-          from pathlib import Path
-
-          def read_norm(path):
-              raw = path.read_bytes()
-              return raw.decode('utf-8').replace('\r\n', '\n'), b'\r\n' in raw
-
-          def write_norm(path, text, crlf):
-              if crlf:
-                  text = text.replace('\n', '\r\n')
-              path.write_bytes(text.encode('utf-8'))
-
-          # 1) Restore the normal guest register context, but publish guest TEB stack bounds only
-          # at the last possible moment before NtContinue.
-          p = Path('src/core/arm/nce/windows_nce_transition.cpp')
-          text, crlf = read_norm(p)
-          old = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
-    // underlying transition directly so the arbitrary-PC guest restore and exception continuation
-    // share the same Windows context-resume primitive.
-    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
-    std::fflush(stderr);
-    WindowsNceTransition::ContinueContext(context);
-'''
-          new = '''    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
-    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    const auto nt_continue = ntdll != nullptr
-                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
-                                 : nullptr;
-    if (nt_continue == nullptr) {
-        std::fputs("IMP008B_E5_PRIV_NTCONTINUE_RESOLVE=FAIL\\n", stderr);
-        std::fflush(stderr);
-        std::abort();
-    }
-
-    MEMORY_BASIC_INFORMATION stack_mbi{};
-    if (context.Sp == 0 ||
-        VirtualQuery(reinterpret_cast<const void*>(context.Sp - 1), &stack_mbi,
-                     sizeof(stack_mbi)) == 0 ||
-        stack_mbi.State != MEM_COMMIT) {
-        std::fputs("IMP008B_E5_PRIV_STACK_QUERY=FAIL\\n", stderr);
-        std::fflush(stderr);
-        std::abort();
-    }
-    const auto stack_limit = reinterpret_cast<std::uintptr_t>(stack_mbi.BaseAddress);
-    const auto stack_base = stack_limit + static_cast<std::uintptr_t>(stack_mbi.RegionSize);
-    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-
-    std::fprintf(stderr,
-                 "IMP008B_E5_PRIV_LATE_TEB_PLAN=PASS PC=0x%llX SP=0x%llX LIMIT=0x%llX BASE=0x%llX TYPE=0x%lX\\n",
-                 static_cast<unsigned long long>(context.Pc),
-                 static_cast<unsigned long long>(context.Sp),
-                 static_cast<unsigned long long>(stack_limit),
-                 static_cast<unsigned long long>(stack_base),
-                 static_cast<unsigned long>(stack_mbi.Type));
-    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
-    std::fflush(stderr);
-
-    // No Windows/runtime call is allowed between publishing guest bounds and NtContinue.
-    tib->StackLimit = reinterpret_cast<void*>(stack_limit);
-    tib->StackBase = reinterpret_cast<void*>(stack_base);
-    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
-    std::fprintf(stderr, "IMP008B_E5_PRIV_NTCONTINUE_RETURN=0x%08lX\\n",
-                 static_cast<unsigned long>(status));
-    std::fflush(stderr);
-    std::abort();
-'''
-          if text.count(old) != 1:
-              raise SystemExit(f'late TEB anchor count={text.count(old)}')
-          text = text.replace(old, new, 1)
-          write_norm(p, text, crlf)
-
-          # 2) Convert only the E5 guest stack page from the HostMemory mapped-view VAD into a
-          # normal private VAD at the exact same guest virtual address. Preserve its contents.
-          p = Path('probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp')
-          text, crlf = read_norm(p)
-          if '#include <array>\n' not in text:
-              text = text.replace('#include <cstddef>\n', '#include <array>\n#include <cstddef>\n#include <cstring>\n', 1)
-
-          anchor = '''std::uint64_t ReadPhysicalX18() {
-    std::uint64_t value{};
-    asm volatile("mov %0, x18" : "=r"(value));
-    return value;
-}
-'''
-          helper = anchor + '''
-#ifndef MEM_REPLACE_PLACEHOLDER
-#define MEM_REPLACE_PLACEHOLDER 0x00004000
-#endif
-#ifndef MEM_PRESERVE_PLACEHOLDER
-#define MEM_PRESERVE_PLACEHOLDER 0x00000002
-#endif
-
-using Imp008bVirtualAlloc2Fn = PVOID(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG,
-                                              MEM_EXTENDED_PARAMETER*, ULONG);
-using Imp008bUnmapViewOfFile2Fn = BOOL(WINAPI*)(HANDLE, PVOID, ULONG);
-
-bool PromoteGuestStackPageToPrivate(u64 page_address) {
-    auto* const page = reinterpret_cast<std::byte*>(page_address);
-    std::array<std::byte, PageSize> snapshot{};
-    std::memcpy(snapshot.data(), page, snapshot.size());
-
-    MEMORY_BASIC_INFORMATION before{};
-    if (VirtualQuery(page, &before, sizeof(before)) == 0 || before.State != MEM_COMMIT) {
-        return false;
-    }
-
-    const HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
-    const auto virtual_alloc2 = kernelbase != nullptr
-        ? reinterpret_cast<Imp008bVirtualAlloc2Fn>(GetProcAddress(kernelbase, "VirtualAlloc2"))
-        : nullptr;
-    const auto unmap_view2 = kernelbase != nullptr
-        ? reinterpret_cast<Imp008bUnmapViewOfFile2Fn>(GetProcAddress(kernelbase, "UnmapViewOfFile2"))
-        : nullptr;
-    if (virtual_alloc2 == nullptr || unmap_view2 == nullptr) {
-        return false;
-    }
-
-    std::fprintf(stderr,
-                 "IMP008B_E5_PRIV_STACK_BEFORE ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX TYPE=0x%lX PROTECT=0x%lX\\n",
-                 page, before.BaseAddress, before.AllocationBase,
-                 static_cast<unsigned long long>(before.RegionSize),
-                 static_cast<unsigned long>(before.Type),
-                 static_cast<unsigned long>(before.Protect));
-    std::fflush(stderr);
-
-    if (!unmap_view2(GetCurrentProcess(), page, MEM_PRESERVE_PLACEHOLDER)) {
-        std::fprintf(stderr, "IMP008B_E5_PRIV_UNMAP_FAIL=%lu\\n",
-                     static_cast<unsigned long>(GetLastError()));
-        std::fflush(stderr);
-        return false;
-    }
-
-    constexpr ULONG replace_flags = MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER;
-    void* const replacement = virtual_alloc2(GetCurrentProcess(), page, PageSize,
-                                             replace_flags, PAGE_READWRITE, nullptr, 0);
-    if (replacement != page) {
-        std::fprintf(stderr, "IMP008B_E5_PRIV_REPLACE_FAIL PTR=%p ERROR=%lu\\n",
-                     replacement, static_cast<unsigned long>(GetLastError()));
-        std::fflush(stderr);
-        return false;
-    }
-
-    std::memcpy(page, snapshot.data(), snapshot.size());
-    MEMORY_BASIC_INFORMATION after{};
-    if (VirtualQuery(page, &after, sizeof(after)) == 0) {
-        return false;
-    }
-    std::fprintf(stderr,
-                 "IMP008B_E5_PRIV_STACK_AFTER ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX TYPE=0x%lX PROTECT=0x%lX\\n",
-                 page, after.BaseAddress, after.AllocationBase,
-                 static_cast<unsigned long long>(after.RegionSize),
-                 static_cast<unsigned long>(after.Type),
-                 static_cast<unsigned long>(after.Protect));
-    std::fflush(stderr);
-    return after.State == MEM_COMMIT && after.Type == MEM_PRIVATE && after.Protect == PAGE_READWRITE;
-}
-'''
-          if text.count(anchor) != 1:
-              raise SystemExit(f'private stack helper anchor count={text.count(anchor)}')
-          text = text.replace(anchor, helper, 1)
-
-          call_anchor = '''    const u64 guest_pc = load_base_u64 + GuestCodeOffset;
-    const u64 guest_sp = load_base_u64 + InitialImageSize - 0x20;
-    Kernel::Svc::ThreadContext context{};
-'''
-          call_new = '''    const u64 guest_pc = load_base_u64 + GuestCodeOffset;
-    const u64 guest_sp = load_base_u64 + InitialImageSize - 0x20;
-    const u64 guest_stack_page = guest_sp & ~static_cast<u64>(PageSize - 1);
-    if (!PromoteGuestStackPageToPrivate(guest_stack_page)) {
-        return Fail("IMP008B_E5_PRIVATE_STACK_PROMOTE");
-    }
-    Trace("IMP008B_E5_PRIVATE_STACK_READY");
-    Kernel::Svc::ThreadContext context{};
-'''
-          if text.count(call_anchor) != 1:
-              raise SystemExit(f'private stack call anchor count={text.count(call_anchor)}')
-          text = text.replace(call_anchor, call_new, 1)
-          write_norm(p, text, crlf)
-          PY
-          grep -Fq 'IMP008B_E5_PRIV_LATE_TEB_PLAN=PASS' "$transition"
-          grep -Fq 'PromoteGuestStackPageToPrivate' "$probe"
-          grep -Fq 'IMP008B_E5_PRIVATE_STACK_READY' "$probe"
-          git diff --check -- "$transition" "$probe"
-          echo 'IMP008B_E5_PRIV_PATCH=PASS'
+          $ErrorActionPreference = 'Stop'
+          $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $probe = 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          git -C eden checkout -- 'src/core/arm/nce/windows_nce_transition.cpp' 'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          if ($LASTEXITCODE -ne 0) { throw 'failed to reset experiment files' }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          $old = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIC8vIFJ0bFJlc3RvcmVDb250ZXh0IGNvbnZlcnRzIGEgcmVqZWN0ZWQgTnRDb250aW51ZSBpbnRvIGFuIGltbWVkaWF0ZSBmYWlsLWZhc3QuIENhbGwgdGhlCiAgICAvLyB1bmRlcmx5aW5nIHRyYW5zaXRpb24gZGlyZWN0bHkgc28gdGhlIGFyYml0cmFyeS1QQyBndWVzdCByZXN0b3JlIGFuZCBleGNlcHRpb24gY29udGludWF0aW9uCiAgICAvLyBzaGFyZSB0aGUgc2FtZSBXaW5kb3dzIGNvbnRleHQtcmVzdW1lIHByaW1pdGl2ZS4KICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTJfQkVGT1JFX05UX0NPTlRJTlVFPVBBU1NcbiIsIHN0ZGVycik7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgV2luZG93c05jZVRyYW5zaXRpb246OkNvbnRpbnVlQ29udGV4dChjb250ZXh0KTsK'))
+          $new = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIHVzaW5nIE50Q29udGludWVGbiA9IExPTkcoTlRBUEkqKShQQ09OVEVYVCwgQk9PTEVBTik7CiAgICBjb25zdCBITU9EVUxFIG50ZGxsID0gR2V0TW9kdWxlSGFuZGxlVyhMIm50ZGxsLmRsbCIpOwogICAgY29uc3QgYXV0byBudF9jb250aW51ZSA9IG50ZGxsICE9IG51bGxwdHIKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgPyByZWludGVycHJldF9jYXN0PE50Q29udGludWVGbj4oR2V0UHJvY0FkZHJlc3MobnRkbGwsICJOdENvbnRpbnVlIikpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIDogbnVsbHB0cjsKICAgIGlmIChudF9jb250aW51ZSA9PSBudWxscHRyKSB7CiAgICAgICAgc3RkOjpmcHV0cygiSU1QMDA4Ql9FNV9QUklWX05UQ09OVElOVUVfUkVTT0xWRT1GQUlMXG4iLCBzdGRlcnIpOwogICAgICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CiAgICAgICAgc3RkOjphYm9ydCgpOwogICAgfQoKICAgIE1FTU9SWV9CQVNJQ19JTkZPUk1BVElPTiBzdGFja19tYml7fTsKICAgIGlmIChjb250ZXh0LlNwID09IDAgfHwKICAgICAgICBWaXJ0dWFsUXVlcnkocmVpbnRlcnByZXRfY2FzdDxjb25zdCB2b2lkKj4oY29udGV4dC5TcCAtIDEpLCAmc3RhY2tfbWJpLAogICAgICAgICAgICAgICAgICAgICBzaXplb2Yoc3RhY2tfbWJpKSkgPT0gMCB8fAogICAgICAgIHN0YWNrX21iaS5TdGF0ZSAhPSBNRU1fQ09NTUlUKSB7CiAgICAgICAgc3RkOjpmcHV0cygiSU1QMDA4Ql9FNV9QUklWX1NUQUNLX1FVRVJZPUZBSUxcbiIsIHN0ZGVycik7CiAgICAgICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKICAgICAgICBzdGQ6OmFib3J0KCk7CiAgICB9CiAgICBjb25zdCBhdXRvIHN0YWNrX2xpbWl0ID0gcmVpbnRlcnByZXRfY2FzdDxzdGQ6OnVpbnRwdHJfdD4oc3RhY2tfbWJpLkJhc2VBZGRyZXNzKTsKICAgIGNvbnN0IGF1dG8gc3RhY2tfYmFzZSA9IHN0YWNrX2xpbWl0ICsgc3RhdGljX2Nhc3Q8c3RkOjp1aW50cHRyX3Q+KHN0YWNrX21iaS5SZWdpb25TaXplKTsKICAgIGF1dG8qIGNvbnN0IHRpYiA9IHJlaW50ZXJwcmV0X2Nhc3Q8TlRfVElCKj4oTnRDdXJyZW50VGViKCkpOwoKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgIklNUDAwOEJfRTVfUFJJVl9MQVRFX1RFQl9QTEFOPVBBU1MgUEM9MHglbGxYIFNQPTB4JWxsWCBMSU1JVD0weCVsbFggQkFTRT0weCVsbFggVFlQRT0weCVsWFxuIiwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGNvbnRleHQuUGMpLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oY29udGV4dC5TcCksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihzdGFja19saW1pdCksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihzdGFja19iYXNlKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihzdGFja19tYmkuVHlwZSkpOwogICAgc3RkOjpmcHV0cygiSU1QMDA4Ql9FMl9CRUZPUkVfTlRfQ09OVElOVUU9UEFTU1xuIiwgc3RkZXJyKTsKICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CgogICAgdGliLT5TdGFja0xpbWl0ID0gcmVpbnRlcnByZXRfY2FzdDx2b2lkKj4oc3RhY2tfbGltaXQpOwogICAgdGliLT5TdGFja0Jhc2UgPSByZWludGVycHJldF9jYXN0PHZvaWQqPihzdGFja19iYXNlKTsKICAgIGNvbnN0IExPTkcgc3RhdHVzID0gbnRfY29udGludWUocmVpbnRlcnByZXRfY2FzdDxQQ09OVEVYVD4oJmNvbnRleHQpLCBGQUxTRSk7CiAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiSU1QMDA4Ql9FNV9QUklWX05UQ09OVElOVUVfUkVUVVJOPTB4JTA4bFhcbiIsCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4oc3RhdHVzKSk7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgc3RkOjphYm9ydCgpOwo='))
+          $text = [IO.File]::ReadAllText($transition)
+          if ($text.IndexOf($old) -lt 0) { throw 'transition anchor missing' }
+          $text = $text.Replace($old, $new)
+          [IO.File]::WriteAllText($transition, $text, $utf8)
+          $anchor = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('c3RkOjp1aW50NjRfdCBSZWFkUGh5c2ljYWxYMTgoKSB7CiAgICBzdGQ6OnVpbnQ2NF90IHZhbHVle307CiAgICBhc20gdm9sYXRpbGUoIm1vdiAlMCwgeDE4IiA6ICI9ciIodmFsdWUpKTsKICAgIHJldHVybiB2YWx1ZTsKfQo='))
+          $helper = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('c3RkOjp1aW50NjRfdCBSZWFkUGh5c2ljYWxYMTgoKSB7CiAgICBzdGQ6OnVpbnQ2NF90IHZhbHVle307CiAgICBhc20gdm9sYXRpbGUoIm1vdiAlMCwgeDE4IiA6ICI9ciIodmFsdWUpKTsKICAgIHJldHVybiB2YWx1ZTsKfQoKI2lmbmRlZiBNRU1fUkVQTEFDRV9QTEFDRUhPTERFUgojZGVmaW5lIE1FTV9SRVBMQUNFX1BMQUNFSE9MREVSIDB4MDAwMDQwMDAKI2VuZGlmCiNpZm5kZWYgTUVNX1BSRVNFUlZFX1BMQUNFSE9MREVSCiNkZWZpbmUgTUVNX1BSRVNFUlZFX1BMQUNFSE9MREVSIDB4MDAwMDAwMDIKI2VuZGlmCgp1c2luZyBJbXAwMDhiVmlydHVhbEFsbG9jMkZuID0gUFZPSUQoV0lOQVBJKikoSEFORExFLCBQVk9JRCwgU0laRV9ULCBVTE9ORywgVUxPTkcsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBNRU1fRVhURU5ERURfUEFSQU1FVEVSKiwgVUxPTkcpOwp1c2luZyBJbXAwMDhiVW5tYXBWaWV3T2ZGaWxlMkZuID0gQk9PTChXSU5BUEkqKShIQU5ETEUsIFBWT0lELCBVTE9ORyk7Cgpib29sIFByb21vdGVHdWVzdFN0YWNrUGFnZVRvUHJpdmF0ZSh1NjQgcGFnZV9hZGRyZXNzKSB7CiAgICBhdXRvKiBjb25zdCBwYWdlID0gcmVpbnRlcnByZXRfY2FzdDxzdGQ6OmJ5dGUqPihwYWdlX2FkZHJlc3MpOwogICAgc3RkOjphcnJheTxzdGQ6OmJ5dGUsIFBhZ2VTaXplPiBzbmFwc2hvdHt9OwogICAgc3RkOjptZW1jcHkoc25hcHNob3QuZGF0YSgpLCBwYWdlLCBzbmFwc2hvdC5zaXplKCkpOwoKICAgIE1FTU9SWV9CQVNJQ19JTkZPUk1BVElPTiBiZWZvcmV7fTsKICAgIGlmIChWaXJ0dWFsUXVlcnkocGFnZSwgJmJlZm9yZSwgc2l6ZW9mKGJlZm9yZSkpID09IDAgfHwgYmVmb3JlLlN0YXRlICE9IE1FTV9DT01NSVQpIHsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICB9CgogICAgY29uc3QgSE1PRFVMRSBrZXJuZWxiYXNlID0gR2V0TW9kdWxlSGFuZGxlVyhMImtlcm5lbGJhc2UuZGxsIik7CiAgICBjb25zdCBhdXRvIHZpcnR1YWxfYWxsb2MyID0ga2VybmVsYmFzZSAhPSBudWxscHRyCiAgICAgICAgPyByZWludGVycHJldF9jYXN0PEltcDAwOGJWaXJ0dWFsQWxsb2MyRm4+KEdldFByb2NBZGRyZXNzKGtlcm5lbGJhc2UsICJWaXJ0dWFsQWxsb2MyIikpCiAgICAgICAgOiBudWxscHRyOwogICAgY29uc3QgYXV0byB1bm1hcF92aWV3MiA9IGtlcm5lbGJhc2UgIT0gbnVsbHB0cgogICAgICAgID8gcmVpbnRlcnByZXRfY2FzdDxJbXAwMDhiVW5tYXBWaWV3T2ZGaWxlMkZuPihHZXRQcm9jQWRkcmVzcyhrZXJuZWxiYXNlLCAiVW5tYXBWaWV3T2ZGaWxlMiIpKQogICAgICAgIDogbnVsbHB0cjsKICAgIGlmICh2aXJ0dWFsX2FsbG9jMiA9PSBudWxscHRyIHx8IHVubWFwX3ZpZXcyID09IG51bGxwdHIpIHsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICB9CgogICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwKICAgICAgICAgICAgICAgICAiSU1QMDA4Ql9FNV9QUklWX1NUQUNLX0JFRk9SRSBBRERSPSVwIEJBU0U9JXAgQUxMT0M9JXAgU0laRT0weCVsbFggVFlQRT0weCVsWCBQUk9URUNUPTB4JWxYXG4iLAogICAgICAgICAgICAgICAgIHBhZ2UsIGJlZm9yZS5CYXNlQWRkcmVzcywgYmVmb3JlLkFsbG9jYXRpb25CYXNlLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oYmVmb3JlLlJlZ2lvblNpemUpLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KGJlZm9yZS5UeXBlKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihiZWZvcmUuUHJvdGVjdCkpOwogICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKCiAgICBpZiAoIXVubWFwX3ZpZXcyKEdldEN1cnJlbnRQcm9jZXNzKCksIHBhZ2UsIE1FTV9QUkVTRVJWRV9QTEFDRUhPTERFUikpIHsKICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiSU1QMDA4Ql9FNV9QUklWX1VOTUFQX0ZBSUw9JWx1XG4iLAogICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihHZXRMYXN0RXJyb3IoKSkpOwogICAgICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CiAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgfQoKICAgIGNvbnN0ZXhwciBVTE9ORyByZXBsYWNlX2ZsYWdzID0gTUVNX1JFU0VSVkUgfCBNRU1fQ09NTUlUIHwgTUVNX1JFUExBQ0VfUExBQ0VIT0xERVI7CiAgICB2b2lkKiBjb25zdCByZXBsYWNlbWVudCA9IHZpcnR1YWxfYWxsb2MyKEdldEN1cnJlbnRQcm9jZXNzKCksIHBhZ2UsIFBhZ2VTaXplLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICByZXBsYWNlX2ZsYWdzLCBQQUdFX1JFQURXUklURSwgbnVsbHB0ciwgMCk7CiAgICBpZiAocmVwbGFjZW1lbnQgIT0gcGFnZSkgewogICAgICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsICJJTVAwMDhCX0U1X1BSSVZfUkVQTEFDRV9GQUlMIFBUUj0lcCBFUlJPUj0lbHVcbiIsCiAgICAgICAgICAgICAgICAgICAgIHJlcGxhY2VtZW50LCBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihHZXRMYXN0RXJyb3IoKSkpOwogICAgICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CiAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgfQoKICAgIHN0ZDo6bWVtY3B5KHBhZ2UsIHNuYXBzaG90LmRhdGEoKSwgc25hcHNob3Quc2l6ZSgpKTsKICAgIE1FTU9SWV9CQVNJQ19JTkZPUk1BVElPTiBhZnRlcnt9OwogICAgaWYgKFZpcnR1YWxRdWVyeShwYWdlLCAmYWZ0ZXIsIHNpemVvZihhZnRlcikpID09IDApIHsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICB9CiAgICBzdGQ6OmZwcmludGYoc3RkZXJyLAogICAgICAgICAgICAgICAgICJJTVAwMDhCX0U1X1BSSVZfU1RBQ0tfQUZURVIgQUREUj0lcCBCQVNFPSVwIEFMTE9DPSVwIFNJWkU9MHglbGxYIFRZUEU9MHglbFggUFJPVEVDVD0weCVsWFxuIiwKICAgICAgICAgICAgICAgICBwYWdlLCBhZnRlci5CYXNlQWRkcmVzcywgYWZ0ZXIuQWxsb2NhdGlvbkJhc2UsCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihhZnRlci5SZWdpb25TaXplKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihhZnRlci5UeXBlKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihhZnRlci5Qcm90ZWN0KSk7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgcmV0dXJuIGFmdGVyLlN0YXRlID09IE1FTV9DT01NSVQgJiYgYWZ0ZXIuVHlwZSA9PSBNRU1fUFJJVkFURSAmJiBhZnRlci5Qcm90ZWN0ID09IFBBR0VfUkVBRFdSSVRFOwp9Cg=='))
+          $callOld = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIGNvbnN0IHU2NCBndWVzdF9wYyA9IGxvYWRfYmFzZV91NjQgKyBHdWVzdENvZGVPZmZzZXQ7CiAgICBjb25zdCB1NjQgZ3Vlc3Rfc3AgPSBsb2FkX2Jhc2VfdTY0ICsgSW5pdGlhbEltYWdlU2l6ZSAtIDB4MjA7CiAgICBLZXJuZWw6OlN2Yzo6VGhyZWFkQ29udGV4dCBjb250ZXh0e307Cg=='))
+          $callNew = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIGNvbnN0IHU2NCBndWVzdF9wYyA9IGxvYWRfYmFzZV91NjQgKyBHdWVzdENvZGVPZmZzZXQ7CiAgICBjb25zdCB1NjQgZ3Vlc3Rfc3AgPSBsb2FkX2Jhc2VfdTY0ICsgSW5pdGlhbEltYWdlU2l6ZSAtIDB4MjA7CiAgICBjb25zdCB1NjQgZ3Vlc3Rfc3RhY2tfcGFnZSA9IGd1ZXN0X3NwICYgfnN0YXRpY19jYXN0PHU2ND4oUGFnZVNpemUgLSAxKTsKICAgIGlmICghUHJvbW90ZUd1ZXN0U3RhY2tQYWdlVG9Qcml2YXRlKGd1ZXN0X3N0YWNrX3BhZ2UpKSB7CiAgICAgICAgcmV0dXJuIEZhaWwoIklNUDAwOEJfRTVfUFJJVkFURV9TVEFDS19QUk9NT1RFIik7CiAgICB9CiAgICBUcmFjZSgiSU1QMDA4Ql9FNV9QUklWQVRFX1NUQUNLX1JFQURZIik7CiAgICBLZXJuZWw6OlN2Yzo6VGhyZWFkQ29udGV4dCBjb250ZXh0e307Cg=='))
+          $text = [IO.File]::ReadAllText($probe)
+          $text = $text.Replace('#include <cstddef>', "#include <array>`n#include <cstddef>`n#include <cstring>")
+          if ($text.IndexOf($anchor) -lt 0) { throw 'probe helper anchor missing' }
+          $text = $text.Replace($anchor, $helper)
+          if ($text.IndexOf($callOld) -lt 0) { throw 'probe call anchor missing' }
+          $text = $text.Replace($callOld, $callNew)
+          [IO.File]::WriteAllText($probe, $text, $utf8)
+          git -C eden diff --check -- 'src/core/arm/nce/windows_nce_transition.cpp' 'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'IMP008B_E5_PRIV_PATCH=PASS'
 
       - name: Rebuild E5 target incrementally
         shell: msys2 {0}
@@ -268,7 +102,6 @@ bool PromoteGuestStackPageToPrivate(u64 page_address) {
           cat imp008b-e5-private.out.log imp008b-e5-private.err.log > imp008b-e5-private.log 2>/dev/null || true
           cat imp008b-e5-private.log || true
           echo "IMP008B_E5_PRIV_LAUNCH_RC=$rc"
-          echo 'IMP008B_E5_PRIV_RUNTIME_CAPTURE=PASS'
 
       - name: Classify E5 private-stack boundary
         if: always()
