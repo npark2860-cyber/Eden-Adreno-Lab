@@ -230,11 +230,9 @@ jobs:
           cat imp008b-e5.out.log 2>/dev/null || true
           cat imp008b-e5.err.log >&2 2>/dev/null || true
           echo "IMP008B_E5_LAUNCH_RC=$rc"
-          if test -f imp008b-e5.out.log; then
-            cp imp008b-e5.out.log imp008b-e5.log
-          else
-            : > imp008b-e5.log
-          fi
+          : > imp008b-e5.log
+          cat imp008b-e5.out.log >> imp008b-e5.log 2>/dev/null || true
+          cat imp008b-e5.err.log >> imp008b-e5.log 2>/dev/null || true
           echo 'IMP008B_E5_RUNTIME_CAPTURE=PASS'
 
       - name: Gate E5 process exit zero
