@@ -259,6 +259,42 @@ jobs:
           CMAKE
           echo 'IMP008B_E5_TARGET_WIRING=PASS'
 
+      - name: Bind installed Visual Studio ARM64 assembler to E5 checkout only
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            throw 'vswhere.exe missing on DREAMPAINTER'
+          }
+
+          $candidates = @()
+          $installations = @(& $vswhere -products * -property installationPath)
+          foreach ($installation in $installations) {
+            if ([string]::IsNullOrWhiteSpace($installation)) { continue }
+            $pattern = Join-Path $installation 'VC\Tools\MSVC\*\bin\Hostarm64\arm64\armasm64.exe'
+            $candidates += @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+          }
+          $selected = @($candidates | Sort-Object -Unique -Descending | Select-Object -First 1)
+          if ($selected.Count -ne 1 -or -not (Test-Path $selected[0])) {
+            throw 'Installed Visual Studio ARM64 armasm64.exe not found'
+          }
+          $armasm64 = $selected[0] -replace '\\','/'
+          Write-Host "IMP008B_E5_ARMASM64_PATH=$armasm64"
+
+          $cmakePath = 'src/core/CMakeLists.txt'
+          $text = [System.IO.File]::ReadAllText($cmakePath)
+          $pattern = '        get_filename_component\(NCE_WINDOWS_COMPILER_BIN "\$\{CMAKE_CXX_COMPILER\}" DIRECTORY\)\r?\n        set\(NCE_ARMASM64 "\$\{NCE_WINDOWS_COMPILER_BIN\}/armasm64\.exe"\)'
+          $matches = [regex]::Matches($text, $pattern)
+          if ($matches.Count -ne 1) {
+            throw "NCE ARMASM64 discovery anchor count=$($matches.Count)"
+          }
+          $replacement = '        set(NCE_ARMASM64 "' + $armasm64 + '")'
+          $text = [regex]::Replace($text, $pattern, $replacement, 1)
+          [System.IO.File]::WriteAllText($cmakePath, $text, (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host 'IMP008B_E5_ARMASM64_BIND=PASS'
+
       - name: Configure normal Windows ARM64 product build
         shell: msys2 {0}
         working-directory: eden
