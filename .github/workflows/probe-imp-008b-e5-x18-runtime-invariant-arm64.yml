@@ -106,6 +106,12 @@ jobs:
           PATCH
           git apply --check e5-teb-publication-ab.patch
           git apply e5-teb-publication-ab.patch
+          test "$(grep -Fc '[[nodiscard]] bool InstallGuestTebStackBounds' "$source")" -eq 1
+          test "$(grep -Fc 'void RestoreHostTebStackBounds' "$source")" -eq 1
+          sed -i 's/^\[\[nodiscard\]\] bool InstallGuestTebStackBounds/[[maybe_unused]] [[nodiscard]] bool InstallGuestTebStackBounds/' "$source"
+          sed -i 's/^void RestoreHostTebStackBounds/[[maybe_unused]] void RestoreHostTebStackBounds/' "$source"
+          grep -Fq '[[maybe_unused]] [[nodiscard]] bool InstallGuestTebStackBounds' "$source"
+          grep -Fq '[[maybe_unused]] void RestoreHostTebStackBounds' "$source"
           git diff --check -- "$source"
           if grep -Fq 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' "$source"; then
             echo 'IMP008B_E5_TEB_INSTALL_CALL=FAIL' >&2
@@ -120,6 +126,7 @@ jobs:
             exit 63
           fi
           echo 'IMP008B_E5_TEB_PUBLICATION_AB=APPLIED'
+          echo 'IMP008B_E5_TEB_HELPERS_MAYBE_UNUSED=PASS'
           git diff -- "$source"
 
       - name: Add E5 target to checkout only
