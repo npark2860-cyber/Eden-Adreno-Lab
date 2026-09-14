@@ -1,0 +1,189 @@
+name: Probe IMP-008B E5 8K Private Stack Transition A-B
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-8k-private-stack-transition-ab-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-8k-private-stack-transition-ab
+  cancel-in-progress: false
+
+jobs:
+  e5-8k-private-stack-transition:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 60
+    steps:
+      - name: Verify retained workspace and patch only E5 stack geometry
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+
+          $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $probe = 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          foreach ($path in @($runtime, $transition, $probe)) {
+            if (-not (Test-Path $path)) { throw "required file missing: $path" }
+          }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) { throw 'RunThread TEB bypass missing' }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) { throw 'x18 VEH observer missing' }
+          if (-not (Select-String -Path $transition -SimpleMatch 'IMP008B_E5_PRIVATE_STACK_READY=PASS' -Quiet)) { throw 'retained 4K private-stack transition diagnostic missing' }
+
+          function Replace-Unique([string]$Text, [string]$Old, [string]$New, [string]$Name) {
+            $i = $Text.IndexOf($Old, [System.StringComparison]::Ordinal)
+            if ($i -lt 0) { throw "$Name anchor missing" }
+            $j = $Text.IndexOf($Old, $i + $Old.Length, [System.StringComparison]::Ordinal)
+            if ($j -ge 0) { throw "$Name anchor not unique" }
+            return $Text.Substring(0, $i) + $New + $Text.Substring($i + $Old.Length)
+          }
+
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+
+          # Single E5 variable: grow the data/guest-stack segment from 4 KiB to 8 KiB.
+          # Code remains one page at the same load base, so guest PC is unchanged.
+          $ptext = [IO.File]::ReadAllText($probe).Replace("`r`n", "`n")
+          $ptext = Replace-Unique $ptext `
+            'constexpr std::size_t InitialImageSize = PageSize * 2;' `
+            'constexpr std::size_t InitialImageSize = PageSize * 3;' `
+            'InitialImageSize'
+          $ptext = Replace-Unique $ptext `
+            '    data.size = static_cast<u32>(PageSize);' `
+            '    data.size = static_cast<u32>(PageSize * 2);' `
+            'data stack size'
+          [IO.File]::WriteAllText($probe, $ptext, $utf8)
+
+          # Convert the retained 4 KiB private replacement into one contiguous 8 KiB
+          # private VAD. With the enlarged probe stack, SP moves to the top page;
+          # start the replacement one page below SP's page and preserve both pages.
+          $ttext = [IO.File]::ReadAllText($transition).Replace("`r`n", "`n")
+          $ttext = Replace-Unique $ttext `
+            '    constexpr SIZE_T PageBytes = 0x1000;' `
+            "    constexpr SIZE_T PageBytes = 0x1000;`n    constexpr SIZE_T StackBytes = PageBytes * 2;" `
+            'StackBytes declaration'
+          $ttext = Replace-Unique $ttext `
+            '    const auto stack_page = static_cast<std::uintptr_t>(context.Sp) & ~PageMask;' `
+            '    const auto stack_page = (static_cast<std::uintptr_t>(context.Sp) & ~PageMask) - PageBytes;' `
+            '8K stack start'
+          $ttext = Replace-Unique $ttext `
+            '    unsigned char stack_snapshot[PageBytes]{};' `
+            '    unsigned char stack_snapshot[StackBytes]{};' `
+            '8K stack snapshot array'
+          $ttext = Replace-Unique $ttext `
+            '    std::memcpy(stack_snapshot, reinterpret_cast<const void*>(stack_page), PageBytes);' `
+            '    std::memcpy(stack_snapshot, reinterpret_cast<const void*>(stack_page), StackBytes);' `
+            '8K stack snapshot copy'
+          $ttext = Replace-Unique $ttext `
+            "        GetCurrentProcess(), reinterpret_cast<void*>(stack_page), PageBytes,`n        MEM_RESERVE | MEM_COMMIT | ReplacePlaceholder, PAGE_READWRITE, nullptr, 0);" `
+            "        GetCurrentProcess(), reinterpret_cast<void*>(stack_page), StackBytes,`n        MEM_RESERVE | MEM_COMMIT | ReplacePlaceholder, PAGE_READWRITE, nullptr, 0);" `
+            '8K VirtualAlloc2 replacement'
+          $ttext = Replace-Unique $ttext `
+            '    std::memcpy(replacement, stack_snapshot, PageBytes);' `
+            '    std::memcpy(replacement, stack_snapshot, StackBytes);' `
+            '8K stack restore copy'
+          [IO.File]::WriteAllText($transition, $ttext, $utf8)
+
+          git -C eden diff --check -- 'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp' 'src/core/arm/nce/windows_nce_transition.cpp'
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+
+          $probeDiff = git -C eden diff -- 'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          $transitionDiff = git -C eden diff -- 'src/core/arm/nce/windows_nce_transition.cpp'
+          $probeDiff | Select-String -Pattern 'InitialImageSize|data.size|guest_sp' | ForEach-Object { Write-Host $_.Line }
+          $transitionDiff | Select-String -Pattern 'StackBytes|stack_page|stack_snapshot|VirtualAlloc2|memcpy' | ForEach-Object { Write-Host $_.Line }
+          Write-Host 'IMP008B_E5_8K_STACK_CHECKOUT_PATCH=PASS'
+
+      - name: Set up CLANGARM64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p
+            toolchain:p clang:p python-pip:p lld:p openssl:p boost:p fmt:p lz4:p
+            nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p
+            glslang:p enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p
+            xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p libwebp:p
+            libtiff:p brotli:p
+
+      - name: Rebuild E5 target incrementally
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e5_x18_runtime --parallel
+          test -f build/bin/imp008b_e5_x18_runtime.exe
+          echo 'IMP008B_E5_8K_STACK_BUILD=PASS'
+
+      - name: Launch E5 with 8K private guest stack
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          set +e
+          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-8k-stack.out.log 2> imp008b-e5-8k-stack.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-8k-stack.rc
+          cat imp008b-e5-8k-stack.out.log imp008b-e5-8k-stack.err.log > imp008b-e5-8k-stack.log 2>/dev/null || true
+          cat imp008b-e5-8k-stack.log || true
+          echo "IMP008B_E5_8K_STACK_RC=$rc"
+
+      - name: Classify E5 8K stack boundary
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'imp008b-e5-8k-stack.log')) { throw 'runtime log missing' }
+          Get-Content 'imp008b-e5-8k-stack.log' | Select-String -Pattern 'IMP008B_E5_(PRIVATE_STACK|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
+
+          $readyLine = (Select-String -Path 'imp008b-e5-8k-stack.log' -Pattern 'IMP008B_E5_PRIVATE_STACK_READY=PASS SP=0x([0-9A-Fa-f]+) LIMIT=0x([0-9A-Fa-f]+) BASE=0x([0-9A-Fa-f]+)' | Select-Object -First 1)
+          if ($null -eq $readyLine) { throw '8K private stack transition not reached' }
+          $m = [regex]::Match($readyLine.Line, 'SP=0x([0-9A-Fa-f]+) LIMIT=0x([0-9A-Fa-f]+) BASE=0x([0-9A-Fa-f]+)')
+          if (-not $m.Success) { throw '8K stack geometry parse failed' }
+          $sp = [Convert]::ToUInt64($m.Groups[1].Value, 16)
+          $limit = [Convert]::ToUInt64($m.Groups[2].Value, 16)
+          $base = [Convert]::ToUInt64($m.Groups[3].Value, 16)
+          if (($base - $limit) -ne 0x2000) { throw ("active stack size is 0x{0:X}, expected 0x2000" -f ($base - $limit)) }
+          if ($sp -lt ($base - 0x1000) -or $sp -ge $base) { throw 'SP is not in the top page of the 8K stack' }
+          Write-Host ("IMP008B_E5_8K_STACK_GEOMETRY=PASS SP=0x{0:X} LIMIT=0x{1:X} BASE=0x{2:X}" -f $sp, $limit, $base)
+
+          $generic = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          $x18 = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
+          $secondRestore = Select-String -Path 'imp008b-e5-8k-stack.log' -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
+          $returned = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          $svc = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
+          $x18result = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
+          $gate = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
+
+          if ($generic) { Write-Host 'IMP008B_E5_8K_GENERIC_VEH=PASS' } else { Write-Host 'IMP008B_E5_8K_GENERIC_VEH=NO_ENTRY' }
+          if ($x18) { Write-Host 'IMP008B_E5_8K_X18_VEH=PASS' } else { Write-Host 'IMP008B_E5_8K_X18_VEH=NO_ENTRY' }
+          if ($secondRestore) { Write-Host 'IMP008B_E5_8K_SECOND_RESTORE=PASS' } else { Write-Host 'IMP008B_E5_8K_SECOND_RESTORE=NO' }
+          if ($returned) { Write-Host 'IMP008B_E5_8K_RUNTHREAD_RETURNED=PASS' } else { Write-Host 'IMP008B_E5_8K_RUNTHREAD_RETURNED=NO' }
+          if ($svc) { Write-Host 'IMP008B_E5_8K_SVC55=PASS' } else { Write-Host 'IMP008B_E5_8K_SVC55=NO' }
+          if ($x18result) { Write-Host 'IMP008B_E5_8K_X18_RESULT=PASS' } else { Write-Host 'IMP008B_E5_8K_X18_RESULT=NO' }
+          if ($gate) { Write-Host 'IMP008B_E5_8K_GATE=PASS' } else { Write-Host 'IMP008B_E5_8K_GATE=NO' }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-8k-private-stack-transition-ab
+          path: |
+            eden/imp008b-e5-8k-stack.log
+            eden/imp008b-e5-8k-stack.out.log
+            eden/imp008b-e5-8k-stack.err.log
+            eden/imp008b-e5-8k-stack.rc
+          if-no-files-found: warn
