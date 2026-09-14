@@ -1,0 +1,209 @@
+name: Probe IMP-008B E5 Late TEB Publication Selfhosted ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-late-teb-publication-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-late-teb-publication-selfhosted-arm64
+  cancel-in-progress: false
+
+jobs:
+  e5-late-teb-publication:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Verify retained E5 diagnostic workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          Write-Host "IMP008B_E5_LATE_TEB_WORKSPACE_HEAD=$head"
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') {
+            throw "unexpected retained E5 workspace HEAD: $head"
+          }
+          if (-not (Test-Path 'eden/build/bin/imp008b_e5_x18_runtime.exe')) {
+            throw 'retained E5 executable missing'
+          }
+          $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) {
+            throw 'historical RunThread TEB-stack bypass marker missing'
+          }
+          if (Select-String -Path $runtime -SimpleMatch 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' -Quiet) {
+            throw 'early TEB stack publication unexpectedly active'
+          }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) {
+            throw 'generic VEH entry observer missing'
+          }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) {
+            throw 'x18 VEH observer missing'
+          }
+          if (-not (Select-String -Path $transition -SimpleMatch 'const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);' -Quiet)) {
+            throw 'inline NtContinue baseline missing'
+          }
+          Write-Host 'IMP008B_E5_LATE_TEB_RETAINED_WORKSPACE=PASS'
+
+      - name: Set up CLANGARM64 toolchain for incremental rebuild
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Apply checkout-only late TEB stack publication
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/core/arm/nce/windows_nce_transition.cpp')
+          raw = path.read_bytes()
+          had_crlf = b'\r\n' in raw
+          text = raw.decode('utf-8').replace('\r\n', '\n')
+          marker = 'IMP008B_E5_LATE_TEB_PLAN=PASS'
+
+          if marker not in text:
+              anchor = (
+                  '    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);\n'
+                  '    std::fflush(stderr);\n'
+                  '    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);\n'
+              )
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'late TEB NtContinue anchor count={text.count(anchor)}')
+
+              replacement = (
+                  '    MEMORY_BASIC_INFORMATION imp008b_e5_stack_mbi{};\n'
+                  '    if (context.Sp == 0 ||\n'
+                  '        VirtualQuery(reinterpret_cast<const void*>(context.Sp - 1),\n'
+                  '                     &imp008b_e5_stack_mbi, sizeof(imp008b_e5_stack_mbi)) == 0 ||\n'
+                  '        imp008b_e5_stack_mbi.AllocationBase == nullptr) {\n'
+                  '        std::fputs("IMP008B_E5_LATE_TEB_QUERY=FAIL\\n", stderr);\n'
+                  '        std::fflush(stderr);\n'
+                  '        std::abort();\n'
+                  '    }\n\n'
+                  '    const auto imp008b_e5_guest_stack_limit =\n'
+                  '        reinterpret_cast<std::uint64_t>(imp008b_e5_stack_mbi.AllocationBase);\n'
+                  '    std::uint64_t imp008b_e5_guest_stack_base = imp008b_e5_guest_stack_limit;\n'
+                  '    for (std::uint64_t cursor = imp008b_e5_guest_stack_limit;;) {\n'
+                  '        MEMORY_BASIC_INFORMATION region{};\n'
+                  '        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||\n'
+                  '            region.AllocationBase != imp008b_e5_stack_mbi.AllocationBase) {\n'
+                  '            break;\n'
+                  '        }\n'
+                  '        const auto region_end = reinterpret_cast<std::uint64_t>(region.BaseAddress) +\n'
+                  '                                static_cast<std::uint64_t>(region.RegionSize);\n'
+                  '        if (region_end <= cursor) {\n'
+                  '            break;\n'
+                  '        }\n'
+                  '        imp008b_e5_guest_stack_base = region_end;\n'
+                  '        cursor = region_end;\n'
+                  '    }\n\n'
+                  '    auto* const imp008b_e5_tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());\n'
+                  '    std::fprintf(stderr,\n'
+                  '                 "IMP008B_E5_LATE_TEB_PLAN=PASS HOST_LIMIT=%p HOST_BASE=%p GUEST_LIMIT=0x%llX GUEST_BASE=0x%llX SP=0x%llX\\n",\n'
+                  '                 imp008b_e5_tib->StackLimit, imp008b_e5_tib->StackBase,\n'
+                  '                 static_cast<unsigned long long>(imp008b_e5_guest_stack_limit),\n'
+                  '                 static_cast<unsigned long long>(imp008b_e5_guest_stack_base),\n'
+                  '                 static_cast<unsigned long long>(context.Sp));\n'
+                  '    std::fflush(stderr);\n'
+                  '    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);\n'
+                  '    std::fflush(stderr);\n'
+                  '    imp008b_e5_tib->StackLimit = reinterpret_cast<void*>(imp008b_e5_guest_stack_limit);\n'
+                  '    imp008b_e5_tib->StackBase = reinterpret_cast<void*>(imp008b_e5_guest_stack_base);\n'
+                  '    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);\n'
+              )
+              text = text.replace(anchor, replacement, 1)
+
+          if had_crlf:
+              text = text.replace('\n', '\r\n')
+          path.write_bytes(text.encode('utf-8'))
+          PY
+          grep -Fq 'IMP008B_E5_LATE_TEB_PLAN=PASS' src/core/arm/nce/windows_nce_transition.cpp
+          grep -Fq 'imp008b_e5_tib->StackLimit = reinterpret_cast<void*>(imp008b_e5_guest_stack_limit);' src/core/arm/nce/windows_nce_transition.cpp
+          grep -Fq 'imp008b_e5_tib->StackBase = reinterpret_cast<void*>(imp008b_e5_guest_stack_base);' src/core/arm/nce/windows_nce_transition.cpp
+          git diff --check -- src/core/arm/nce/windows_nce_transition.cpp
+          echo 'IMP008B_E5_LATE_TEB_PATCH=PASS'
+
+      - name: Rebuild E5 target incrementally
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e5_x18_runtime --parallel
+          test -f build/bin/imp008b_e5_x18_runtime.exe
+          echo 'IMP008B_E5_LATE_TEB_INCREMENTAL_BUILD=PASS'
+
+      - name: Launch E5 late TEB runtime
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          exe='build/bin/imp008b_e5_x18_runtime.exe'
+          set +e
+          timeout 30s "$exe" > imp008b-e5-late-teb.out.log 2> imp008b-e5-late-teb.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-late-teb.rc
+          cat imp008b-e5-late-teb.out.log 2>/dev/null || true
+          cat imp008b-e5-late-teb.err.log >&2 2>/dev/null || true
+          cat imp008b-e5-late-teb.out.log imp008b-e5-late-teb.err.log > imp008b-e5-late-teb.log 2>/dev/null || true
+          echo "IMP008B_E5_LATE_TEB_LAUNCH_RC=$rc"
+          echo 'IMP008B_E5_LATE_TEB_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify E5 late TEB boundary
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-late-teb.log')) { throw 'late TEB runtime log missing' }
+          Write-Host '--- E5 late TEB publication boundary ---'
+          Get-Content 'imp008b-e5-late-teb.log' | Select-String -Pattern 'IMP008B_E5_(LATE_TEB_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED)|IMP008B_E2_(RESTORE_|BEFORE_NT_CONTINUE)'
+          $beforeNt = Select-String -Path 'imp008b-e5-late-teb.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet
+          if (-not $beforeNt) { throw 'late TEB experiment did not reach BEFORE_NT_CONTINUE' }
+          $genericVeh = Select-String -Path 'imp008b-e5-late-teb.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          if ($genericVeh) {
+            Write-Host 'IMP008B_E5_LATE_TEB_GENERIC_VEH=PASS'
+          } else {
+            Write-Host 'IMP008B_E5_LATE_TEB_GENERIC_VEH=NO_ENTRY'
+          }
+          $x18Veh = Select-String -Path 'imp008b-e5-late-teb.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
+          if ($x18Veh) {
+            Write-Host 'IMP008B_E5_LATE_TEB_X18_VEH=PASS'
+          } else {
+            Write-Host 'IMP008B_E5_LATE_TEB_X18_VEH=NO_ENTRY'
+          }
+
+      - name: Upload E5 late TEB logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-late-teb-publication-selfhosted
+          path: |
+            eden/imp008b-e5-late-teb.log
+            eden/imp008b-e5-late-teb.out.log
+            eden/imp008b-e5-late-teb.err.log
+            eden/imp008b-e5-late-teb.rc
+          if-no-files-found: warn
