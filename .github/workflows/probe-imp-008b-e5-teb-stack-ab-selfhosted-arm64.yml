@@ -73,21 +73,19 @@ jobs:
           had_crlf = b'\r\n' in raw
           text = raw.decode('utf-8').replace('\r\n', '\n')
 
-          install = '''        WindowsTebStackBounds teb_stack_bounds{};
-          if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
-              NCE::CurrentNceContext::Clear();
-              hr = HaltReason::PrefetchAbort;
-              break;
-          }
-
-          '''.replace('\n          ', '\n')
-          restore = '''
-          RestoreHostTebStackBounds(teb_stack_bounds);
-          NCE::CurrentNceContext::Clear();
-          '''.replace('\n          ', '\n')
-          historical_restore = '''
-          NCE::CurrentNceContext::Clear();
-          '''.replace('\n          ', '\n')
+          install = (
+              '        WindowsTebStackBounds teb_stack_bounds{};\n'
+              '        if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {\n'
+              '            NCE::CurrentNceContext::Clear();\n'
+              '            hr = HaltReason::PrefetchAbort;\n'
+              '            break;\n'
+              '        }\n\n'
+          )
+          restore = (
+              '        RestoreHostTebStackBounds(teb_stack_bounds);\n'
+              '        NCE::CurrentNceContext::Clear();\n'
+          )
+          historical_restore = '        NCE::CurrentNceContext::Clear();\n'
 
           if text.count(install) != 1:
               raise SystemExit(f'TEB install block count={text.count(install)}')
