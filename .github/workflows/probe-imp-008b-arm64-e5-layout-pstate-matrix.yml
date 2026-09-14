@@ -1,0 +1,85 @@
+name: Probe IMP-008B ARM64 E5 Layout PSTATE Matrix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-arm64-e5-layout-pstate-matrix.yml
+
+permissions:
+  contents: read
+
+jobs:
+  e5-layout-pstate:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Build native ARM64 exact-layout probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <winternl.h>
+          #include <cstdint>
+          #include <cstdio>
+          #include <cstring>
+          #include <string>
+          #ifndef MEM_RESERVE_PLACEHOLDER
+          #define MEM_RESERVE_PLACEHOLDER 0x00040000
+          #endif
+          #ifndef MEM_REPLACE_PLACEHOLDER
+          #define MEM_REPLACE_PLACEHOLDER 0x00004000
+          #endif
+          #ifndef MEM_PRESERVE_PLACEHOLDER
+          #define MEM_PRESERVE_PLACEHOLDER 0x00000002
+          #endif
+          using VA2=PVOID(WINAPI*)(HANDLE,PVOID,SIZE_T,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG);
+          using MV3=PVOID(WINAPI*)(HANDLE,HANDLE,PVOID,ULONG64,SIZE_T,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG);
+          using UV2=BOOL(WINAPI*)(HANDLE,PVOID,ULONG);
+          using NTC=LONG(NTAPI*)(PCONTEXT,BOOLEAN);
+          using ExitFn=VOID(WINAPI*)(UINT);
+          static ExitFn g_exit{};
+          static LONG CALLBACK Veh(PEXCEPTION_POINTERS ep) noexcept {
+            if(!ep||!ep->ExceptionRecord||!ep->ContextRecord||!g_exit)return EXCEPTION_CONTINUE_SEARCH;
+            ep->ContextRecord->Pc=reinterpret_cast<DWORD64>(g_exit);
+            ep->ContextRecord->X0=ep->ExceptionRecord->ExceptionCode==EXCEPTION_BREAKPOINT?42u:43u;
+            return EXCEPTION_CONTINUE_EXECUTION;
+          }
+          static void Dump(const char* tag,void* p){MEMORY_BASIC_INFORMATION m{};VirtualQuery(p,&m,sizeof(m));std::printf("IMP008B_LP_%s ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX STATE=0x%lX PROTECT=0x%lX TYPE=0x%lX\n",tag,p,m.BaseAddress,m.AllocationBase,(unsigned long long)m.RegionSize,(unsigned long)m.State,(unsigned long)m.Protect,(unsigned long)m.Type);std::fflush(stdout);}
+          int main(int argc,char**argv){
+            if(argc!=2)return 2; const std::string mode=argv[1]; const bool low=mode.rfind("low-",0)==0; const bool zero=mode.find("zero")!=std::string::npos;
+            HANDLE proc=GetCurrentProcess(); HMODULE kb=GetModuleHandleW(L"kernelbase.dll"); HMODULE nt=GetModuleHandleW(L"ntdll.dll");
+            auto va2=(VA2)GetProcAddress(kb,"VirtualAlloc2"); auto mv3=(MV3)GetProcAddress(kb,"MapViewOfFile3"); auto uv2=(UV2)GetProcAddress(kb,"UnmapViewOfFile2"); auto ntc=(NTC)GetProcAddress(nt,"NtContinue"); g_exit=(ExitFn)GetProcAddress(GetModuleHandleW(L"kernel32.dll"),"ExitProcess");
+            if(!va2||!mv3||!uv2||!ntc||!g_exit||!AddVectoredExceptionHandler(1,Veh))return 3;
+            void* wanted=low?reinterpret_cast<void*>(0x1080000000ULL):nullptr;
+            auto* arena=(std::uint8_t*)va2(proc,wanted,0x10000,MEM_RESERVE|MEM_RESERVE_PLACEHOLDER,PAGE_NOACCESS,nullptr,0); if(!arena){std::printf("IMP008B_LP_RESERVE_FAIL=%lu\n",GetLastError());return 4;}
+            if(low&&arena!=wanted)return 5;
+            if(!VirtualFreeEx(proc,arena,0x1000,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))return 6;
+            HANDLE sec=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_EXECUTE_READWRITE,0,0x1000,nullptr); if(!sec)return 7;
+            if(mv3(sec,proc,arena,0,0x1000,MEM_REPLACE_PLACEHOLDER,PAGE_EXECUTE_READWRITE,nullptr,0)!=arena)return 8;
+            auto* w=(std::uint32_t*)arena; for(int i=0;i<9;i++)w[i]=0xD503201Fu; w[9]=0xD43E0000u; w[10]=0xD65F03C0u; DWORD old{}; FlushInstructionCache(proc,arena,44); if(!VirtualProtect(arena,0x1000,PAGE_EXECUTE_READ,&old))return 9;
+            if(!VirtualFreeEx(proc,arena+0x1000,0x1000,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))return 10;
+            void* stack=va2(proc,arena+0x1000,0x1000,MEM_RESERVE|MEM_COMMIT|MEM_REPLACE_PLACEHOLDER,PAGE_READWRITE,nullptr,0); if(stack!=arena+0x1000)return 11;
+            Dump("CODE",arena+0x24);Dump("STACK",arena+0x1FE0);
+            CONTEXT c{};RtlCaptureContext(&c);DWORD captured=c.Cpsr;c.ContextFlags=CONTEXT_FULL;c.Pc=(DWORD64)(arena+0x24);c.Sp=(DWORD64)(arena+0x1FE0);if(zero)c.Cpsr=0;
+            std::printf("IMP008B_LP_BEFORE MODE=%s PC=0x%llX SP=0x%llX CPSR=0x%08lX CAPTURED=0x%08lX FLAGS=0x%08lX\n",mode.c_str(),(unsigned long long)c.Pc,(unsigned long long)c.Sp,(unsigned long)c.Cpsr,(unsigned long)captured,(unsigned long)c.ContextFlags);std::fflush(stdout);
+            auto* tib=(NT_TIB*)NtCurrentTeb();tib->StackLimit=arena+0x1000;tib->StackBase=arena+0x2000;
+            LONG st=ntc(&c,FALSE);ExitProcess(0x80u|(static_cast<unsigned long>(st)&0x7Fu));
+          }
+          '@ | Set-Content arm64_e5_layout_pstate.cpp -Encoding utf8
+          $vsdev=Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\*\Community\Common7\Tools\VsDevCmd.bat" -ErrorAction SilentlyContinue|Sort-Object FullName -Descending|Select-Object -First 1
+          if(-not $vsdev){throw 'VsDevCmd missing'}
+          $cmd='"'+$vsdev.FullName+'" -arch=arm64 -host_arch=arm64 >nul && cl.exe /nologo /std:c++20 /O2 /EHsc arm64_e5_layout_pstate.cpp /Fe:arm64_e5_layout_pstate.exe';cmd.exe /d /s /c $cmd;if($LASTEXITCODE-ne 0){throw "compile rc=$LASTEXITCODE"}
+
+      - name: Run exact-layout PSTATE matrix
+        shell: powershell
+        run: |
+          $rows=@();foreach($case in @('high-captured','high-zero','low-captured','low-zero')){$psi=New-Object System.Diagnostics.ProcessStartInfo;$psi.FileName=(Resolve-Path '.\arm64_e5_layout_pstate.exe').Path;$psi.Arguments=$case;$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$p=New-Object System.Diagnostics.Process;$p.StartInfo=$psi;[void]$p.Start();$o=$p.StandardOutput.ReadToEnd();$e=$p.StandardError.ReadToEnd();$p.WaitForExit();if($o){Write-Host $o};if($e){Write-Host $e};$line="IMP008B_LP_CASE=$case EXIT_SIGNED=$($p.ExitCode)";Write-Host $line;$rows+=$line};$rows|Set-Content imp008b-layout-pstate.log -Encoding utf8
+
+      - name: Show results
+        shell: powershell
+        run: Get-Content imp008b-layout-pstate.log
