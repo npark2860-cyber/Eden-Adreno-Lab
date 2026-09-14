@@ -1,0 +1,112 @@
+name: Probe IMP-008B E5 Private Stack Transition A-B
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-private-stack-transition-ab-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-private-stack-transition-ab
+  cancel-in-progress: false
+
+jobs:
+  e5-private-stack-transition:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 60
+    steps:
+      - name: Verify and patch retained E5 workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) { throw 'RunThread TEB bypass missing' }
+          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
+          $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          git -C eden checkout -- 'src/core/arm/nce/windows_nce_transition.cpp'
+          if ($LASTEXITCODE -ne 0) { throw 'transition reset failed' }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          $old = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIC8vIFJ0bFJlc3RvcmVDb250ZXh0IGNvbnZlcnRzIGEgcmVqZWN0ZWQgTnRDb250aW51ZSBpbnRvIGFuIGltbWVkaWF0ZSBmYWlsLWZhc3QuIENhbGwgdGhlCiAgICAvLyB1bmRlcmx5aW5nIHRyYW5zaXRpb24gZGlyZWN0bHkgc28gdGhlIGFyYml0cmFyeS1QQyBndWVzdCByZXN0b3JlIGFuZCBleGNlcHRpb24gY29udGludWF0aW9uCiAgICAvLyBzaGFyZSB0aGUgc2FtZSBXaW5kb3dzIGNvbnRleHQtcmVzdW1lIHByaW1pdGl2ZS4KICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTJfQkVGT1JFX05UX0NPTlRJTlVFPVBBU1NcbiIsIHN0ZGVycik7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgV2luZG93c05jZVRyYW5zaXRpb246OkNvbnRpbnVlQ29udGV4dChjb250ZXh0KTsK'))
+          $new = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIC8vIENoZWNrb3V0LW9ubHkgRTUgQS9COiBXaW5kb3dzIEFSTTY0IGV4Y2VwdGlvbiBkaXNwYXRjaCBmYWlsLWZhc3RzIHdoZW4gdGhlIGFjdGl2ZQogICAgLy8gc3RhY2sgaXMgYSBNRU1fUkVQTEFDRV9QTEFDRUhPTERFUiBtYXBwZWQgdmlldy4gUmVwbGFjZSBvbmx5IHRoZSBjdXJyZW50IDQgS2lCIHN0YWNrCiAgICAvLyBwYWdlIHdpdGggYSBwcml2YXRlIFZBRCBhdCB0aGUgaWRlbnRpY2FsIGd1ZXN0IFZBLCBwcmVzZXJ2aW5nIGl0cyBieXRlcy4KICAgIGNvbnN0ZXhwciBzdGQ6OnVpbnRwdHJfdCBQYWdlTWFzayA9IDB4RkZGOwogICAgY29uc3RleHByIFNJWkVfVCBQYWdlQnl0ZXMgPSAweDEwMDA7CiAgICBjb25zdGV4cHIgVUxPTkcgUHJlc2VydmVQbGFjZWhvbGRlciA9IDB4MDAwMDAwMDI7CiAgICBjb25zdGV4cHIgVUxPTkcgUmVwbGFjZVBsYWNlaG9sZGVyID0gMHgwMDAwNDAwMDsKICAgIGNvbnN0IGF1dG8gc3RhY2tfcGFnZSA9IHN0YXRpY19jYXN0PHN0ZDo6dWludHB0cl90Pihjb250ZXh0LlNwKSAmIH5QYWdlTWFzazsKICAgIHVuc2lnbmVkIGNoYXIgc3RhY2tfc25hcHNob3RbUGFnZUJ5dGVzXXt9OwogICAgc3RkOjptZW1jcHkoc3RhY2tfc25hcHNob3QsIHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3Qgdm9pZCo+KHN0YWNrX3BhZ2UpLCBQYWdlQnl0ZXMpOwoKICAgIE1FTU9SWV9CQVNJQ19JTkZPUk1BVElPTiBiZWZvcmV7fTsKICAgIGlmIChWaXJ0dWFsUXVlcnkocmVpbnRlcnByZXRfY2FzdDxjb25zdCB2b2lkKj4oc3RhY2tfcGFnZSksICZiZWZvcmUsIHNpemVvZihiZWZvcmUpKSA9PSAwIHx8CiAgICAgICAgYmVmb3JlLlN0YXRlICE9IE1FTV9DT01NSVQpIHsKICAgICAgICBzdGQ6OmZwdXRzKCJJTVAwMDhCX0U1X1BSSVZBVEVfU1RBQ0tfUVVFUllfQkVGT1JFPUZBSUxcbiIsIHN0ZGVycik7CiAgICAgICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKICAgICAgICBzdGQ6OmFib3J0KCk7CiAgICB9CgogICAgdXNpbmcgVmlydHVhbEFsbG9jMkZuID0gUFZPSUQoV0lOQVBJKikoSEFORExFLCBQVk9JRCwgU0laRV9ULCBVTE9ORywgVUxPTkcsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBNRU1fRVhURU5ERURfUEFSQU1FVEVSKiwgVUxPTkcpOwogICAgdXNpbmcgVW5tYXBWaWV3T2ZGaWxlMkZuID0gQk9PTChXSU5BUEkqKShIQU5ETEUsIFBWT0lELCBVTE9ORyk7CiAgICB1c2luZyBOdENvbnRpbnVlRm4gPSBMT05HKE5UQVBJKikoUENPTlRFWFQsIEJPT0xFQU4pOwogICAgY29uc3QgSE1PRFVMRSBrZXJuZWxiYXNlID0gR2V0TW9kdWxlSGFuZGxlVyhMImtlcm5lbGJhc2UuZGxsIik7CiAgICBjb25zdCBITU9EVUxFIG50ZGxsID0gR2V0TW9kdWxlSGFuZGxlVyhMIm50ZGxsLmRsbCIpOwogICAgY29uc3QgYXV0byB2aXJ0dWFsX2FsbG9jMiA9IGtlcm5lbGJhc2UgIT0gbnVsbHB0cgogICAgICAgID8gcmVpbnRlcnByZXRfY2FzdDxWaXJ0dWFsQWxsb2MyRm4+KEdldFByb2NBZGRyZXNzKGtlcm5lbGJhc2UsICJWaXJ0dWFsQWxsb2MyIikpCiAgICAgICAgOiBudWxscHRyOwogICAgY29uc3QgYXV0byB1bm1hcF92aWV3MiA9IGtlcm5lbGJhc2UgIT0gbnVsbHB0cgogICAgICAgID8gcmVpbnRlcnByZXRfY2FzdDxVbm1hcFZpZXdPZkZpbGUyRm4+KEdldFByb2NBZGRyZXNzKGtlcm5lbGJhc2UsICJVbm1hcFZpZXdPZkZpbGUyIikpCiAgICAgICAgOiBudWxscHRyOwogICAgY29uc3QgYXV0byBudF9jb250aW51ZSA9IG50ZGxsICE9IG51bGxwdHIKICAgICAgICA/IHJlaW50ZXJwcmV0X2Nhc3Q8TnRDb250aW51ZUZuPihHZXRQcm9jQWRkcmVzcyhudGRsbCwgIk50Q29udGludWUiKSkKICAgICAgICA6IG51bGxwdHI7CiAgICBpZiAodmlydHVhbF9hbGxvYzIgPT0gbnVsbHB0ciB8fCB1bm1hcF92aWV3MiA9PSBudWxscHRyIHx8IG50X2NvbnRpbnVlID09IG51bGxwdHIpIHsKICAgICAgICBzdGQ6OmZwdXRzKCJJTVAwMDhCX0U1X1BSSVZBVEVfU1RBQ0tfUkVTT0xWRT1GQUlMXG4iLCBzdGRlcnIpOwogICAgICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CiAgICAgICAgc3RkOjphYm9ydCgpOwogICAgfQoKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgIklNUDAwOEJfRTVfUFJJVkFURV9TVEFDS19CRUZPUkU9UEFTUyBBRERSPTB4JWxsWCBBTExPQz0lcCBUWVBFPTB4JWxYIFBST1RFQ1Q9MHglbFhcbiIsCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihzdGFja19wYWdlKSwgYmVmb3JlLkFsbG9jYXRpb25CYXNlLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KGJlZm9yZS5UeXBlKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihiZWZvcmUuUHJvdGVjdCkpOwogICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKCiAgICBpZiAoIXVubWFwX3ZpZXcyKEdldEN1cnJlbnRQcm9jZXNzKCksIHJlaW50ZXJwcmV0X2Nhc3Q8dm9pZCo+KHN0YWNrX3BhZ2UpLAogICAgICAgICAgICAgICAgICAgICBQcmVzZXJ2ZVBsYWNlaG9sZGVyKSkgewogICAgICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsICJJTVAwMDhCX0U1X1BSSVZBVEVfU1RBQ0tfVU5NQVA9RkFJTCBFUlJPUj0lbHVcbiIsCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KEdldExhc3RFcnJvcigpKSk7CiAgICAgICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKICAgICAgICBzdGQ6OmFib3J0KCk7CiAgICB9CgogICAgdm9pZCogY29uc3QgcmVwbGFjZW1lbnQgPSB2aXJ0dWFsX2FsbG9jMigKICAgICAgICBHZXRDdXJyZW50UHJvY2VzcygpLCByZWludGVycHJldF9jYXN0PHZvaWQqPihzdGFja19wYWdlKSwgUGFnZUJ5dGVzLAogICAgICAgIE1FTV9SRVNFUlZFIHwgTUVNX0NPTU1JVCB8IFJlcGxhY2VQbGFjZWhvbGRlciwgUEFHRV9SRUFEV1JJVEUsIG51bGxwdHIsIDApOwogICAgaWYgKHJlcGxhY2VtZW50ICE9IHJlaW50ZXJwcmV0X2Nhc3Q8dm9pZCo+KHN0YWNrX3BhZ2UpKSB7CiAgICAgICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwgIklNUDAwOEJfRTVfUFJJVkFURV9TVEFDS19SRVBMQUNFPUZBSUwgUFRSPSVwIEVSUk9SPSVsdVxuIiwKICAgICAgICAgICAgICAgICAgICAgcmVwbGFjZW1lbnQsIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KEdldExhc3RFcnJvcigpKSk7CiAgICAgICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKICAgICAgICBzdGQ6OmFib3J0KCk7CiAgICB9CiAgICBzdGQ6Om1lbWNweShyZXBsYWNlbWVudCwgc3RhY2tfc25hcHNob3QsIFBhZ2VCeXRlcyk7CgogICAgTUVNT1JZX0JBU0lDX0lORk9STUFUSU9OIGFmdGVye307CiAgICBpZiAoVmlydHVhbFF1ZXJ5KHJlcGxhY2VtZW50LCAmYWZ0ZXIsIHNpemVvZihhZnRlcikpID09IDAgfHwKICAgICAgICBhZnRlci5TdGF0ZSAhPSBNRU1fQ09NTUlUIHx8IGFmdGVyLlR5cGUgIT0gTUVNX1BSSVZBVEUpIHsKICAgICAgICBzdGQ6OmZwdXRzKCJJTVAwMDhCX0U1X1BSSVZBVEVfU1RBQ0tfUVVFUllfQUZURVI9RkFJTFxuIiwgc3RkZXJyKTsKICAgICAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgICAgIHN0ZDo6YWJvcnQoKTsKICAgIH0KCiAgICBjb25zdCBhdXRvIHN0YWNrX2xpbWl0ID0gcmVpbnRlcnByZXRfY2FzdDxzdGQ6OnVpbnRwdHJfdD4oYWZ0ZXIuQmFzZUFkZHJlc3MpOwogICAgY29uc3QgYXV0byBzdGFja19iYXNlID0gc3RhY2tfbGltaXQgKyBzdGF0aWNfY2FzdDxzdGQ6OnVpbnRwdHJfdD4oYWZ0ZXIuUmVnaW9uU2l6ZSk7CiAgICBhdXRvKiBjb25zdCB0aWIgPSByZWludGVycHJldF9jYXN0PE5UX1RJQio+KE50Q3VycmVudFRlYigpKTsKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgIklNUDAwOEJfRTVfUFJJVkFURV9TVEFDS19SRUFEWT1QQVNTIFNQPTB4JWxsWCBMSU1JVD0weCVsbFggQkFTRT0weCVsbFggVFlQRT0weCVsWCBQUk9URUNUPTB4JWxYXG4iLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oY29udGV4dC5TcCksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihzdGFja19saW1pdCksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihzdGFja19iYXNlKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihhZnRlci5UeXBlKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihhZnRlci5Qcm90ZWN0KSk7CiAgICBzdGQ6OmZwdXRzKCJJTVAwMDhCX0UyX0JFRk9SRV9OVF9DT05USU5VRT1QQVNTXG4iLCBzdGRlcnIpOwogICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKCiAgICAvLyBObyBob3N0L3J1bnRpbWUgY2FsbCBhZnRlciBURUIgZ3Vlc3Qtc3RhY2sgcHVibGljYXRpb24uCiAgICB0aWItPlN0YWNrTGltaXQgPSByZWludGVycHJldF9jYXN0PHZvaWQqPihzdGFja19saW1pdCk7CiAgICB0aWItPlN0YWNrQmFzZSA9IHJlaW50ZXJwcmV0X2Nhc3Q8dm9pZCo+KHN0YWNrX2Jhc2UpOwogICAgY29uc3QgTE9ORyBzdGF0dXMgPSBudF9jb250aW51ZShyZWludGVycHJldF9jYXN0PFBDT05URVhUPigmY29udGV4dCksIEZBTFNFKTsKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsICJJTVAwMDhCX0U1X1BSSVZBVEVfU1RBQ0tfTlRDT05USU5VRV9SRVRVUk49MHglMDhsWFxuIiwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihzdGF0dXMpKTsKICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CiAgICBzdGQ6OmFib3J0KCk7Cg=='))
+          $text = [IO.File]::ReadAllText($transition).Replace("`r`n", "`n")
+          if ($text.IndexOf($old) -lt 0) { throw 'normalized transition anchor missing' }
+          $text = $text.Replace($old, $new)
+          [IO.File]::WriteAllText($transition, $text, $utf8)
+          git -C eden diff --check -- 'src/core/arm/nce/windows_nce_transition.cpp'
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host 'IMP008B_E5_PRIVATE_TRANSITION_PATCH=PASS'
+
+      - name: Set up CLANGARM64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p
+            toolchain:p clang:p python-pip:p lld:p openssl:p boost:p fmt:p lz4:p
+            nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p
+            glslang:p enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p
+            xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p libwebp:p
+            libtiff:p brotli:p
+
+      - name: Rebuild E5 target incrementally
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e5_x18_runtime --parallel
+          test -f build/bin/imp008b_e5_x18_runtime.exe
+          echo 'IMP008B_E5_PRIVATE_TRANSITION_BUILD=PASS'
+
+      - name: Launch E5 private-stack transition A-B
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          set +e
+          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-private-transition.out.log 2> imp008b-e5-private-transition.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-private-transition.rc
+          cat imp008b-e5-private-transition.out.log imp008b-e5-private-transition.err.log > imp008b-e5-private-transition.log 2>/dev/null || true
+          cat imp008b-e5-private-transition.log || true
+          echo "IMP008B_E5_PRIVATE_TRANSITION_RC=$rc"
+
+      - name: Classify E5 private-stack transition
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-private-transition.log')) { throw 'runtime log missing' }
+          Get-Content 'imp008b-e5-private-transition.log' | Select-String -Pattern 'IMP008B_E5_(PRIVATE_STACK|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT)|IMP008B_E2_'
+          $ready = Select-String -Path 'imp008b-e5-private-transition.log' -SimpleMatch 'IMP008B_E5_PRIVATE_STACK_READY=PASS' -Quiet
+          if (-not $ready) { throw 'private stack transition not reached' }
+          $generic = Select-String -Path 'imp008b-e5-private-transition.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          $x18 = Select-String -Path 'imp008b-e5-private-transition.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
+          $returned = Select-String -Path 'imp008b-e5-private-transition.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          if ($generic) { Write-Host 'IMP008B_E5_PRIVATE_TRANSITION_GENERIC_VEH=PASS' } else { Write-Host 'IMP008B_E5_PRIVATE_TRANSITION_GENERIC_VEH=NO_ENTRY' }
+          if ($x18) { Write-Host 'IMP008B_E5_PRIVATE_TRANSITION_X18_VEH=PASS' } else { Write-Host 'IMP008B_E5_PRIVATE_TRANSITION_X18_VEH=NO_ENTRY' }
+          if ($returned) { Write-Host 'IMP008B_E5_PRIVATE_TRANSITION_RUNTHREAD=PASS' } else { Write-Host 'IMP008B_E5_PRIVATE_TRANSITION_RUNTHREAD=NO' }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-private-stack-transition-ab
+          path: |
+            eden/imp008b-e5-private-transition.log
+            eden/imp008b-e5-private-transition.out.log
+            eden/imp008b-e5-private-transition.err.log
+            eden/imp008b-e5-private-transition.rc
+          if-no-files-found: warn
