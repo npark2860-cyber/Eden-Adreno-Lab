@@ -71,63 +71,66 @@ jobs:
           fi
           echo 'IMP008B_E5_SCOPE_SOURCE=PASS'
 
-      - name: Apply checkout-only E5 TEB publication A/B
+      - name: Apply checkout-only E5 inline NtContinue restore A/B
         shell: bash
         working-directory: eden
         run: |
           set -euo pipefail
-          source='src/core/arm/nce/arm_nce_windows.cpp'
-          cat > e5-teb-publication-ab.patch <<'PATCH'
-          diff --git a/src/core/arm/nce/arm_nce_windows.cpp b/src/core/arm/nce/arm_nce_windows.cpp
-          --- a/src/core/arm/nce/arm_nce_windows.cpp
-          +++ b/src/core/arm/nce/arm_nce_windows.cpp
-          @@ -279,13 +279,5 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
-               for (;;) {
-                   NCE::CurrentNceContext::Install(thread_params);
-          -
-          -        WindowsTebStackBounds teb_stack_bounds{};
-          -        if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
-          -            NCE::CurrentNceContext::Clear();
-          -            hr = HaltReason::PrefetchAbort;
-          -            break;
-          -        }
-          -
-                   if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
-                       hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
-                           &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
-          @@ -293,7 +285,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
-                       hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
-                   }
-          
-          -        RestoreHostTebStackBounds(teb_stack_bounds);
-                   NCE::CurrentNceContext::Clear();
-          
-                   if (m_windows_pending_nce_fault) {
-          PATCH
-          git apply --check e5-teb-publication-ab.patch
-          git apply e5-teb-publication-ab.patch
-          test "$(grep -Fc '[[nodiscard]] bool InstallGuestTebStackBounds' "$source")" -eq 1
-          test "$(grep -Fc 'void RestoreHostTebStackBounds' "$source")" -eq 1
-          sed -i 's/^\[\[nodiscard\]\] bool InstallGuestTebStackBounds/[[maybe_unused]] [[nodiscard]] bool InstallGuestTebStackBounds/' "$source"
-          sed -i 's/^void RestoreHostTebStackBounds/[[maybe_unused]] void RestoreHostTebStackBounds/' "$source"
-          grep -Fq '[[maybe_unused]] [[nodiscard]] bool InstallGuestTebStackBounds' "$source"
-          grep -Fq '[[maybe_unused]] void RestoreHostTebStackBounds' "$source"
-          git diff --check -- "$source"
-          if grep -Fq 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' "$source"; then
-            echo 'IMP008B_E5_TEB_INSTALL_CALL=FAIL' >&2
+          transition='src/core/arm/nce/windows_nce_transition.cpp'
+          runtime='src/core/arm/nce/arm_nce_windows.cpp'
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/core/arm/nce/windows_nce_transition.cpp')
+          text = path.read_text(encoding='utf-8')
+          old = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
+    // underlying transition directly so the arbitrary-PC guest restore and exception continuation
+    // share the same Windows context-resume primitive.
+    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
+    std::fflush(stderr);
+    WindowsNceTransition::ContinueContext(context);
+'''
+          new = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
+    // underlying transition directly for this E2 diagnostic so the exact NTSTATUS is observable.
+    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto nt_continue = ntdll != nullptr
+                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
+                                 : nullptr;
+    if (nt_continue == nullptr) {
+        std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RESOLVE_ERROR=%lu\\n",
+                     static_cast<unsigned long>(GetLastError()));
+        std::fflush(stderr);
+        std::abort();
+    }
+
+    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
+    std::fflush(stderr);
+    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
+    std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RETURN=0x%08lX\\n",
+                 static_cast<unsigned long>(status));
+    std::fflush(stderr);
+    std::abort();
+'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'inline NtContinue restore anchor count={count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          grep -Fq 'const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);' "$transition"
+          grep -Fq '[[noreturn]] void WindowsNceTransition::ContinueContext' "$transition"
+          if grep -Fq 'WindowsNceTransition::ContinueContext(context);' "$transition"; then
+            echo 'IMP008B_E5_RESTORE_INLINE_NTCONTINUE=FAIL' >&2
             exit 61
           fi
-          if grep -Fq 'RestoreHostTebStackBounds(teb_stack_bounds)' "$source"; then
-            echo 'IMP008B_E5_TEB_RESTORE_CALL=FAIL' >&2
-            exit 62
-          fi
-          if ! grep -Fq 'NCE::WindowsNceTransition::ContinueContext(context);' "$source"; then
-            echo 'IMP008B_E5_X18_CONTINUE_SEMANTIC=FAIL' >&2
-            exit 63
-          fi
-          echo 'IMP008B_E5_TEB_PUBLICATION_AB=APPLIED'
-          echo 'IMP008B_E5_TEB_HELPERS_MAYBE_UNUSED=PASS'
-          git diff -- "$source"
+          grep -Fq 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' "$runtime"
+          grep -Fq 'RestoreHostTebStackBounds(teb_stack_bounds)' "$runtime"
+          grep -Fq 'NCE::WindowsNceTransition::ContinueContext(context);' "$runtime"
+          git diff --check -- "$transition"
+          echo 'IMP008B_E5_INLINE_NTCONTINUE_AB=APPLIED'
+          echo 'IMP008B_E5_PRODUCTION_TEB_PATH=PRESERVED'
+          echo 'IMP008B_E5_X18_CONTINUE_SEMANTIC=PRESERVED'
+          git diff -- "$transition"
 
       - name: Add E5 target to checkout only
         shell: bash
