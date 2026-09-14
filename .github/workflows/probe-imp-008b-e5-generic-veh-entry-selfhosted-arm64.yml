@@ -1,0 +1,180 @@
+name: Probe IMP-008B E5 Generic VEH Entry Selfhosted ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-generic-veh-entry-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-generic-veh-entry-selfhosted-arm64
+  cancel-in-progress: false
+
+jobs:
+  e5-generic-veh-entry:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Verify retained E5 A-B workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          Write-Host "IMP008B_E5_GENERIC_WORKSPACE_HEAD=$head"
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') {
+            throw "unexpected retained E5 workspace HEAD: $head"
+          }
+          if (-not (Test-Path 'eden/build/bin/imp008b_e5_x18_runtime.exe')) {
+            throw 'retained E5 executable missing'
+          }
+          if (-not (Select-String -Path 'eden/src/core/arm/nce/arm_nce_windows.cpp' -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) {
+            throw 'historical RunThread TEB-stack bypass marker missing'
+          }
+          if (Select-String -Path 'eden/src/core/arm/nce/arm_nce_windows.cpp' -SimpleMatch 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' -Quiet) {
+            throw 'TEB stack publication unexpectedly active'
+          }
+          if (-not (Select-String -Path 'eden/src/core/arm/nce/arm_nce_windows.cpp' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) {
+            throw 'retained x18 VEH observer missing'
+          }
+          if (-not (Select-String -Path 'eden/src/core/arm/nce/windows_nce_transition.cpp' -SimpleMatch 'const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);' -Quiet)) {
+            throw 'retained inline NtContinue baseline missing'
+          }
+          Write-Host 'IMP008B_E5_GENERIC_RETAINED_WORKSPACE=PASS'
+
+      - name: Set up CLANGARM64 toolchain for incremental rebuild
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Apply checkout-only generic VEH entry observer
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          raw = path.read_bytes()
+          had_crlf = b'\r\n' in raw
+          text = raw.decode('utf-8').replace('\r\n', '\n')
+          marker = 'IMP008B_E5_GENERIC_VEH_ENTER=PASS'
+
+          if marker not in text:
+              anchor = (
+                  '    if (exception == nullptr || exception->ExceptionRecord == nullptr ||\n'
+                  '        exception->ContextRecord == nullptr) {\n'
+                  '        return EXCEPTION_CONTINUE_SEARCH;\n'
+                  '    }\n\n'
+                  '    auto* const guest = NCE::WindowsExceptionContext::CurrentGuestContext();\n'
+              )
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'generic VEH entry anchor count={text.count(anchor)}')
+
+              observer = (
+                  '    if (exception == nullptr || exception->ExceptionRecord == nullptr ||\n'
+                  '        exception->ContextRecord == nullptr) {\n'
+                  '        return EXCEPTION_CONTINUE_SEARCH;\n'
+                  '    }\n\n'
+                  '    u64 imp008b_e5_generic_phys_x18{};\n'
+                  '    asm volatile("mov %0, x18" : "=r"(imp008b_e5_generic_phys_x18));\n'
+                  '    const auto& imp008b_e5_generic_context =\n'
+                  '        *reinterpret_cast<const ARM64_NT_CONTEXT*>(exception->ContextRecord);\n'
+                  '    std::fputs("IMP008B_E5_GENERIC_VEH_ENTER=PASS\\n", stderr);\n'
+                  '    std::fprintf(stderr,\n'
+                  '                 "IMP008B_E5_GENERIC_VEH_STATE CODE=0x%08lX PC=0x%llX SP=0x%llX CTX_X18=0x%llX PHYS_X18=0x%llX\\n",\n'
+                  '                 static_cast<unsigned long>(exception->ExceptionRecord->ExceptionCode),\n'
+                  '                 static_cast<unsigned long long>(imp008b_e5_generic_context.Pc),\n'
+                  '                 static_cast<unsigned long long>(imp008b_e5_generic_context.Sp),\n'
+                  '                 static_cast<unsigned long long>(imp008b_e5_generic_context.X[18]),\n'
+                  '                 static_cast<unsigned long long>(imp008b_e5_generic_phys_x18));\n'
+                  '    std::fflush(stderr);\n\n'
+                  '    auto* const guest = NCE::WindowsExceptionContext::CurrentGuestContext();\n'
+              )
+              text = text.replace(anchor, observer, 1)
+
+          if had_crlf:
+              text = text.replace('\n', '\r\n')
+          path.write_bytes(text.encode('utf-8'))
+          PY
+          grep -Fq 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' src/core/arm/nce/arm_nce_windows.cpp
+          grep -Fq 'IMP008B_E5_GENERIC_VEH_STATE CODE=' src/core/arm/nce/arm_nce_windows.cpp
+          git diff --check -- src/core/arm/nce/arm_nce_windows.cpp
+          echo 'IMP008B_E5_GENERIC_VEH_OBSERVER=APPLIED'
+
+      - name: Rebuild E5 target incrementally
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e5_x18_runtime --parallel
+          test -f build/bin/imp008b_e5_x18_runtime.exe
+          echo 'IMP008B_E5_GENERIC_INCREMENTAL_BUILD=PASS'
+
+      - name: Launch E5 generic VEH runtime
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          exe='build/bin/imp008b_e5_x18_runtime.exe'
+          set +e
+          timeout 30s "$exe" > imp008b-e5-generic.out.log 2> imp008b-e5-generic.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-generic.rc
+          cat imp008b-e5-generic.out.log 2>/dev/null || true
+          cat imp008b-e5-generic.err.log >&2 2>/dev/null || true
+          cat imp008b-e5-generic.out.log imp008b-e5-generic.err.log > imp008b-e5-generic.log 2>/dev/null || true
+          echo "IMP008B_E5_GENERIC_LAUNCH_RC=$rc"
+          echo 'IMP008B_E5_GENERIC_RUNTIME_CAPTURE=PASS'
+
+      - name: Classify E5 generic VEH boundary
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-generic.log')) { throw 'generic VEH runtime log missing' }
+          Write-Host '--- E5 generic VEH boundary ---'
+          Get-Content 'imp008b-e5-generic.log' | Select-String -Pattern 'IMP008B_E5_(GENERIC_|PRE_RUNTHREAD|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|EXCEPTION_)|IMP008B_E2_(RESTORE_|BEFORE_NT_CONTINUE)'
+          $beforeNt = Select-String -Path 'imp008b-e5-generic.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet
+          if (-not $beforeNt) {
+            throw 'historical TEB-stack bypass no longer reaches BEFORE_NT_CONTINUE'
+          }
+          $genericVeh = Select-String -Path 'imp008b-e5-generic.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          if ($genericVeh) {
+            Write-Host 'IMP008B_E5_GENERIC_VEH_SEEN=PASS'
+          } else {
+            Write-Host 'IMP008B_E5_GENERIC_VEH_SEEN=NO_ENTRY'
+          }
+
+      - name: Upload E5 generic VEH logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-generic-veh-entry-selfhosted
+          path: |
+            eden/imp008b-e5-generic.log
+            eden/imp008b-e5-generic.out.log
+            eden/imp008b-e5-generic.err.log
+            eden/imp008b-e5-generic.rc
+          if-no-files-found: warn
