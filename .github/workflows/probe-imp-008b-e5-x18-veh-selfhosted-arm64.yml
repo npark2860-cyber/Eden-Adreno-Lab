@@ -1,0 +1,363 @@
+name: Probe IMP-008B E5 X18 VEH Selfhosted ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-x18-veh-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  e5-x18-veh-selfhosted:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 180
+
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Verify self-hosted ARM64 runner
+        shell: powershell
+        run: |
+          Write-Host "IMP008B_E5_RUNNER_NAME=${{ runner.name }}"
+          Write-Host "IMP008B_E5_RUNNER_OS=${{ runner.os }}"
+          Write-Host "IMP008B_E5_RUNNER_ARCH=${{ runner.arch }}"
+          if ('${{ runner.os }}' -ne 'Windows' -or '${{ runner.arch }}' -ne 'ARM64') {
+            throw 'Expected native Windows ARM64 self-hosted runner'
+          }
+          Write-Host 'IMP008B_E5_SELFHOSTED_ARM64=PASS'
+
+      - name: Checkout clean IMP-008B recovery branch
+        uses: actions/checkout@v7
+        with:
+          path: eden
+          fetch-depth: 0
+          submodules: recursive
+          clean: true
+
+      - name: Checkout fixed dc95-era Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          rm -rf eden/.ci
+          cp -a ci/.ci eden/.ci
+
+      - name: Verify E5 source contract
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          probe='probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          runtime='src/core/arm/nce/arm_nce_windows.cpp'
+          transition='src/core/arm/nce/windows_nce_transition.cpp'
+          grep -Fq 'KProcess::Create(kernel)' "$probe"
+          grep -Fq 'KThread::InitializeDummyThread(system, thread, process)' "$probe"
+          grep -Fq 'X18SitePatcher::Apply' "$probe"
+          grep -Fq 'context.r[18] = GuestX18Initial' "$probe"
+          grep -Fq 'interface->RunThread(thread)' "$probe"
+          grep -Fq 'WindowsX18FallbackTrap::TryRedirect(exception, *guest,' "$runtime"
+          grep -Fq 'WindowsNceTransition::ContinueContext(context);' "$runtime"
+          grep -Fq 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' "$transition"
+          echo 'IMP008B_E5_SELFHOSTED_SCOPE_SOURCE=PASS'
+
+      - name: Apply checkout-only E5 baseline plus x18 VEH boundary observer
+        shell: bash
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          transition='src/core/arm/nce/windows_nce_transition.cpp'
+          runtime='src/core/arm/nce/arm_nce_windows.cpp'
+          python - <<'PY'
+          from pathlib import Path
+
+          transition = Path('src/core/arm/nce/windows_nce_transition.cpp')
+          text = transition.read_text(encoding='utf-8')
+          old = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
+              // underlying transition directly so the arbitrary-PC guest restore and exception continuation
+              // share the same Windows context-resume primitive.
+              std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
+              std::fflush(stderr);
+              WindowsNceTransition::ContinueContext(context);
+          '''
+          old = old.replace('\n            ', '\n')
+          new = '''    // E5 checkout-only baseline: keep the already-tested inline initial NtContinue form.
+              using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
+              const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+              const auto nt_continue = ntdll != nullptr
+                                           ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
+                                           : nullptr;
+              if (nt_continue == nullptr) {
+                  std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RESOLVE_ERROR=%lu\\n",
+                               static_cast<unsigned long>(GetLastError()));
+                  std::fflush(stderr);
+                  std::abort();
+              }
+
+              std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
+              std::fflush(stderr);
+              const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
+              std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RETURN=0x%08lX\\n",
+                           static_cast<unsigned long>(status));
+              std::fflush(stderr);
+              std::abort();
+          '''
+          new = new.replace('\n            ', '\n')
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'inline NtContinue restore anchor count={count}')
+          transition.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          runtime = Path('src/core/arm/nce/arm_nce_windows.cpp')
+          rtext = runtime.read_text(encoding='utf-8')
+          if '#include <cstdio>\n' not in rtext:
+              include_anchor = '#include <cstdint>\n'
+              if rtext.count(include_anchor) != 1:
+                  raise SystemExit('cstdio include anchor mismatch')
+              rtext = rtext.replace(include_anchor, include_anchor + '#include <cstdio>\n', 1)
+
+          rold = (
+              "    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&\n"
+              "        NCE::WindowsX18FallbackTrap::FindOriginalInstruction(\n"
+              "            context.Pc, process->GetPostHandlers()).has_value()) {\n"
+              "        params->lock.store(SpinLockLocked, std::memory_order_release);\n"
+              "        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,\n"
+              "                                                     process->GetPostHandlers())) {\n"
+              "            NCE::WindowsNceTransition::ContinueContext(context);\n"
+              "        }\n"
+              "        params->lock.store(SpinLockUnlocked, std::memory_order_release);\n"
+              "        return EXCEPTION_CONTINUE_SEARCH;\n"
+              "    }\n"
+          )
+          rnew = (
+              "    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&\n"
+              "        NCE::WindowsX18FallbackTrap::FindOriginalInstruction(\n"
+              "            context.Pc, process->GetPostHandlers()).has_value()) {\n"
+              "        u64 imp008b_e5_phys_x18_enter{};\n"
+              "        asm volatile(\"mov %0, x18\" : \"=r\"(imp008b_e5_phys_x18_enter));\n"
+              "        std::fputs(\"IMP008B_E5_X18_VEH_ENTER=PASS\\n\", stderr);\n"
+              "        std::fprintf(stderr,\n"
+              "                     \"IMP008B_E5_X18_VEH_ENTER_STATE PC=0x%llX SP=0x%llX CTX_X18=0x%llX PHYS_X18=0x%llX\\n\",\n"
+              "                     static_cast<unsigned long long>(context.Pc),\n"
+              "                     static_cast<unsigned long long>(context.Sp),\n"
+              "                     static_cast<unsigned long long>(context.X[18]),\n"
+              "                     static_cast<unsigned long long>(imp008b_e5_phys_x18_enter));\n"
+              "        std::fflush(stderr);\n"
+              "        params->lock.store(SpinLockLocked, std::memory_order_release);\n"
+              "        const bool imp008b_e5_redirected = NCE::WindowsX18FallbackTrap::TryRedirect(\n"
+              "            exception, *guest, process->GetPostHandlers());\n"
+              "        std::fprintf(stderr, \"IMP008B_E5_X18_TRYREDIRECT=%s\\n\",\n"
+              "                     imp008b_e5_redirected ? \"PASS\" : \"FAIL\");\n"
+              "        std::fflush(stderr);\n"
+              "        if (imp008b_e5_redirected) {\n"
+              "            u64 imp008b_e5_phys_x18_return{};\n"
+              "            asm volatile(\"mov %0, x18\" : \"=r\"(imp008b_e5_phys_x18_return));\n"
+              "            std::fprintf(stderr,\n"
+              "                         \"IMP008B_E5_X18_REDIRECT_STATE PC=0x%llX SP=0x%llX CTX_X18=0x%llX PHYS_X18=0x%llX\\n\",\n"
+              "                         static_cast<unsigned long long>(context.Pc),\n"
+              "                         static_cast<unsigned long long>(context.Sp),\n"
+              "                         static_cast<unsigned long long>(context.X[18]),\n"
+              "                         static_cast<unsigned long long>(imp008b_e5_phys_x18_return));\n"
+              "            std::fputs(\"IMP008B_E5_X18_VEH_RETURN=PASS\\n\", stderr);\n"
+              "            std::fflush(stderr);\n"
+              "            return EXCEPTION_CONTINUE_EXECUTION;\n"
+              "        }\n"
+              "        params->lock.store(SpinLockUnlocked, std::memory_order_release);\n"
+              "        return EXCEPTION_CONTINUE_SEARCH;\n"
+              "    }\n"
+          )
+          rcount = rtext.count(rold)
+          if rcount != 1:
+              raise SystemExit(f'x18 VEH observer anchor count={rcount}')
+          runtime.write_text(rtext.replace(rold, rnew, 1), encoding='utf-8')
+          PY
+
+          grep -Fq 'const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);' "$transition"
+          grep -Fq 'IMP008B_E5_X18_VEH_ENTER=PASS' "$runtime"
+          grep -Fq 'IMP008B_E5_X18_TRYREDIRECT=%s' "$runtime"
+          grep -Fq 'IMP008B_E5_X18_REDIRECT_STATE' "$runtime"
+          grep -Fq 'IMP008B_E5_X18_VEH_RETURN=PASS' "$runtime"
+          grep -Fq 'return EXCEPTION_CONTINUE_EXECUTION;' "$runtime"
+          if grep -Fq 'IMP008B_E5_X18_BEFORE_INSTALL' "$runtime"; then
+            echo 'CurrentNceContext bracket must not be repeated' >&2
+            exit 63
+          fi
+          git diff --check -- "$transition" "$runtime"
+          echo 'IMP008B_E5_SELFHOSTED_X18_VEH_OBSERVER=APPLIED'
+          git diff -- "$transition" "$runtime"
+
+      - name: Add E5 target to checkout only
+        shell: bash
+        working-directory: eden
+        run: |
+          cat >> src/yuzu_cmd/CMakeLists.txt <<'CMAKE'
+
+          # IMP-008B E5 CI-only executable. Reuse the normal Eden CLI product dependency contract.
+          file(WRITE "${CMAKE_BINARY_DIR}/imp008b_e5_vma.cpp"
+              "#define VMA_IMPLEMENTATION\n#include \"video_core/vulkan_common/vma.h\"\n")
+          add_executable(imp008b_e5_x18_runtime
+              ${CMAKE_SOURCE_DIR}/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp
+              ${CMAKE_BINARY_DIR}/imp008b_e5_vma.cpp)
+          target_include_directories(imp008b_e5_x18_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src)
+          target_link_libraries(imp008b_e5_x18_runtime PRIVATE
+              common core input_common frontend_common video_core merry::oaknut)
+          target_link_libraries(imp008b_e5_x18_runtime PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+          CMAKE
+          echo 'IMP008B_E5_TARGET_WIRING=PASS'
+
+      - name: Set up normal Eden CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq
+            pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p
+            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
+            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure normal Windows ARM64 product build
+        shell: msys2 {0}
+        working-directory: eden
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          test -f build/compile_commands.json
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          grep -Fq 'arm_nce_windows.cpp' build/compile_commands.json
+          grep -Fq 'windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp' build/compile_commands.json
+          grep -R -Fq 'windows_nce_entry.obj' build
+          echo 'IMP008B_E5_NORMAL_CONFIGURE=PASS'
+
+      - name: Build E5 product-linked executable
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build --target imp008b_e5_x18_runtime --parallel
+          exe="$(find build -type f -name 'imp008b_e5_x18_runtime.exe' -print -quit)"
+          test -n "$exe"
+          printf '%s\n' "$exe" > imp008b-e5.exe-path
+          echo "IMP008B_E5_EXECUTABLE=$exe"
+          echo 'IMP008B_E5_BUILD=PASS'
+
+      - name: Launch and capture E5 runtime
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          exe="$(cat imp008b-e5.exe-path)"
+          winexe="$(cygpath -w "$exe")"
+          winout="$(cygpath -w imp008b-e5.out.log)"
+          winerr="$(cygpath -w imp008b-e5.err.log)"
+          set +e
+          powershell.exe -NoProfile -NonInteractive -Command "& {
+            \$ErrorActionPreference = 'Stop'
+            try {
+              \$p = Start-Process -FilePath '$winexe' -NoNewWindow -PassThru -RedirectStandardOutput '$winout' -RedirectStandardError '$winerr'
+              if (-not \$p.WaitForExit(30000)) {
+                Write-Host 'IMP008B_E5_PROCESS_TIMEOUT=FAIL'
+                Stop-Process -Id \$p.Id -Force -ErrorAction SilentlyContinue
+                exit 124
+              }
+              \$p.Refresh()
+              Write-Host ('IMP008B_E5_PROCESS_EXIT=' + \$p.ExitCode)
+              exit \$p.ExitCode
+            } catch {
+              Write-Host ('IMP008B_E5_LAUNCH_EXCEPTION=' + \$_.Exception.Message)
+              Write-Host ('IMP008B_E5_LAUNCH_HRESULT=0x{0:X8}' -f (\$_.Exception.HResult -band 0xffffffff))
+              exit 125
+            }
+          }"
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5.rc
+          cat imp008b-e5.out.log 2>/dev/null || true
+          cat imp008b-e5.err.log >&2 2>/dev/null || true
+          echo "IMP008B_E5_LAUNCH_RC=$rc"
+          : > imp008b-e5.log
+          cat imp008b-e5.out.log >> imp008b-e5.log 2>/dev/null || true
+          cat imp008b-e5.err.log >> imp008b-e5.log 2>/dev/null || true
+          echo 'IMP008B_E5_RUNTIME_CAPTURE=PASS'
+
+      - name: Gate E5 PRE_RUNTHREAD
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_PRE_RUNTHREAD=PASS' imp008b-e5.log
+
+      - name: Gate E2 BEFORE_NT_CONTINUE
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' imp008b-e5.log
+
+      - name: Gate tagged x18 VEH entry
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_X18_VEH_ENTER=PASS' imp008b-e5.log
+
+      - name: Gate x18 TryRedirect
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_X18_TRYREDIRECT=PASS' imp008b-e5.log
+
+      - name: Gate x18 VEH historical return
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_X18_VEH_RETURN=PASS' imp008b-e5.log
+
+      - name: Gate E5 RUNTHREAD_RETURNED
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: grep -Fq 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' imp008b-e5.log
+
+      - name: Print self-hosted E5 summary
+        if: always()
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          echo '--- E5 self-hosted boundary summary ---'
+          grep -E 'IMP008B_E5_(PRE_RUNTHREAD|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|EXCEPTION_)|IMP008B_E2_(RESTORE_|BEFORE_NT_CONTINUE)' imp008b-e5.log || true
+
+      - name: Upload self-hosted E5 logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-x18-veh-selfhosted
+          path: |
+            eden/imp008b-e5.log
+            eden/imp008b-e5.out.log
+            eden/imp008b-e5.err.log
+            eden/imp008b-e5.rc
+          if-no-files-found: warn
