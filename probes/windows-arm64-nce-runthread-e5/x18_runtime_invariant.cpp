@@ -306,6 +306,20 @@ int main() {
     interface->UnlockThread(thread);
     std::cout << "IMP008B_E5_RUNTHREAD_RETURNED=PASS\n" << std::flush;
 
+    const u64 halt_reason_raw = static_cast<u64>(halt_reason);
+    Kernel::Svc::ThreadContext return_snapshot{};
+    interface->GetContext(return_snapshot);
+    std::fprintf(stderr, "IMP008B_E5_HALT_REASON_RAW=0x%016llX\n",
+                 static_cast<unsigned long long>(halt_reason_raw));
+    std::fprintf(stderr, "IMP008B_E5_SVC_NUMBER_RAW=0x%08X\n", interface->GetSvcNumber());
+    std::fprintf(stderr,
+                 "IMP008B_E5_RETURN_CONTEXT PC=0x%llX SP=0x%llX X0=0x%llX X18=0x%llX\n",
+                 static_cast<unsigned long long>(return_snapshot.pc),
+                 static_cast<unsigned long long>(return_snapshot.sp),
+                 static_cast<unsigned long long>(return_snapshot.r[0]),
+                 static_cast<unsigned long long>(return_snapshot.r[18]));
+    std::fflush(stderr);
+
     const u64 physical_x18_after = ReadPhysicalX18();
     std::fprintf(stderr, "IMP008B_E5_PHYSICAL_X18_AFTER=0x%llX\n",
                  static_cast<unsigned long long>(physical_x18_after));
