@@ -8,6 +8,9 @@
 
 #ifdef __GNUC__
 #pragma GCC diagnostic push
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Wunknown-pragmas"
+#endif
 #ifndef __clang__
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
