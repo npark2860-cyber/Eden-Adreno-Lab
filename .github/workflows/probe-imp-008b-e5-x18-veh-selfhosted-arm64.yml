@@ -1,5 +1,6 @@
 name: Probe IMP-008B E5 X18 VEH Selfhosted ARM64
 
+# Re-run E5 after the clang/httplib pragma compatibility fix.
 on:
   workflow_dispatch:
   push:
