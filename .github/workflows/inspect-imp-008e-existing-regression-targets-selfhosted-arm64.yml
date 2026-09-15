@@ -1,0 +1,59 @@
+name: Inspect IMP-008E Existing Regression Targets
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp-008e-existing-regression-targets-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inspect-imp-008e-existing-regression-targets
+  cancel-in-progress: false
+
+jobs:
+  inspect-regression-targets:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect retained targets and focused markers
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          Write-Host ('IMP008E_INSPECT_RETAINED_HEAD=' + $head)
+          Write-Host ('IMP008E_INSPECT_DIRTY_ENTRIES=' + @((git -C eden status --short)).Count)
+
+          Write-Host 'IMP008E_INSPECT_TARGETS_BEGIN'
+          & 'C:\msys64\usr\bin\ninja.exe' -C eden/build -t targets all 2>$null |
+            Select-String -Pattern 'imp008|nce|fault|teb|stack|raster|svc' -CaseSensitive:$false |
+            ForEach-Object { $_.Line } |
+            Select-Object -First 250
+          Write-Host 'IMP008E_INSPECT_TARGETS_END'
+
+          Write-Host 'IMP008E_INSPECT_PROBE_FILES_BEGIN'
+          if (Test-Path 'eden/probes') {
+            Get-ChildItem 'eden/probes' -Recurse -File |
+              Where-Object { $_.FullName -match '(imp008|nce|fault|teb|stack|raster|svc|windows-arm64)' } |
+              ForEach-Object { $_.FullName.Substring((Resolve-Path 'eden').Path.Length + 1) } |
+              Select-Object -First 250
+          }
+          Write-Host 'IMP008E_INSPECT_PROBE_FILES_END'
+
+          Write-Host 'IMP008E_INSPECT_MARKERS_BEGIN'
+          $roots=@('eden/probes','eden/src/core/arm/nce') | Where-Object { Test-Path $_ }
+          foreach ($root in $roots) {
+            Get-ChildItem $root -Recurse -File -Include *.cpp,*.h,*.hpp,*.S,*.asm,CMakeLists.txt |
+              Select-String -Pattern 'IMP008E|IMP008D|8K_STACK|8K_GUEST|DATA_FAULT|PrefetchAbort|StackBoundsPublished|StackLimit|StackBase' -CaseSensitive:$false |
+              ForEach-Object {
+                $rel=$_.Path.Substring((Resolve-Path 'eden').Path.Length + 1)
+                '{0}:{1}:{2}' -f $rel,$_.LineNumber,$_.Line.Trim()
+              } |
+              Select-Object -First 300
+          }
+          Write-Host 'IMP008E_INSPECT_MARKERS_END'
