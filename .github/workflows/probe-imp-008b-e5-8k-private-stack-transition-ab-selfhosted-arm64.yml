@@ -1,4 +1,4 @@
-name: Probe IMP-008B E5 8K Private Stack Transition A-B
+name: Probe IMP-008B E5 8K Detached Private Stack A-B
 
 on:
   workflow_dispatch:
@@ -16,11 +16,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  e5-8k-private-stack-transition:
+  e5-8k-detached-private-stack:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 60
     steps:
-      - name: Verify retained workspace and patch only E5 stack geometry
+      - name: Restore baseline module geometry and patch only guest stack geometry
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -31,81 +31,50 @@ jobs:
           $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
           $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
           $probe = 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
-          foreach ($path in @($runtime, $transition, $probe)) {
-            if (-not (Test-Path $path)) { throw "required file missing: $path" }
-          }
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) { throw 'RunThread TEB bypass missing' }
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) { throw 'x18 VEH observer missing' }
-          if (-not (Select-String -Path $transition -SimpleMatch 'IMP008B_E5_PRIVATE_STACK_READY=PASS' -Quiet)) { throw 'retained 4K private-stack transition diagnostic missing' }
 
-          function Replace-Unique([string]$Text, [string]$Old, [string]$New, [string]$Name) {
-            $i = $Text.IndexOf($Old, [System.StringComparison]::Ordinal)
-            if ($i -lt 0) { throw "$Name anchor missing" }
-            $j = $Text.IndexOf($Old, $i + $Old.Length, [System.StringComparison]::Ordinal)
-            if ($j -ge 0) { throw "$Name anchor not unique" }
-            return $Text.Substring(0, $i) + $New + $Text.Substring($i + $Old.Length)
-          }
+          # Undo only the two files changed by the previous invalid 8K harness attempt.
+          # Do not touch the retained runtime diagnostics in arm_nce_windows.cpp.
+          git -C eden checkout -- 'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp' 'src/core/arm/nce/windows_nce_transition.cpp'
+          if ($LASTEXITCODE -ne 0) { throw 'targeted checkout failed' }
+          if (-not (Select-String -Path $probe -SimpleMatch 'constexpr std::size_t InitialImageSize = PageSize * 2;' -Quiet)) { throw 'baseline 2-page image not restored' }
+          if (-not (Select-String -Path $probe -SimpleMatch 'data.size = static_cast<u32>(PageSize);' -Quiet)) { throw 'baseline 1-page data segment not restored' }
 
           $utf8 = New-Object System.Text.UTF8Encoding($false)
+          function Replace-Base64([string]$Path, [string]$Old64, [string]$New64, [string]$Name) {
+            $text = [IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+            $old = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Old64))
+            $new = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($New64))
+            $i = $text.IndexOf($old, [System.StringComparison]::Ordinal)
+            if ($i -lt 0) { throw "$Name anchor missing" }
+            if ($text.IndexOf($old, $i + $old.Length, [System.StringComparison]::Ordinal) -ge 0) { throw "$Name anchor not unique" }
+            $text = $text.Substring(0, $i) + $new + $text.Substring($i + $old.Length)
+            [IO.File]::WriteAllText($Path, $text, $utf8)
+          }
 
-          # Single E5 variable: grow the data/guest-stack segment from 4 KiB to 8 KiB.
-          # Code remains one page at the same load base, so guest PC is unchanged.
-          $ptext = [IO.File]::ReadAllText($probe).Replace("`r`n", "`n")
-          $ptext = Replace-Unique $ptext `
-            'constexpr std::size_t InitialImageSize = PageSize * 2;' `
-            'constexpr std::size_t InitialImageSize = PageSize * 3;' `
-            'InitialImageSize'
-          $ptext = Replace-Unique $ptext `
-            '    data.size = static_cast<u32>(PageSize);' `
-            '    data.size = static_cast<u32>(PageSize * 2);' `
-            'data stack size'
-          [IO.File]::WriteAllText($probe, $ptext, $utf8)
+          Replace-Base64 $probe `
+            'ICAgIGNvbnN0IHU2NCBndWVzdF9zcCA9IGxvYWRfYmFzZV91NjQgKyBJbml0aWFsSW1hZ2VTaXplIC0gMHgyMDsK' `
+            'ICAgIGNvbnN0ZXhwciBTSVpFX1QgR3Vlc3RTdGFja0J5dGVzID0gMHgyMDAwOwogICAgdm9pZCogY29uc3QgZ3Vlc3Rfc3RhY2sgPQogICAgICAgIFZpcnR1YWxBbGxvYyhudWxscHRyLCBHdWVzdFN0YWNrQnl0ZXMsIE1FTV9SRVNFUlZFIHwgTUVNX0NPTU1JVCwgUEFHRV9SRUFEV1JJVEUpOwogICAgaWYgKGd1ZXN0X3N0YWNrID09IG51bGxwdHIpIHsKICAgICAgICBSZW1vdmVWZWN0b3JlZEV4Y2VwdGlvbkhhbmRsZXIoZGlhZ25vc3RpY192ZWgpOwogICAgICAgIHRocmVhZC0+Q2xvc2Uoa2VybmVsKTsKICAgICAgICBwcm9jZXNzLT5DbG9zZShrZXJuZWwpOwogICAgICAgIGtlcm5lbC5TaHV0ZG93bigpOwogICAgICAgIHJldHVybiBGYWlsKCJJTVAwMDhCX0U1XzhLX0dVRVNUX1NUQUNLX0FMTE9DIik7CiAgICB9CgogICAgTUVNT1JZX0JBU0lDX0lORk9STUFUSU9OIGd1ZXN0X3N0YWNrX21iaXt9OwogICAgaWYgKFZpcnR1YWxRdWVyeShndWVzdF9zdGFjaywgJmd1ZXN0X3N0YWNrX21iaSwgc2l6ZW9mKGd1ZXN0X3N0YWNrX21iaSkpID09IDAgfHwKICAgICAgICBndWVzdF9zdGFja19tYmkuU3RhdGUgIT0gTUVNX0NPTU1JVCB8fCBndWVzdF9zdGFja19tYmkuVHlwZSAhPSBNRU1fUFJJVkFURSB8fAogICAgICAgIGd1ZXN0X3N0YWNrX21iaS5SZWdpb25TaXplIDwgR3Vlc3RTdGFja0J5dGVzKSB7CiAgICAgICAgUmVtb3ZlVmVjdG9yZWRFeGNlcHRpb25IYW5kbGVyKGRpYWdub3N0aWNfdmVoKTsKICAgICAgICB0aHJlYWQtPkNsb3NlKGtlcm5lbCk7CiAgICAgICAgcHJvY2Vzcy0+Q2xvc2Uoa2VybmVsKTsKICAgICAgICBrZXJuZWwuU2h1dGRvd24oKTsKICAgICAgICByZXR1cm4gRmFpbCgiSU1QMDA4Ql9FNV84S19HVUVTVF9TVEFDS19RVUVSWSIpOwogICAgfQoKICAgIGNvbnN0IHU2NCBndWVzdF9zdGFja19saW1pdCA9IHJlaW50ZXJwcmV0X2Nhc3Q8dTY0PihndWVzdF9zdGFja19tYmkuQmFzZUFkZHJlc3MpOwogICAgY29uc3QgdTY0IGd1ZXN0X3N0YWNrX2Jhc2UgPQogICAgICAgIGd1ZXN0X3N0YWNrX2xpbWl0ICsgc3RhdGljX2Nhc3Q8dTY0PihndWVzdF9zdGFja19tYmkuUmVnaW9uU2l6ZSk7CiAgICBjb25zdCB1NjQgZ3Vlc3Rfc3AgPSBndWVzdF9zdGFja19saW1pdCArIEd1ZXN0U3RhY2tCeXRlcyAtIDB4MjA7CiAgICBzdGQ6OmZwcmludGYoc3RkZXJyLAogICAgICAgICAgICAgICAgICJJTVAwMDhCX0U1XzhLX0dVRVNUX1NUQUNLPVBBU1MgU1A9MHglbGxYIExJTUlUPTB4JWxsWCBCQVNFPTB4JWxsWCBTSVpFPTB4JWxsWCBUWVBFPTB4JWxYXG4iLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oZ3Vlc3Rfc3ApLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oZ3Vlc3Rfc3RhY2tfbGltaXQpLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oZ3Vlc3Rfc3RhY2tfYmFzZSksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihndWVzdF9zdGFja19tYmkuUmVnaW9uU2l6ZSksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4oZ3Vlc3Rfc3RhY2tfbWJpLlR5cGUpKTsKICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7Cg==' `
+            'detached 8K guest stack'
 
-          # Convert the retained 4 KiB private replacement into one contiguous 8 KiB
-          # private VAD. With the enlarged probe stack, SP moves to the top page;
-          # start the replacement one page below SP's page and preserve both pages.
-          $ttext = [IO.File]::ReadAllText($transition).Replace("`r`n", "`n")
-          $ttext = Replace-Unique $ttext `
-            '    constexpr SIZE_T PageBytes = 0x1000;' `
-            "    constexpr SIZE_T PageBytes = 0x1000;`n    constexpr SIZE_T StackBytes = PageBytes * 2;" `
-            'StackBytes declaration'
-          $ttext = Replace-Unique $ttext `
-            '    const auto stack_page = static_cast<std::uintptr_t>(context.Sp) & ~PageMask;' `
-            '    const auto stack_page = (static_cast<std::uintptr_t>(context.Sp) & ~PageMask) - PageBytes;' `
-            '8K stack start'
-          $ttext = Replace-Unique $ttext `
-            '    unsigned char stack_snapshot[PageBytes]{};' `
-            '    unsigned char stack_snapshot[StackBytes]{};' `
-            '8K stack snapshot array'
-          $ttext = Replace-Unique $ttext `
-            '    std::memcpy(stack_snapshot, reinterpret_cast<const void*>(stack_page), PageBytes);' `
-            '    std::memcpy(stack_snapshot, reinterpret_cast<const void*>(stack_page), StackBytes);' `
-            '8K stack snapshot copy'
-          $ttext = Replace-Unique $ttext `
-            "        GetCurrentProcess(), reinterpret_cast<void*>(stack_page), PageBytes,`n        MEM_RESERVE | MEM_COMMIT | ReplacePlaceholder, PAGE_READWRITE, nullptr, 0);" `
-            "        GetCurrentProcess(), reinterpret_cast<void*>(stack_page), StackBytes,`n        MEM_RESERVE | MEM_COMMIT | ReplacePlaceholder, PAGE_READWRITE, nullptr, 0);" `
-            '8K VirtualAlloc2 replacement'
-          $ttext = Replace-Unique $ttext `
-            '    std::memcpy(replacement, stack_snapshot, PageBytes);' `
-            '    std::memcpy(replacement, stack_snapshot, StackBytes);' `
-            '8K stack restore copy'
-          [IO.File]::WriteAllText($transition, $ttext, $utf8)
+          Replace-Base64 $transition `
+            'ICAgIC8vIFJ0bFJlc3RvcmVDb250ZXh0IGNvbnZlcnRzIGEgcmVqZWN0ZWQgTnRDb250aW51ZSBpbnRvIGFuIGltbWVkaWF0ZSBmYWlsLWZhc3QuIENhbGwgdGhlCiAgICAvLyB1bmRlcmx5aW5nIHRyYW5zaXRpb24gZGlyZWN0bHkgc28gdGhlIGFyYml0cmFyeS1QQyBndWVzdCByZXN0b3JlIGFuZCBleGNlcHRpb24gY29udGludWF0aW9uCiAgICAvLyBzaGFyZSB0aGUgc2FtZSBXaW5kb3dzIGNvbnRleHQtcmVzdW1lIHByaW1pdGl2ZS4KICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTJfQkVGT1JFX05UX0NPTlRJTlVFPVBBU1NcbiIsIHN0ZGVycik7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgV2luZG93c05jZVRyYW5zaXRpb246OkNvbnRpbnVlQ29udGV4dChjb250ZXh0KTsK' `
+            'ICAgIC8vIENoZWNrb3V0LW9ubHkgRTUgQS9COiB0aGUgcHJvYmUgc3VwcGxpZXMgYSBkZXRhY2hlZCBjb250aWd1b3VzIDggS2lCIE1FTV9QUklWQVRFCiAgICAvLyBndWVzdCBzdGFjay4gUHVibGlzaCB0aGF0IFZBRCBhcyB0aGUgYWN0aXZlIFdpbmRvd3Mgc3RhY2sgaW1tZWRpYXRlbHkgYmVmb3JlIE50Q29udGludWUuCiAgICBNRU1PUllfQkFTSUNfSU5GT1JNQVRJT04gc3RhY2tfbWJpe307CiAgICBpZiAoVmlydHVhbFF1ZXJ5KHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3Qgdm9pZCo+KGNvbnRleHQuU3ApLCAmc3RhY2tfbWJpLCBzaXplb2Yoc3RhY2tfbWJpKSkgPT0gMCB8fAogICAgICAgIHN0YWNrX21iaS5TdGF0ZSAhPSBNRU1fQ09NTUlUIHx8IHN0YWNrX21iaS5UeXBlICE9IE1FTV9QUklWQVRFIHx8CiAgICAgICAgc3RhY2tfbWJpLlJlZ2lvblNpemUgPCAweDIwMDApIHsKICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLAogICAgICAgICAgICAgICAgICAgICAiSU1QMDA4Ql9FNV84S19TVEFDS19RVUVSWT1GQUlMIFNUQVRFPTB4JWxYIFRZUEU9MHglbFggU0laRT0weCVsbFhcbiIsCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KHN0YWNrX21iaS5TdGF0ZSksCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KHN0YWNrX21iaS5UeXBlKSwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihzdGFja19tYmkuUmVnaW9uU2l6ZSkpOwogICAgICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CiAgICAgICAgc3RkOjphYm9ydCgpOwogICAgfQoKICAgIGNvbnN0IGF1dG8gc3RhY2tfbGltaXQgPSByZWludGVycHJldF9jYXN0PHN0ZDo6dWludDY0X3Q+KHN0YWNrX21iaS5CYXNlQWRkcmVzcyk7CiAgICBjb25zdCBhdXRvIHN0YWNrX2Jhc2UgPSBzdGFja19saW1pdCArIHN0YXRpY19jYXN0PHN0ZDo6dWludDY0X3Q+KHN0YWNrX21iaS5SZWdpb25TaXplKTsKICAgIGlmIChjb250ZXh0LlNwIDwgc3RhY2tfbGltaXQgfHwgY29udGV4dC5TcCA+PSBzdGFja19iYXNlKSB7CiAgICAgICAgc3RkOjpmcHV0cygiSU1QMDA4Ql9FNV84S19TVEFDS19SQU5HRT1GQUlMXG4iLCBzdGRlcnIpOwogICAgICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CiAgICAgICAgc3RkOjphYm9ydCgpOwogICAgfQoKICAgIGF1dG8qIGNvbnN0IHRlYiA9IE50Q3VycmVudFRlYigpOwogICAgdGViLT5OdFRpYi5TdGFja0xpbWl0ID0gcmVpbnRlcnByZXRfY2FzdDxQVk9JRD4oc3RhY2tfbGltaXQpOwogICAgdGViLT5OdFRpYi5TdGFja0Jhc2UgPSByZWludGVycHJldF9jYXN0PFBWT0lEPihzdGFja19iYXNlKTsKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgIklNUDAwOEJfRTVfOEtfU1RBQ0tfUkVBRFk9UEFTUyBTUD0weCVsbFggTElNSVQ9MHglbGxYIEJBU0U9MHglbGxYIFNJWkU9MHglbGxYIFRZUEU9MHglbFhcbiIsCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihjb250ZXh0LlNwKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KHN0YWNrX2xpbWl0KSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KHN0YWNrX2Jhc2UpLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oc3RhY2tfbWJpLlJlZ2lvblNpemUpLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KHN0YWNrX21iaS5UeXBlKSk7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwoKICAgIC8vIFJ0bFJlc3RvcmVDb250ZXh0IGNvbnZlcnRzIGEgcmVqZWN0ZWQgTnRDb250aW51ZSBpbnRvIGFuIGltbWVkaWF0ZSBmYWlsLWZhc3QuIENhbGwgdGhlCiAgICAvLyB1bmRlcmx5aW5nIHRyYW5zaXRpb24gZGlyZWN0bHkgc28gdGhlIGFyYml0cmFyeS1QQyBndWVzdCByZXN0b3JlIGFuZCBleGNlcHRpb24gY29udGludWF0aW9uCiAgICAvLyBzaGFyZSB0aGUgc2FtZSBXaW5kb3dzIGNvbnRleHQtcmVzdW1lIHByaW1pdGl2ZS4KICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTJfQkVGT1JFX05UX0NPTlRJTlVFPVBBU1NcbiIsIHN0ZGVycik7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgV2luZG93c05jZVRyYW5zaXRpb246OkNvbnRpbnVlQ29udGV4dChjb250ZXh0KTsK' `
+            'publish detached 8K stack'
 
           git -C eden diff --check -- 'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp' 'src/core/arm/nce/windows_nce_transition.cpp'
           if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
-
-          $probeDiff = git -C eden diff -- 'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
-          $transitionDiff = git -C eden diff -- 'src/core/arm/nce/windows_nce_transition.cpp'
-          $probeDiff | Select-String -Pattern 'InitialImageSize|data.size|guest_sp' | ForEach-Object { Write-Host $_.Line }
-          $transitionDiff | Select-String -Pattern 'StackBytes|stack_page|stack_snapshot|VirtualAlloc2|memcpy' | ForEach-Object { Write-Host $_.Line }
-          Write-Host 'IMP008B_E5_8K_STACK_CHECKOUT_PATCH=PASS'
+          if (-not (Select-String -Path $probe -SimpleMatch 'IMP008B_E5_8K_GUEST_STACK=PASS' -Quiet)) { throw 'probe stack patch missing' }
+          if (-not (Select-String -Path $transition -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet)) { throw 'transition stack patch missing' }
+          Write-Host 'IMP008B_E5_8K_DETACHED_PATCH=PASS'
 
       - name: Set up CLANGARM64 toolchain
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANGARM64
-          update: true
+          update: false
           cache: false
           install: >-
             git make autoconf libtool automake-wrapper patch jq pactoys ninja
@@ -124,21 +93,21 @@ jobs:
           set -euo pipefail
           cmake --build build --target imp008b_e5_x18_runtime --parallel
           test -f build/bin/imp008b_e5_x18_runtime.exe
-          echo 'IMP008B_E5_8K_STACK_BUILD=PASS'
+          echo 'IMP008B_E5_8K_DETACHED_BUILD=PASS'
 
-      - name: Launch E5 with 8K private guest stack
+      - name: Launch E5 with detached 8K private guest stack
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -uo pipefail
           set +e
-          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-8k-stack.out.log 2> imp008b-e5-8k-stack.err.log
+          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-8k-detached.out.log 2> imp008b-e5-8k-detached.err.log
           rc=$?
           set -e
-          printf '%s\n' "$rc" > imp008b-e5-8k-stack.rc
-          cat imp008b-e5-8k-stack.out.log imp008b-e5-8k-stack.err.log > imp008b-e5-8k-stack.log 2>/dev/null || true
-          cat imp008b-e5-8k-stack.log || true
-          echo "IMP008B_E5_8K_STACK_RC=$rc"
+          printf '%s\n' "$rc" > imp008b-e5-8k-detached.rc
+          cat imp008b-e5-8k-detached.out.log imp008b-e5-8k-detached.err.log > imp008b-e5-8k-detached.log 2>/dev/null || true
+          cat imp008b-e5-8k-detached.log || true
+          echo "IMP008B_E5_8K_DETACHED_RC=$rc"
 
       - name: Classify E5 8K stack boundary
         if: always()
@@ -146,44 +115,37 @@ jobs:
         working-directory: eden
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path 'imp008b-e5-8k-stack.log')) { throw 'runtime log missing' }
-          Get-Content 'imp008b-e5-8k-stack.log' | Select-String -Pattern 'IMP008B_E5_(PRIVATE_STACK|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
+          if (-not (Test-Path 'imp008b-e5-8k-detached.log')) { throw 'runtime log missing' }
+          Get-Content 'imp008b-e5-8k-detached.log' | Select-String -Pattern 'IMP008B_E5_(8K_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
 
-          $readyLine = (Select-String -Path 'imp008b-e5-8k-stack.log' -Pattern 'IMP008B_E5_PRIVATE_STACK_READY=PASS SP=0x([0-9A-Fa-f]+) LIMIT=0x([0-9A-Fa-f]+) BASE=0x([0-9A-Fa-f]+)' | Select-Object -First 1)
-          if ($null -eq $readyLine) { throw '8K private stack transition not reached' }
-          $m = [regex]::Match($readyLine.Line, 'SP=0x([0-9A-Fa-f]+) LIMIT=0x([0-9A-Fa-f]+) BASE=0x([0-9A-Fa-f]+)')
-          if (-not $m.Success) { throw '8K stack geometry parse failed' }
-          $sp = [Convert]::ToUInt64($m.Groups[1].Value, 16)
-          $limit = [Convert]::ToUInt64($m.Groups[2].Value, 16)
-          $base = [Convert]::ToUInt64($m.Groups[3].Value, 16)
-          if (($base - $limit) -ne 0x2000) { throw ("active stack size is 0x{0:X}, expected 0x2000" -f ($base - $limit)) }
-          if ($sp -lt ($base - 0x1000) -or $sp -ge $base) { throw 'SP is not in the top page of the 8K stack' }
-          Write-Host ("IMP008B_E5_8K_STACK_GEOMETRY=PASS SP=0x{0:X} LIMIT=0x{1:X} BASE=0x{2:X}" -f $sp, $limit, $base)
+          $ready = Select-String -Path 'imp008b-e5-8k-detached.log' -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet
+          $generic = Select-String -Path 'imp008b-e5-8k-detached.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          $x18 = Select-String -Path 'imp008b-e5-8k-detached.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
+          $fallback = Select-String -Path 'imp008b-e5-8k-detached.log' -Pattern 'IMP008B_E5_X18_TRYREDIRECT.*PASS' -Quiet
+          $secondRestore = Select-String -Path 'imp008b-e5-8k-detached.log' -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
+          $returned = Select-String -Path 'imp008b-e5-8k-detached.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          $svc = Select-String -Path 'imp008b-e5-8k-detached.log' -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
+          $x18result = Select-String -Path 'imp008b-e5-8k-detached.log' -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
+          $gate = Select-String -Path 'imp008b-e5-8k-detached.log' -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
 
-          $generic = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
-          $x18 = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
-          $secondRestore = Select-String -Path 'imp008b-e5-8k-stack.log' -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
-          $returned = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
-          $svc = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
-          $x18result = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
-          $gate = Select-String -Path 'imp008b-e5-8k-stack.log' -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
-
-          if ($generic) { Write-Host 'IMP008B_E5_8K_GENERIC_VEH=PASS' } else { Write-Host 'IMP008B_E5_8K_GENERIC_VEH=NO_ENTRY' }
-          if ($x18) { Write-Host 'IMP008B_E5_8K_X18_VEH=PASS' } else { Write-Host 'IMP008B_E5_8K_X18_VEH=NO_ENTRY' }
-          if ($secondRestore) { Write-Host 'IMP008B_E5_8K_SECOND_RESTORE=PASS' } else { Write-Host 'IMP008B_E5_8K_SECOND_RESTORE=NO' }
-          if ($returned) { Write-Host 'IMP008B_E5_8K_RUNTHREAD_RETURNED=PASS' } else { Write-Host 'IMP008B_E5_8K_RUNTHREAD_RETURNED=NO' }
-          if ($svc) { Write-Host 'IMP008B_E5_8K_SVC55=PASS' } else { Write-Host 'IMP008B_E5_8K_SVC55=NO' }
-          if ($x18result) { Write-Host 'IMP008B_E5_8K_X18_RESULT=PASS' } else { Write-Host 'IMP008B_E5_8K_X18_RESULT=NO' }
-          if ($gate) { Write-Host 'IMP008B_E5_8K_GATE=PASS' } else { Write-Host 'IMP008B_E5_8K_GATE=NO' }
+          Write-Host ('IMP008B_E5_8K_READY=' + $(if ($ready) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_GENERIC_VEH=' + $(if ($generic) {'PASS'} else {'NO_ENTRY'}))
+          Write-Host ('IMP008B_E5_8K_X18_VEH=' + $(if ($x18) {'PASS'} else {'NO_ENTRY'}))
+          Write-Host ('IMP008B_E5_8K_FALLBACK=' + $(if ($fallback) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_SECOND_RESTORE=' + $(if ($secondRestore) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_RUNTHREAD_RETURNED=' + $(if ($returned) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_X18_RESULT=' + $(if ($x18result) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e5-8k-private-stack-transition-ab
+          name: e5-8k-detached-private-stack-ab
           path: |
-            eden/imp008b-e5-8k-stack.log
-            eden/imp008b-e5-8k-stack.out.log
-            eden/imp008b-e5-8k-stack.err.log
-            eden/imp008b-e5-8k-stack.rc
+            eden/imp008b-e5-8k-detached.log
+            eden/imp008b-e5-8k-detached.out.log
+            eden/imp008b-e5-8k-detached.err.log
+            eden/imp008b-e5-8k-detached.rc
           if-no-files-found: warn
