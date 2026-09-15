@@ -1,0 +1,85 @@
+name: Validate IMP-008E production HostMemory lease compile
+
+on:
+  push:
+    branches:
+      - validation/imp008e-production-lease-ecacd4c7
+    paths:
+      - .github/workflows/validate-imp008e-production-hostmemory-lease-compile-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-imp008e-production-hostmemory-lease-compile
+  cancel-in-progress: false
+
+jobs:
+  production-compile-link-smoke:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 8
+    steps:
+      - name: Compile and link exact promoted production source
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $retained='38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'
+          $production='ecacd4c798a461d46796c13064d5da5dc74888c0'
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if($head -ne $retained){throw "unexpected retained HEAD $head"}
+          if(-not(Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')){throw 'retained generic transition object missing'}
+
+          git -C eden fetch --no-tags origin $production
+          if($LASTEXITCODE-ne 0){throw "fetch production rc=$LASTEXITCODE"}
+          $fetched=(git -C eden rev-parse FETCH_HEAD).Trim()
+          if($fetched -ne $production){throw "unexpected FETCH_HEAD $fetched"}
+
+          $dir='eden/build/imp008e_production_hostmemory_lease_compile_ecacd4c7'
+          if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
+          New-Item -ItemType Directory -Force (Join-Path $dir 'common') | Out-Null
+          $resolved=(Resolve-Path $dir).Path
+
+          function Export-ProductionText([string]$repoPath,[string]$dst){
+            $lines=& git -C eden show "${production}:$repoPath"
+            if($LASTEXITCODE-ne 0){throw "git show failed: $repoPath"}
+            [IO.File]::WriteAllText($dst, (($lines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+          }
+
+          Export-ProductionText 'src/common/host_memory.h' (Join-Path $resolved 'common/host_memory.h')
+          Export-ProductionText 'src/common/host_memory_windows_lease.h' (Join-Path $resolved 'common/host_memory_windows_lease.h')
+          Export-ProductionText 'src/core/arm/nce/arm_nce_windows.cpp' (Join-Path $resolved 'arm_nce_windows.cpp')
+
+          Push-Location eden/build
+          try {
+            $cmds=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
+
+            $arm=@($cmds|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
+            if($arm.Count-ne 1){throw "arm compile count=$($arm.Count)"}
+            $c=[string]$arm[0]
+            $m=[regex]::Match($c,'-o\s+(\S*arm_nce_windows\.cpp\.obj)')
+            if(!$m.Success){throw 'arm object path missing'}
+            $oldArm=$m.Groups[1].Value.Trim("'")
+            $newArm='imp008e_production_hostmemory_lease_compile_ecacd4c7/arm_nce_windows.cpp.obj'
+            $c=$c.Replace($oldArm,$newArm)
+            $c=[regex]::Replace($c,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF imp008e_production_hostmemory_lease_compile_ecacd4c7\arm_nce_windows.cpp.obj.d')
+            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/imp008e_production_hostmemory_lease_compile_ecacd4c7/arm_nce_windows.cpp')
+            $overlay=((Resolve-Path 'imp008e_production_hostmemory_lease_compile_ecacd4c7').Path -replace '\\','/')
+            $c=[regex]::Replace($c,'^(\S+\s+)',("`$1-I"+$overlay+' '),1)
+            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $c
+            if($LASTEXITCODE-ne 0){throw "production arm compile rc=$LASTEXITCODE"}
+
+            $links=@($cmds|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
+            if($links.Count-ne 1){throw "link count=$($links.Count)"}
+            $l=[string]$links[0]
+            $l=$l.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_production_hostmemory_lease_compile_ecacd4c7.exe')
+            $l=$l.Replace('src/core/libcore.a',"$newArm generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a")
+            $l=$l.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $l
+            if($LASTEXITCODE-ne 0){throw "production link rc=$LASTEXITCODE"}
+          } finally { Pop-Location }
+
+          Write-Host 'IMP008E_PRODUCTION_HOSTMEMORY_LEASE_COMPILE=PASS'
+          Write-Host "IMP008E_PRODUCTION_SOURCE=$production"
