@@ -1,4 +1,4 @@
-name: Inspect IMP-008E E2 pass fail address delta
+name: Probe IMP-008E guest-stack bridge E2
 
 on:
   workflow_dispatch:
@@ -11,49 +11,197 @@ permissions:
   contents: read
 
 concurrency:
-  group: inspect-imp008e-e2-pass-fail-address-delta
+  group: probe-imp008e-guest-stack-bridge-e2
   cancel-in-progress: false
 
 jobs:
-  inspect-e2-address-delta:
+  guest-stack-bridge-e2:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - name: Print retained E2 pass fail transition lines
+      - name: Build guest-stack bridge candidate
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
-          $logs=@(
-            'eden/imp008e-order-E2_BASELINE_1.log',
-            'eden/imp008e-order-E2_BASELINE_2.log',
-            'eden/imp008e-order-E2_AFTER_E5.log',
-            'eden/imp008e-order-E2_AFTER_D1_E5.log',
-            'eden/imp008e-final-rerun.log',
-            'eden/imp008e-ab-rerun.log'
-          )
-          $patterns=@(
-            'IMP008E_E2_GUEST_STACK_QUERY=',
-            'IMP008E_E2_INITIAL_PROTECTION',
-            'IMP008E_E2_CACHED_PROTECTION',
-            'IMP008E_E2_PRE_RUN ',
-            'IMP008B_E2_RESTORE_CONTEXT ',
-            'IMP008B_E2_RESTORE_PC_ADDR=',
-            'IMP008B_E2_RESTORE_SP_ADDR=',
-            'IMP008B_GENERIC_STACK_TOP=',
-            'IMP008B_E2_BEFORE_NT_CONTINUE=',
-            'IMP008E_E2_DATA_AV',
-            'IMP008E_E2_REEXECUTED',
-            'IMP008E_E2_CONTEXT_COHERENT',
-            'IMP008E_E2_PHYSICAL_X18_TEB_AFTER',
-            'IMP008E_E2_GATE='
-          )
-          foreach($path in $logs){
-            if(-not(Test-Path $path)){Write-Host "IMP008E_LOG_MISSING=$path"; continue}
-            Write-Host "===== IMP008E_LOG_BEGIN $path ====="
-            foreach($line in [IO.File]::ReadAllLines((Resolve-Path $path).Path)){
-              foreach($p in $patterns){if($line.Contains($p)){Write-Host $line; break}}
-            }
-            Write-Host "===== IMP008E_LOG_END $path ====="
+          $retained='38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'
+          $production='7c84290922dcb58bd5282175b243a9fbc905e378'
+          if((git -C eden rev-parse HEAD).Trim() -ne $retained){throw 'unexpected retained HEAD'}
+          if(-not(Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')){throw 'E2 source missing'}
+          git -C eden fetch --no-tags origin $production
+          if($LASTEXITCODE-ne 0){throw "fetch production rc=$LASTEXITCODE"}
+
+          $dir='eden/build/imp008e_guest_stack_bridge_e2'
+          if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
+          New-Item -ItemType Directory -Force (Join-Path $dir 'common') | Out-Null
+          $resolved=(Resolve-Path $dir).Path
+          function Export-Prod([string]$repoPath,[string]$dst){
+            $lines=& git -C eden show "${production}:$repoPath"
+            if($LASTEXITCODE-ne 0){throw "git show failed: $repoPath"}
+            [IO.File]::WriteAllText($dst,(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
           }
-          Write-Host 'IMP008E_E2_PASS_FAIL_ADDRESS_DELTA_INSPECT=PASS'
+          Export-Prod 'src/common/host_memory.h' (Join-Path $resolved 'common/host_memory.h')
+          Export-Prod 'src/common/host_memory_windows_lease.h' (Join-Path $resolved 'common/host_memory_windows_lease.h')
+          Export-Prod 'src/core/arm/nce/arm_nce_windows.cpp' (Join-Path $resolved 'arm_nce_windows.cpp')
+          Export-Prod 'src/core/arm/nce/windows_nce_transition.cpp' (Join-Path $resolved 'windows_nce_transition.cpp')
+          Export-Prod 'src/core/arm/nce/windows_nce_entry.asm' (Join-Path $resolved 'windows_nce_entry.asm')
+
+          function Decode([string]$s){return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($s))}
+
+          $transitionPath=Join-Path $resolved 'windows_nce_transition.cpp'
+          $t=[IO.File]::ReadAllText($transitionPath).Replace("`r`n","`n")
+          $declOld=Decode 'bmFtZXNwYWNlIENvcmU6Ok5DRSB7CgpuYW1lc3BhY2Ugewo='
+          $declNew=Decode 'bmFtZXNwYWNlIENvcmU6Ok5DRSB7CgpleHRlcm4gIkMiIHZvaWQgV2luZG93c05jZUd1ZXN0U3RhY2tCcmlkZ2UoKSBub2V4Y2VwdDsKCm5hbWVzcGFjZSB7Cg=='
+          $helperOld=Decode 'ZXh0ZXJuICJDIiBbW25vcmV0dXJuXV0gdm9pZCBXaW5kb3dzTmNlUmVzdG9yZUd1ZXN0Q29udGV4dChHdWVzdENvbnRleHQqIGd1ZXN0KSBub2V4Y2VwdCB7Cg=='
+          $helperNew=Decode 'ZXh0ZXJuICJDIiBbW25vcmV0dXJuXV0gdm9pZCBXaW5kb3dzTmNlQ29udGludWVHdWVzdENvbnRleHQoCiAgICBBUk02NF9OVF9DT05URVhUKiBjb250ZXh0KSBub2V4Y2VwdCB7CiAgICBpZiAoY29udGV4dCA9PSBudWxscHRyKSB7CiAgICAgICAgc3RkOjphYm9ydCgpOwogICAgfQogICAgV2luZG93c05jZVRyYW5zaXRpb246OkNvbnRpbnVlQ29udGV4dCgqY29udGV4dCk7Cn0KCmV4dGVybiAiQyIgW1tub3JldHVybl1dIHZvaWQgV2luZG93c05jZVJlc3RvcmVHdWVzdENvbnRleHQoR3Vlc3RDb250ZXh0KiBndWVzdCkgbm9leGNlcHQgewo='
+          $endOld=Decode 'ICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTJfQkVGT1JFX05UX0NPTlRJTlVFPVBBU1NcbiIsIHN0ZGVycik7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgV2luZG93c05jZVRyYW5zaXRpb246OkNvbnRpbnVlQ29udGV4dChjb250ZXh0KTsKfQo='
+          $endNew=Decode 'ICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTJfQkVGT1JFX05UX0NPTlRJTlVFPVBBU1NcbiIsIHN0ZGVycik7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwoKICAgIE1FTU9SWV9CQVNJQ19JTkZPUk1BVElPTiBzdGFja19tYml7fTsKICAgIGlmIChWaXJ0dWFsUXVlcnkocmVpbnRlcnByZXRfY2FzdDxjb25zdCB2b2lkKj4oZ3Vlc3QtPnNwIC0gMSksICZzdGFja19tYmksCiAgICAgICAgICAgICAgICAgICAgIHNpemVvZihzdGFja19tYmkpKSA9PSAwIHx8CiAgICAgICAgc3RhY2tfbWJpLkFsbG9jYXRpb25CYXNlID09IG51bGxwdHIpIHsKICAgICAgICBzdGQ6OmFib3J0KCk7CiAgICB9CiAgICBjb25zdCBhdXRvIGFsbG9jYXRpb25fYmFzZSA9CiAgICAgICAgcmVpbnRlcnByZXRfY2FzdDxzdGQ6OnVpbnRwdHJfdD4oc3RhY2tfbWJpLkFsbG9jYXRpb25CYXNlKTsKICAgIHN0ZDo6dWludHB0cl90IGFsbG9jYXRpb25fZW5kID0gYWxsb2NhdGlvbl9iYXNlOwogICAgZm9yIChzdGQ6OnVpbnRwdHJfdCBjdXJzb3IgPSBhbGxvY2F0aW9uX2Jhc2U7OykgewogICAgICAgIE1FTU9SWV9CQVNJQ19JTkZPUk1BVElPTiByZWdpb257fTsKICAgICAgICBpZiAoVmlydHVhbFF1ZXJ5KHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3Qgdm9pZCo+KGN1cnNvciksICZyZWdpb24sIHNpemVvZihyZWdpb24pKSA9PSAwIHx8CiAgICAgICAgICAgIHJlZ2lvbi5BbGxvY2F0aW9uQmFzZSAhPSBzdGFja19tYmkuQWxsb2NhdGlvbkJhc2UpIHsKICAgICAgICAgICAgYnJlYWs7CiAgICAgICAgfQogICAgICAgIGNvbnN0IGF1dG8gcmVnaW9uX2VuZCA9IHJlaW50ZXJwcmV0X2Nhc3Q8c3RkOjp1aW50cHRyX3Q+KHJlZ2lvbi5CYXNlQWRkcmVzcykgKwogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHN0ZDo6dWludHB0cl90PihyZWdpb24uUmVnaW9uU2l6ZSk7CiAgICAgICAgaWYgKHJlZ2lvbl9lbmQgPD0gY3Vyc29yKSB7CiAgICAgICAgICAgIGJyZWFrOwogICAgICAgIH0KICAgICAgICBhbGxvY2F0aW9uX2VuZCA9IHJlZ2lvbl9lbmQ7CiAgICAgICAgY3Vyc29yID0gcmVnaW9uX2VuZDsKICAgIH0KICAgIGlmIChndWVzdC0+c3AgPD0gYWxsb2NhdGlvbl9iYXNlIHx8IGd1ZXN0LT5zcCA+PSBhbGxvY2F0aW9uX2VuZCkgewogICAgICAgIHN0ZDo6YWJvcnQoKTsKICAgIH0KCiAgICBBUk02NF9OVF9DT05URVhUIGJyaWRnZV9jb250ZXh0ID0gY29udGV4dDsKICAgIGJyaWRnZV9jb250ZXh0LlBjID0gcmVpbnRlcnByZXRfY2FzdDxzdGQ6OnVpbnQ2NF90PigmV2luZG93c05jZUd1ZXN0U3RhY2tCcmlkZ2UpOwogICAgYnJpZGdlX2NvbnRleHQuWDAgPSByZWludGVycHJldF9jYXN0PHN0ZDo6dWludDY0X3Q+KCZjb250ZXh0KTsKICAgIGJyaWRnZV9jb250ZXh0LlhbMV0gPSBzdGF0aWNfY2FzdDxzdGQ6OnVpbnQ2NF90PihhbGxvY2F0aW9uX2VuZCk7CiAgICBicmlkZ2VfY29udGV4dC5YWzJdID0gc3RhdGljX2Nhc3Q8c3RkOjp1aW50NjRfdD4oYWxsb2NhdGlvbl9iYXNlKTsKICAgIFdpbmRvd3NOY2VUcmFuc2l0aW9uOjpDb250aW51ZUNvbnRleHQoYnJpZGdlX2NvbnRleHQpOwp9Cg=='
+          foreach($pair in @(@($declOld,$declNew),@($helperOld,$helperNew),@($endOld,$endNew))){if(([regex]::Matches($t,[regex]::Escape($pair[0]))).Count-ne 1){throw 'transition patch anchor mismatch'}; $t=$t.Replace($pair[0],$pair[1])}
+          [IO.File]::WriteAllText($transitionPath,$t,[Text.UTF8Encoding]::new($false))
+
+          $asmPath=Join-Path $resolved 'windows_nce_entry.asm'
+          $a=[IO.File]::ReadAllText($asmPath).Replace("`r`n","`n")
+          $asmOld=Decode 'ICAgICAgICBFWFBPUlQgIFdpbmRvd3NOY2VFbnRlckd1ZXN0CiAgICAgICAgRVhQT1JUICBXaW5kb3dzTmNlRW50ZXJHdWVzdENvbnRleHQKICAgICAgICBFWFRFUk4gIFdpbmRvd3NOY2VSZXN0b3JlR3Vlc3RDb250ZXh0Cg=='
+          $asmNew=Decode 'ICAgICAgICBFWFBPUlQgIFdpbmRvd3NOY2VFbnRlckd1ZXN0CiAgICAgICAgRVhQT1JUICBXaW5kb3dzTmNlRW50ZXJHdWVzdENvbnRleHQKICAgICAgICBFWFBPUlQgIFdpbmRvd3NOY2VHdWVzdFN0YWNrQnJpZGdlCiAgICAgICAgRVhURVJOICBXaW5kb3dzTmNlUmVzdG9yZUd1ZXN0Q29udGV4dAogICAgICAgIEVYVEVSTiAgV2luZG93c05jZUNvbnRpbnVlR3Vlc3RDb250ZXh0Cg=='
+          $asmEndOld=Decode 'ICAgICAgICBFTkRQCgogICAgICAgIEVORAo='
+          $asmEndNew=Decode 'ICAgICAgICBFTkRQCgo7IEZpcnN0IGNvZGUgZXhlY3V0ZWQgYWZ0ZXIgTnRDb250aW51ZSBoYXMgaW5zdGFsbGVkIHRoZSBndWVzdCBTUC4geDEveDIgYXJlIGJyaWRnZS1vbmx5IHNjcmF0Y2gKOyBjYXJyeWluZyB0aGUgZnVsbCBndWVzdCBzdGFjayBib3VuZHM7IHgxOCByZW1haW5zIHRoZSBXaW5kb3dzIFRFQiBwb2ludGVyLgpXaW5kb3dzTmNlR3Vlc3RTdGFja0JyaWRnZSBQUk9DCiAgICAgICAgc3RyICAgICB4MSwgW3gxOCwgIzhdCiAgICAgICAgc3RyICAgICB4MiwgW3gxOCwgIzE2XQogICAgICAgIGIgICAgICAgV2luZG93c05jZUNvbnRpbnVlR3Vlc3RDb250ZXh0CiAgICAgICAgRU5EUAoKICAgICAgICBFTkQK'
+          foreach($pair in @(@($asmOld,$asmNew),@($asmEndOld,$asmEndNew))){if(([regex]::Matches($a,[regex]::Escape($pair[0]))).Count-ne 1){throw 'asm patch anchor mismatch'}; $a=$a.Replace($pair[0],$pair[1])}
+          [IO.File]::WriteAllText($asmPath,$a,[Text.UTF8Encoding]::new($false))
+
+          $armPath=Join-Path $resolved 'arm_nce_windows.cpp'
+          $w=[IO.File]::ReadAllText($armPath).Replace("`r`n","`n")
+          $x18Old=Decode 'ICAgICAgICBwYXJhbXMtPmxvY2suc3RvcmUoU3BpbkxvY2tMb2NrZWQsIHN0ZDo6bWVtb3J5X29yZGVyX3JlbGVhc2UpOwogICAgICAgIGlmIChOQ0U6OldpbmRvd3NYMThGYWxsYmFja1RyYXA6OlRyeVJlZGlyZWN0KGV4Y2VwdGlvbiwgKmd1ZXN0LAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHByb2Nlc3MtPkdldFBvc3RIYW5kbGVycygpKSkgewogICAgICAgICAgICBOQ0U6OldpbmRvd3NOY2VUcmFuc2l0aW9uOjpDb250aW51ZUNvbnRleHQoY29udGV4dCk7CiAgICAgICAgfQogICAgICAgIHBhcmFtcy0+bG9jay5zdG9yZShTcGluTG9ja1VubG9ja2VkLCBzdGQ6Om1lbW9yeV9vcmRlcl9yZWxlYXNlKTsKICAgICAgICByZXR1cm4gRVhDRVBUSU9OX0NPTlRJTlVFX1NFQVJDSDsK'
+          $x18New=Decode 'ICAgICAgICBwYXJhbXMtPmxvY2suc3RvcmUoU3BpbkxvY2tMb2NrZWQsIHN0ZDo6bWVtb3J5X29yZGVyX3JlbGVhc2UpOwogICAgICAgIGNvbnN0IGJvb2wgcmVkaXJlY3RlZCA9IE5DRTo6V2luZG93c1gxOEZhbGxiYWNrVHJhcDo6VHJ5UmVkaXJlY3QoCiAgICAgICAgICAgIGV4Y2VwdGlvbiwgKmd1ZXN0LCBwcm9jZXNzLT5HZXRQb3N0SGFuZGxlcnMoKSk7CiAgICAgICAgaWYgKHJlZGlyZWN0ZWQpIHsKICAgICAgICAgICAgYXV0byogY29uc3QgdGViID0gcmVpbnRlcnByZXRfY2FzdDxOVF9USUIqPihOdEN1cnJlbnRUZWIoKSk7CiAgICAgICAgICAgIHRlYi0+U3RhY2tMaW1pdCA9IHJlaW50ZXJwcmV0X2Nhc3Q8UFZPSUQ+KG5jZS0+bV93aW5kb3dzX2JyZWFrLT5Ib3N0U3RhY2tMb3coKSk7CiAgICAgICAgICAgIHRlYi0+U3RhY2tCYXNlID0gcmVpbnRlcnByZXRfY2FzdDxQVk9JRD4obmNlLT5tX3dpbmRvd3NfYnJlYWstPkhvc3RTdGFja0hpZ2goKSk7CiAgICAgICAgICAgIHJldHVybiBFWENFUFRJT05fQ09OVElOVUVfRVhFQ1VUSU9OOwogICAgICAgIH0KICAgICAgICBwYXJhbXMtPmxvY2suc3RvcmUoU3BpbkxvY2tVbmxvY2tlZCwgc3RkOjptZW1vcnlfb3JkZXJfcmVsZWFzZSk7CiAgICAgICAgcmV0dXJuIEVYQ0VQVElPTl9DT05USU5VRV9TRUFSQ0g7Cg=='
+          if(([regex]::Matches($w,[regex]::Escape($x18Old))).Count-ne 1){throw 'x18 patch anchor mismatch'}
+          $w=$w.Replace($x18Old,$x18New)
+          [IO.File]::WriteAllText($armPath,$w,[Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_GUEST_STACK_BRIDGE_PATCH=PASS'
+
+          Push-Location eden/build
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
+
+            function Compile-Cxx([string]$pattern,[string]$sourceRel,[string]$newObj,[string]$depName,[bool]$useOverlay){
+              $hits=@($commands|Where-Object{(($_ -replace '\\','/')) -match $pattern})
+              if($hits.Count-ne 1){throw "compile count=$($hits.Count) pattern=$pattern"}
+              $cmd=[string]$hits[0]
+              $m=[regex]::Match($cmd,'-o\s+(\S+\.obj)')
+              if(!$m.Success){throw 'object path missing'}
+              $oldObj=$m.Groups[1].Value.Trim("'")
+              $cmd=$cmd.Replace($oldObj,$newObj)
+              $cmd=[regex]::Replace($cmd,'-MF\s+\S+\.obj\.d',('-MF '+$depName))
+              $source=((Resolve-Path $sourceRel).Path -replace '\\','/')
+              $cmd=[regex]::Replace($cmd,"-c\s+'?C:/[^']*?/$pattern",('-c '+$source))
+              if($useOverlay){$overlay=((Resolve-Path 'imp008e_guest_stack_bridge_e2').Path -replace '\\','/'); $cmd=[regex]::Replace($cmd,'\s-I',(" -I"+$overlay+' -I'),1)}
+              $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+              $cmd=[regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+              & $env:ComSpec /D /S /C $cmd
+              if($LASTEXITCODE-ne 0){throw "compile rc=$LASTEXITCODE source=$sourceRel"}
+            }
+
+            $armHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
+            if($armHits.Count-ne 1){throw "arm compile count=$($armHits.Count)"}
+            $armCmd=[string]$armHits[0]
+            $m=[regex]::Match($armCmd,'-o\s+(\S*arm_nce_windows\.cpp\.obj)'); if(!$m.Success){throw 'arm object path missing'}
+            $oldArm=$m.Groups[1].Value.Trim("'"); $newArm='imp008e_guest_stack_bridge_e2/arm_nce_windows.cpp.obj'
+            $armCmd=$armCmd.Replace($oldArm,$newArm)
+            $armCmd=[regex]::Replace($armCmd,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF imp008e_guest_stack_bridge_e2\arm_nce_windows.cpp.obj.d')
+            $armSource=((Resolve-Path 'imp008e_guest_stack_bridge_e2/arm_nce_windows.cpp').Path -replace '\\','/')
+            $armCmd=[regex]::Replace($armCmd,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$armSource))
+            $overlay=((Resolve-Path 'imp008e_guest_stack_bridge_e2').Path -replace '\\','/')
+            $armCmd=[regex]::Replace($armCmd,'\s-I',(" -I"+$overlay+' -I'),1)
+            $armCmd=$armCmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $armCmd=[regex]::Replace($armCmd,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $armCmd
+            if($LASTEXITCODE-ne 0){throw "arm compile rc=$LASTEXITCODE"}
+
+            $transHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/windows_nce_transition\.cpp'?$"})
+            if($transHits.Count-ne 1){throw "transition compile count=$($transHits.Count)"}
+            $transCmd=[string]$transHits[0]
+            $m=[regex]::Match($transCmd,'-o\s+(\S*windows_nce_transition\.cpp\.obj)'); if(!$m.Success){throw 'transition object path missing'}
+            $oldTrans=$m.Groups[1].Value.Trim("'"); $newTrans='imp008e_guest_stack_bridge_e2/windows_nce_transition.cpp.obj'
+            $transCmd=$transCmd.Replace($oldTrans,$newTrans)
+            $transCmd=[regex]::Replace($transCmd,'-MF\s+\S*windows_nce_transition\.cpp\.obj\.d','-MF imp008e_guest_stack_bridge_e2\windows_nce_transition.cpp.obj.d')
+            $transSource=((Resolve-Path 'imp008e_guest_stack_bridge_e2/windows_nce_transition.cpp').Path -replace '\\','/')
+            $transCmd=[regex]::Replace($transCmd,"-c\s+'?C:/[^']*?/src/core/arm/nce/windows_nce_transition\.cpp'?",('-c '+$transSource))
+            $transCmd=$transCmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $transCmd=[regex]::Replace($transCmd,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $transCmd
+            if($LASTEXITCODE-ne 0){throw "transition compile rc=$LASTEXITCODE"}
+
+            $asmHits=@($commands|Where-Object{($_ -replace '\\','/') -match 'windows_nce_entry\.asm'})
+            if($asmHits.Count-lt 1){
+              $asmLine=Select-String -Path 'build.ninja' -Pattern 'armasm64\.exe' | Select-Object -First 1
+              if($null-eq $asmLine){throw 'armasm64 command missing'}
+              $asmCommand=$asmLine.Line
+            } else {$asmCommand=[string]$asmHits[0]}
+            $am=[regex]::Match($asmCommand,'"([^"]*armasm64\.exe)"|(\S*armasm64\.exe)')
+            if(!$am.Success){throw 'armasm64 path parse failed'}
+            $asmExe=if($am.Groups[1].Success){$am.Groups[1].Value}else{$am.Groups[2].Value}
+            $asmSource=(Resolve-Path 'imp008e_guest_stack_bridge_e2/windows_nce_entry.asm').Path
+            $asmObj=(Join-Path (Resolve-Path 'imp008e_guest_stack_bridge_e2').Path 'windows_nce_entry.obj')
+            & $asmExe -nologo $asmSource $asmObj
+            if($LASTEXITCODE-ne 0){throw "armasm64 rc=$LASTEXITCODE"}
+
+            $probeHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
+            if($probeHits.Count-ne 1){throw "probe compile count=$($probeHits.Count)"}
+            $probeCmd=[string]$probeHits[0]
+            $oldProbe='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newProbe='imp008e_guest_stack_bridge_e2/rasterizer_cached_retry_pagetable_stack.cpp.obj'
+            $probeCmd=$probeCmd.Replace($oldProbe,$newProbe)
+            $probeCmd=[regex]::Replace($probeCmd,'-MF\s+\S+\.obj\.d','-MF imp008e_guest_stack_bridge_e2\rasterizer_cached_retry_pagetable_stack.cpp.obj.d')
+            $e2Source=((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
+            $probeCmd=[regex]::Replace($probeCmd,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$e2Source))
+            $probeCmd=$probeCmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $probeCmd=[regex]::Replace($probeCmd,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $probeCmd
+            if($LASTEXITCODE-ne 0){throw "probe compile rc=$LASTEXITCODE"}
+
+            $links=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
+            if($links.Count-ne 1){throw "link count=$($links.Count)"}
+            $link=[string]$links[0]
+            $link=$link.Replace($oldProbe,$newProbe).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_guest_stack_bridge_e2.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_guest_stack_bridge_e2.a')
+            $link=$link.Replace('src/core/libcore.a','imp008e_guest_stack_bridge_e2/arm_nce_windows.cpp.obj imp008e_guest_stack_bridge_e2/windows_nce_transition.cpp.obj imp008e_guest_stack_bridge_e2/windows_nce_entry.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE"}
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_GUEST_STACK_BRIDGE_BUILD=PASS'
+
+      - name: Run repeated E2 bridge validation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $exe='eden/build/bin/imp008e_guest_stack_bridge_e2.exe'
+          if(-not(Test-Path $exe)){throw 'bridge E2 exe missing'}
+          $eden=(Resolve-Path eden).Path
+          $inverted=0
+          for($i=1;$i-le 8;$i++){
+            $psi=New-Object Diagnostics.ProcessStartInfo
+            $psi.FileName=(Resolve-Path $exe).Path
+            $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+            $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timeout=-not $p.WaitForExit(60000); if($timeout){$p.Kill();$p.WaitForExit()}
+            $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err
+            [IO.File]::WriteAllText((Join-Path $eden ("imp008e-bridge-e2-"+$i+".log")),$log)
+            Write-Host "IMP008E_BRIDGE_RUN_$($i)_RC=$rc"
+            if($rc-ne 0){Write-Host $out; Write-Host $err; throw "bridge E2 run $i rc=$rc"}
+            foreach($marker in @('IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')){if(-not $log.Contains($marker)){throw "run $i missing $marker"}}
+            $gm=[regex]::Match($log,'IMP008B_GENERIC_STACK_TOP=PASS SP=0x[0-9A-F]+ BASE=0x([0-9A-F]+) HOST_LIMIT=0*([0-9A-F]+)')
+            if($gm.Success){
+              $guest=[Convert]::ToUInt64($gm.Groups[1].Value,16); $host=[Convert]::ToUInt64($gm.Groups[2].Value,16)
+              $relation=if($guest-lt $host){'INVERTED'}else{'ORDERED'}
+              if($guest-lt $host){$inverted++}
+              Write-Host "IMP008E_BRIDGE_RUN_$($i)_RELATION=$relation GUEST_BASE=0x$($gm.Groups[1].Value) HOST_LIMIT=0x$($gm.Groups[2].Value)"
+            }
+          }
+          Write-Host "IMP008E_BRIDGE_INVERTED_PASS_COUNT=$inverted"
+          if($inverted-lt 1){throw 'no inverted address-layout case observed'}
+          Write-Host 'IMP008E_GUEST_STACK_BRIDGE_E2_REPEAT_GATE=PASS'
+
+      - name: Upload bridge diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-guest-stack-bridge-e2
+          path: eden/imp008e-bridge-e2-*.log
+          if-no-files-found: warn
