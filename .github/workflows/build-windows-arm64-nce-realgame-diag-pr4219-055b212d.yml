@@ -24,7 +24,7 @@ env:
   TEST_NAME: realgame-diag-pr4219-055b212d
   SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-telemetry.py
   HOST_MEMORY_SCRIPT_PATH: .github/diagnostics/apply-pr4219-host-memory-windows.py
-  HOST_MEMORY_TRANSFORM_REV: "2"
+  HOST_MEMORY_TRANSFORM_REV: "3"
 
 jobs:
   build-package:
