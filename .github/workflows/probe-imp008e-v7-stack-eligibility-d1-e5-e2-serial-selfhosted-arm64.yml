@@ -1,4 +1,4 @@
-name: Inspect IMP-008E V6 breakpoint continuation
+name: Probe IMP-008E production x18 dispatcher continuation E2
 
 on:
   workflow_dispatch:
@@ -12,24 +12,137 @@ permissions:
   contents: read
 
 concurrency:
-  group: inspect-imp008e-v6-breakpoint-continuation
+  group: probe-imp008e-production-x18-dispatcher-continuation-e2
   cancel-in-progress: false
 
 jobs:
-  inspect-v6-breakpoint:
+  production-x18-dispatcher-e2:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Print exact V6 VEH continuation ranges
+      - name: Build one-variable production E2 candidate
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
-          $v6='eden/build/e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp'
-          if(-not(Test-Path $v6)){throw 'retained V6 source missing'}
-          $c=Get-Content $v6
-          Write-Host '===== V6_BREAKPOINT_145_198 ====='
-          for($i=144;$i-lt [Math]::Min(198,$c.Count);$i++){Write-Host ('{0,5}: {1}' -f ($i+1),$c[$i])}
-          Write-Host '===== V6_AV_197_220 ====='
-          for($i=196;$i-lt [Math]::Min(220,$c.Count);$i++){Write-Host ('{0,5}: {1}' -f ($i+1),$c[$i])}
-          Write-Host 'IMP008E_V6_BREAKPOINT_CONTINUATION_INSPECT=PASS'
+          $retained='38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'
+          $production='6e1167c953fe17bc95dda954910fb69b65153fa3'
+          if((git -C eden rev-parse HEAD).Trim() -ne $retained){throw 'unexpected retained HEAD'}
+          if(-not(Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')){throw 'generic transition object missing'}
+          if(-not(Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')){throw 'E2 source missing'}
+          git -C eden fetch --no-tags origin $production
+          if($LASTEXITCODE-ne 0){throw "fetch production rc=$LASTEXITCODE"}
+
+          $dir='eden/build/imp008e_prod_x18_dispatcher_e2'
+          if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
+          New-Item -ItemType Directory -Force (Join-Path $dir 'common') | Out-Null
+          $resolved=(Resolve-Path $dir).Path
+          function Export-ProductionText([string]$repoPath,[string]$dst){
+            $lines=& git -C eden show "${production}:$repoPath"
+            if($LASTEXITCODE-ne 0){throw "git show failed: $repoPath"}
+            [IO.File]::WriteAllText($dst,(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
+          }
+          Export-ProductionText 'src/common/host_memory.h' (Join-Path $resolved 'common/host_memory.h')
+          Export-ProductionText 'src/common/host_memory_windows_lease.h' (Join-Path $resolved 'common/host_memory_windows_lease.h')
+          Export-ProductionText 'src/core/arm/nce/arm_nce_windows.cpp' (Join-Path $resolved 'arm_nce_windows.cpp')
+
+          $armPath=Join-Path $resolved 'arm_nce_windows.cpp'
+          $text=[IO.File]::ReadAllText($armPath).Replace("`r`n","`n")
+          $old=@'
+        params->lock.store(SpinLockLocked, std::memory_order_release);
+        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,
+                                                     process->GetPostHandlers())) {
+            NCE::WindowsNceTransition::ContinueContext(context);
+        }
+        params->lock.store(SpinLockUnlocked, std::memory_order_release);
+        return EXCEPTION_CONTINUE_SEARCH;
+'@
+          $new=@'
+        params->lock.store(SpinLockLocked, std::memory_order_release);
+        const bool redirected = NCE::WindowsX18FallbackTrap::TryRedirect(
+            exception, *guest, process->GetPostHandlers());
+        if (redirected) {
+            auto* const teb = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+            teb->StackLimit = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackLow());
+            teb->StackBase = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackHigh());
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        params->lock.store(SpinLockUnlocked, std::memory_order_release);
+        return EXCEPTION_CONTINUE_SEARCH;
+'@
+          $old=$old.Replace("`r`n","`n"); $new=$new.Replace("`r`n","`n")
+          if(([regex]::Matches($text,[regex]::Escape($old))).Count-ne 1){throw 'x18 breakpoint production anchor mismatch'}
+          $text=$text.Replace($old,$new)
+          [IO.File]::WriteAllText($armPath,$text,[Text.UTF8Encoding]::new($false))
+          Write-Host 'IMP008E_X18_DISPATCHER_SINGLE_VARIABLE_PATCH=PASS'
+
+          Push-Location eden/build
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
+            $arm=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
+            if($arm.Count-ne 1){throw "arm compile count=$($arm.Count)"}
+            $compile=[string]$arm[0]
+            $m=[regex]::Match($compile,'-o\s+(\S*arm_nce_windows\.cpp\.obj)')
+            if(!$m.Success){throw 'arm object path missing'}
+            $oldArm=$m.Groups[1].Value.Trim("'")
+            $newArm='imp008e_prod_x18_dispatcher_e2/arm_nce_windows.cpp.obj'
+            $compile=$compile.Replace($oldArm,$newArm)
+            $compile=[regex]::Replace($compile,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF imp008e_prod_x18_dispatcher_e2\arm_nce_windows.cpp.obj.d')
+            $armSource=((Resolve-Path 'imp008e_prod_x18_dispatcher_e2/arm_nce_windows.cpp').Path -replace '\\','/')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$armSource))
+            $overlay=((Resolve-Path 'imp008e_prod_x18_dispatcher_e2').Path -replace '\\','/')
+            if($compile -notmatch '\s-I'){throw 'compile include anchor missing'}
+            $compile=[regex]::Replace($compile,'\s-I',(" -I"+$overlay+' -I'),1)
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if($LASTEXITCODE-ne 0){throw "arm compile rc=$LASTEXITCODE"}
+
+            $probeCompileHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
+            if($probeCompileHits.Count-ne 1){throw "probe compile count=$($probeCompileHits.Count)"}
+            $probeCompile=[string]$probeCompileHits[0]
+            $oldProbe='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newProbe='imp008e_prod_x18_dispatcher_e2/rasterizer_cached_retry_pagetable_stack.cpp.obj'
+            $probeCompile=$probeCompile.Replace($oldProbe,$newProbe)
+            $probeCompile=[regex]::Replace($probeCompile,'-MF\s+\S+\.obj\.d','-MF imp008e_prod_x18_dispatcher_e2\rasterizer_cached_retry_pagetable_stack.cpp.obj.d')
+            $e2Source=((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
+            $probeCompile=[regex]::Replace($probeCompile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$e2Source))
+            $probeCompile=$probeCompile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $probeCompile=[regex]::Replace($probeCompile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $probeCompile
+            if($LASTEXITCODE-ne 0){throw "E2 probe compile rc=$LASTEXITCODE"}
+
+            $linkHits=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
+            if($linkHits.Count-ne 1){throw "link count=$($linkHits.Count)"}
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldProbe,$newProbe).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_prod_x18_dispatcher_e2.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_prod_x18_dispatcher_e2.a')
+            $link=$link.Replace('src/core/libcore.a','imp008e_prod_x18_dispatcher_e2/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if($LASTEXITCODE-ne 0){throw "E2 link rc=$LASTEXITCODE"}
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_X18_DISPATCHER_E2_BUILD=PASS'
+
+      - name: Run one-variable E2 candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $eden=(Resolve-Path eden).Path
+          $psi=New-Object Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_prod_x18_dispatcher_e2.exe').Path
+          $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+          $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timeout=-not $p.WaitForExit(60000); if($timeout){$p.Kill();$p.WaitForExit()}
+          $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err
+          [IO.File]::WriteAllText((Join-Path $eden 'imp008e-prod-x18-dispatcher-e2.log'),$log)
+          Write-Host $out; Write-Host $err; Write-Host "IMP008E_X18_DISPATCHER_E2_RC=$rc"
+          if($rc-ne 0){throw "E2 candidate runtime rc=$rc"}
+          foreach($marker in @('IMP008E_E2_GUEST_STACK_QUERY=PASS','IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')){if(-not $log.Contains($marker)){throw "E2 marker missing: $marker"}}
+          Write-Host 'IMP008E_X18_DISPATCHER_E2_GATE=PASS'
+
+      - name: Upload E2 candidate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-prod-x18-dispatcher-e2
+          path: eden/imp008e-prod-x18-dispatcher-e2.log
+          if-no-files-found: warn
