@@ -1,0 +1,109 @@
+name: Probe IMP-008E E2 PageTable Stack Private Replace V3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-pagetable-stack-private-replace-v3-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-pagetable-stack-private-replace-v3
+  cancel-in-progress: false
+
+jobs:
+  e2-pagetable-stack-private-replace-v3:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 8
+    steps:
+      - name: Build delayed private-replace E2 probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw 'unexpected retained head' }
+          $src='eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp'
+          if (-not (Test-Path $src)) { throw 'page-table stack generated source missing' }
+          if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'generic transition object missing' }
+          $dir='eden/build/e2_pagetable_stack_private_replace_v3'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dst=Join-Path (Resolve-Path $dir).Path 'rasterizer_cached_retry_private_replace.cpp'
+          $text=[IO.File]::ReadAllText((Resolve-Path $src).Path)
+          $anchor='    Trace("IMP008E_E2_EXCEPTION_OBSERVERS_READY");'
+          if (([regex]::Matches($text,[regex]::Escape($anchor))).Count -ne 1) { throw 'observer anchor mismatch' }
+          $inject=@(
+            '    Trace("IMP008E_E2_EXCEPTION_OBSERVERS_READY");',
+            '    using PfnUnmapViewOfFile2 = BOOL(WINAPI*)(HANDLE, PVOID, ULONG);',
+            '    using PfnVirtualAlloc2 = PVOID(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);',
+            '    MEMORY_BASIC_INFORMATION before_private{};',
+            '    if (VirtualQuery(reinterpret_cast<void*>(guest_sp), &before_private, sizeof(before_private)) == 0) { Fatal("IMP008E_E2_PRIVATE_REPLACE_QUERY_BEFORE", 71); }',
+            '    std::fprintf(stderr, "IMP008E_E2_PRIVATE_REPLACE_BEFORE BASE=%p ALLOC=%p SIZE=0x%llX STATE=0x%lX TYPE=0x%lX\n", before_private.BaseAddress, before_private.AllocationBase, static_cast<unsigned long long>(before_private.RegionSize), static_cast<unsigned long>(before_private.State), static_cast<unsigned long>(before_private.Type));',
+            '    std::fflush(stderr);',
+            '    if (before_private.Type != MEM_MAPPED || reinterpret_cast<u64>(before_private.AllocationBase) != guest_stack_limit) { Fatal("IMP008E_E2_PRIVATE_REPLACE_BEFORE", 72); }',
+            '    auto* const kernelbase = GetModuleHandleW(L"KernelBase.dll");',
+            '    auto* const unmap_view2 = reinterpret_cast<PfnUnmapViewOfFile2>(GetProcAddress(kernelbase, "UnmapViewOfFile2"));',
+            '    auto* const virtual_alloc2 = reinterpret_cast<PfnVirtualAlloc2>(GetProcAddress(kernelbase, "VirtualAlloc2"));',
+            '    if (unmap_view2 == nullptr || virtual_alloc2 == nullptr) { Fatal("IMP008E_E2_PRIVATE_REPLACE_RESOLVE", 73); }',
+            '    if (!unmap_view2(GetCurrentProcess(), reinterpret_cast<void*>(guest_stack_limit), 0x2)) { Fatal("IMP008E_E2_PRIVATE_REPLACE_UNMAP", 74); }',
+            '    void* const reserved = virtual_alloc2(GetCurrentProcess(), reinterpret_cast<void*>(guest_stack_limit), 0x10000, MEM_RESERVE | 0x4000, PAGE_NOACCESS, nullptr, 0);',
+            '    if (reserved != reinterpret_cast<void*>(guest_stack_limit)) { Fatal("IMP008E_E2_PRIVATE_REPLACE_RESERVE", 75); }',
+            '    void* const committed = VirtualAlloc(reinterpret_cast<void*>(guest_stack_limit), 0x10000, MEM_COMMIT, PAGE_READWRITE);',
+            '    if (committed != reinterpret_cast<void*>(guest_stack_limit)) { Fatal("IMP008E_E2_PRIVATE_REPLACE_COMMIT", 76); }',
+            '    MEMORY_BASIC_INFORMATION after_private{};',
+            '    if (VirtualQuery(reinterpret_cast<void*>(guest_sp), &after_private, sizeof(after_private)) == 0 || after_private.Type != MEM_PRIVATE) { Fatal("IMP008E_E2_PRIVATE_REPLACE_AFTER", 77); }',
+            '    std::fprintf(stderr, "IMP008E_E2_PRIVATE_REPLACE=PASS BASE=%p ALLOC=%p SIZE=0x%llX STATE=0x%lX TYPE=0x%lX\n", after_private.BaseAddress, after_private.AllocationBase, static_cast<unsigned long long>(after_private.RegionSize), static_cast<unsigned long>(after_private.State), static_cast<unsigned long>(after_private.Type));',
+            '    std::fflush(stderr);'
+          ) -join "`r`n"
+          $text=$text.Replace($anchor,$inject)
+          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location eden/build
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($hits.Count -ne 1) { throw "compile count=$($hits.Count)" }
+            $compile=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='e2_pagetable_stack_private_replace_v3/rasterizer_cached_retry_private_replace.cpp.obj'
+            $compile=$compile.Replace($oldObj,$newObj)
+            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF e2_pagetable_stack_private_replace_v3\rasterizer_cached_retry_private_replace.cpp.obj.d')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/e2_pagetable_stack_private_replace_v3/rasterizer_cached_retry_private_replace.cpp')
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "compile rc=$LASTEXITCODE" }
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_pagetable_stack_private_replace_v3.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_pagetable_stack_private_replace_v3.a')
+            $link=$link.Replace('src/core/libcore.a','generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if ($LASTEXITCODE -ne 0) { throw "link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+      - name: Run delayed private-replace E2 once
+        shell: powershell
+        run: |
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_pagetable_stack_private_replace_v3.exe').Path
+          $psi.WorkingDirectory=(Resolve-Path 'eden').Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(60000); if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}
+          $log=$out+$err; [IO.File]::WriteAllText((Join-Path (Resolve-Path eden).Path 'imp008e-e2-private-replace-v3.log'),$log)
+          Write-Host $out; Write-Host $err; Write-Host "RC=$rc"
+
+      - name: Classify result
+        shell: powershell
+        run: |
+          $log=Get-Content 'eden/imp008e-e2-private-replace-v3.log' -Raw
+          Get-Content 'eden/imp008e-e2-private-replace-v3.log' | Select-String -Pattern 'IMP008E_E2_PRIVATE_REPLACE|IMP008E_E2_(DATA_AV_EXACT|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|REEXECUTED_VALUE_EXACT|POST_SVC_PC_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|GATE|FAIL)'
+          if ($log.Contains('IMP008E_E2_GATE=PASS')) { Write-Host 'IMP008E_E2_PRIVATE_REPLACE_V3=PASS' } elseif ($log.Contains('IMP008E_E2_PRIVATE_REPLACE=PASS')) { Write-Host 'IMP008E_E2_PRIVATE_REPLACE_V3=REPLACED_RUNTIME_FAIL' } else { Write-Host 'IMP008E_E2_PRIVATE_REPLACE_V3=REPLACE_FAIL' }
