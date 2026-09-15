@@ -33,15 +33,21 @@ jobs:
           if (-not $arm.Contains('IMP008B_E5_X18_CRT_FREE_AB')) { throw 'x18 CRT-free state missing' }
           if (-not $arm.Contains('IMP008B_E5_HOST_TEB_BOUNDS_AB')) { throw 'host TEB restore patch missing' }
           if (-not $header.Contains('IMP008B_E5_HOST_STACK_ACCESSORS_AB')) { throw 'host stack accessors missing' }
-          $required = @(
-            'C:\msys64\clangarm64\bin\clang++.exe',
-            'C:\msys64\usr\bin\ninja.exe',
-            'C:\msys64\clangarm64\include\fmt\ranges.h',
-            'C:\msys64\clangarm64\lib\libfmt.a'
-          )
-          foreach ($p in $required) { if (-not (Test-Path $p)) { throw "local dependency missing: $p" } }
-          & 'C:\msys64\clangarm64\bin\clang++.exe' --version | Select-Object -First 1
-          & 'C:\msys64\usr\bin\ninja.exe' --version
+          $clang = 'C:\msys64\clangarm64\bin\clang++.exe'
+          $ninja = 'C:\msys64\usr\bin\ninja.exe'
+          $pacman = 'C:\msys64\usr\bin\pacman.exe'
+          if (-not (Test-Path $clang)) { throw "local clang++ missing: $clang" }
+          if (-not (Test-Path $ninja)) { throw "local ninja missing: $ninja" }
+          if (-not (Test-Path 'C:\msys64\clangarm64\include\fmt\ranges.h')) {
+            if (-not (Test-Path $pacman)) { throw "local pacman missing: $pacman" }
+            Write-Host 'IMP008B_E5_LOCAL_FMT_MISSING=YES'
+            & $pacman --noconfirm -S --needed mingw-w64-clang-aarch64-fmt
+            if ($LASTEXITCODE -ne 0) { throw "local fmt install failed rc=$LASTEXITCODE" }
+          }
+          if (-not (Test-Path 'C:\msys64\clangarm64\include\fmt\ranges.h')) { throw 'fmt/ranges.h still missing after conditional install' }
+          if (-not (Test-Path 'C:\msys64\clangarm64\lib\libfmt.a')) { throw 'libfmt.a missing after conditional install' }
+          & $clang --version | Select-Object -First 1
+          & $ninja --version
           Write-Host 'IMP008B_E5_HOST_TEB_LOCAL_PREFLIGHT=PASS'
           Remove-Item 'eden/imp008b-e5-hostteb-local.log','eden/imp008b-e5-hostteb-local.out.log','eden/imp008b-e5-hostteb-local.err.log','eden/imp008b-e5-hostteb-local.rc' -Force -ErrorAction SilentlyContinue
 
