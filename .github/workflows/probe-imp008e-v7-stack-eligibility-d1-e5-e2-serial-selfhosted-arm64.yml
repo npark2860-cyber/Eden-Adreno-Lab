@@ -1,4 +1,4 @@
-name: Probe IMP-008E production x18 dispatcher E2
+name: Probe IMP-008E production RunThread TEB seam E2
 
 on:
   workflow_dispatch:
@@ -11,15 +11,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: probe-imp008e-production-x18-dispatcher-e2
+  group: probe-imp008e-production-runthread-teb-seam-e2
   cancel-in-progress: false
 
 jobs:
-  x18-dispatcher-e2:
+  runthread-teb-seam-e2:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 10
     steps:
-      - name: Build and run one-variable E2 candidate
+      - name: Build and run no-RunThread-TEB E2 candidate
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -31,7 +31,7 @@ jobs:
           git -C eden fetch --no-tags origin $production
           if($LASTEXITCODE-ne 0){throw "fetch production rc=$LASTEXITCODE"}
 
-          $dir='eden/build/imp008e_prod_x18_dispatcher_e2'
+          $dir='eden/build/imp008e_prod_no_runthread_teb_e2'
           if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
           New-Item -ItemType Directory -Force (Join-Path $dir 'common') | Out-Null
           $resolved=(Resolve-Path $dir).Path
@@ -46,12 +46,13 @@ jobs:
 
           $armPath=Join-Path $resolved 'arm_nce_windows.cpp'
           $text=[IO.File]::ReadAllText($armPath).Replace("`r`n","`n")
-          $old=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBwYXJhbXMtPmxvY2suc3RvcmUoU3BpbkxvY2tMb2NrZWQsIHN0ZDo6bWVtb3J5X29yZGVyX3JlbGVhc2UpOwogICAgICAgIGlmIChOQ0U6OldpbmRvd3NYMThGYWxsYmFja1RyYXA6OlRyeVJlZGlyZWN0KGV4Y2VwdGlvbiwgKmd1ZXN0LAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHByb2Nlc3MtPkdldFBvc3RIYW5kbGVycygpKSkgewogICAgICAgICAgICBOQ0U6OldpbmRvd3NOY2VUcmFuc2l0aW9uOjpDb250aW51ZUNvbnRleHQoY29udGV4dCk7CiAgICAgICAgfQogICAgICAgIHBhcmFtcy0+bG9jay5zdG9yZShTcGluTG9ja1VubG9ja2VkLCBzdGQ6Om1lbW9yeV9vcmRlcl9yZWxlYXNlKTsKICAgICAgICByZXR1cm4gRVhDRVBUSU9OX0NPTlRJTlVFX1NFQVJDSDsK'))
-          $new=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBwYXJhbXMtPmxvY2suc3RvcmUoU3BpbkxvY2tMb2NrZWQsIHN0ZDo6bWVtb3J5X29yZGVyX3JlbGVhc2UpOwogICAgICAgIGNvbnN0IGJvb2wgcmVkaXJlY3RlZCA9IE5DRTo6V2luZG93c1gxOEZhbGxiYWNrVHJhcDo6VHJ5UmVkaXJlY3QoCiAgICAgICAgICAgIGV4Y2VwdGlvbiwgKmd1ZXN0LCBwcm9jZXNzLT5HZXRQb3N0SGFuZGxlcnMoKSk7CiAgICAgICAgaWYgKHJlZGlyZWN0ZWQpIHsKICAgICAgICAgICAgYXV0byogY29uc3QgdGViID0gcmVpbnRlcnByZXRfY2FzdDxOVF9USUIqPihOdEN1cnJlbnRUZWIoKSk7CiAgICAgICAgICAgIHRlYi0+U3RhY2tMaW1pdCA9IHJlaW50ZXJwcmV0X2Nhc3Q8UFZPSUQ+KG5jZS0+bV93aW5kb3dzX2JyZWFrLT5Ib3N0U3RhY2tMb3coKSk7CiAgICAgICAgICAgIHRlYi0+U3RhY2tCYXNlID0gcmVpbnRlcnByZXRfY2FzdDxQVk9JRD4obmNlLT5tX3dpbmRvd3NfYnJlYWstPkhvc3RTdGFja0hpZ2goKSk7CiAgICAgICAgICAgIHJldHVybiBFWENFUFRJT05fQ09OVElOVUVfRVhFQ1VUSU9OOwogICAgICAgIH0KICAgICAgICBwYXJhbXMtPmxvY2suc3RvcmUoU3BpbkxvY2tVbmxvY2tlZCwgc3RkOjptZW1vcnlfb3JkZXJfcmVsZWFzZSk7CiAgICAgICAgcmV0dXJuIEVYQ0VQVElPTl9DT05USU5VRV9TRUFSQ0g7Cg=='))
-          if(([regex]::Matches($text,[regex]::Escape($old))).Count-ne 1){throw 'x18 breakpoint anchor mismatch'}
-          $text=$text.Replace($old,$new)
+          $install=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBXaW5kb3dzVGViU3RhY2tCb3VuZHMgdGViX3N0YWNrX2JvdW5kc3t9OwogICAgICAgIGlmICghSW5zdGFsbEd1ZXN0VGViU3RhY2tCb3VuZHMobV9ndWVzdF9jdHguc3AsIHRlYl9zdGFja19ib3VuZHMpKSB7CiAgICAgICAgICAgIE5DRTo6Q3VycmVudE5jZUNvbnRleHQ6OkNsZWFyKCk7CiAgICAgICAgICAgIGhyID0gSGFsdFJlYXNvbjo6UHJlZmV0Y2hBYm9ydDsKICAgICAgICAgICAgYnJlYWs7CiAgICAgICAgfQoK'))
+          $restore='        RestoreHostTebStackBounds(teb_stack_bounds);' + "`n"
+          if(([regex]::Matches($text,[regex]::Escape($install))).Count-ne 1){throw 'RunThread TEB install anchor mismatch'}
+          if(([regex]::Matches($text,[regex]::Escape($restore))).Count-ne 1){throw 'RunThread TEB restore anchor mismatch'}
+          $text=$text.Replace($install,'').Replace($restore,'')
           [IO.File]::WriteAllText($armPath,$text,[Text.UTF8Encoding]::new($false))
-          Write-Host 'IMP008E_X18_DISPATCHER_SINGLE_VARIABLE_PATCH=PASS'
+          Write-Host 'IMP008E_RUNTHREAD_TEB_SEAM_REMOVED=PASS'
 
           Push-Location eden/build
           try {
@@ -63,12 +64,12 @@ jobs:
             $m=[regex]::Match($c,'-o\s+(\S*arm_nce_windows\.cpp\.obj)')
             if(!$m.Success){throw 'arm object path missing'}
             $oldArm=$m.Groups[1].Value.Trim("'")
-            $newArm='imp008e_prod_x18_dispatcher_e2/arm_nce_windows.cpp.obj'
+            $newArm='imp008e_prod_no_runthread_teb_e2/arm_nce_windows.cpp.obj'
             $c=$c.Replace($oldArm,$newArm)
-            $c=[regex]::Replace($c,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF imp008e_prod_x18_dispatcher_e2\arm_nce_windows.cpp.obj.d')
-            $armSource=((Resolve-Path 'imp008e_prod_x18_dispatcher_e2/arm_nce_windows.cpp').Path -replace '\\','/')
+            $c=[regex]::Replace($c,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF imp008e_prod_no_runthread_teb_e2\arm_nce_windows.cpp.obj.d')
+            $armSource=((Resolve-Path 'imp008e_prod_no_runthread_teb_e2/arm_nce_windows.cpp').Path -replace '\\','/')
             $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$armSource))
-            $overlay=((Resolve-Path 'imp008e_prod_x18_dispatcher_e2').Path -replace '\\','/')
+            $overlay=((Resolve-Path 'imp008e_prod_no_runthread_teb_e2').Path -replace '\\','/')
             $c=[regex]::Replace($c,'\s-I',(" -I"+$overlay+' -I'),1)
             $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
             $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
@@ -79,9 +80,9 @@ jobs:
             if($probe.Count-ne 1){throw "probe compile count=$($probe.Count)"}
             $pc=[string]$probe[0]
             $oldProbe='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
-            $newProbe='imp008e_prod_x18_dispatcher_e2/rasterizer_cached_retry_pagetable_stack.cpp.obj'
+            $newProbe='imp008e_prod_no_runthread_teb_e2/rasterizer_cached_retry_pagetable_stack.cpp.obj'
             $pc=$pc.Replace($oldProbe,$newProbe)
-            $pc=[regex]::Replace($pc,'-MF\s+\S+\.obj\.d','-MF imp008e_prod_x18_dispatcher_e2\rasterizer_cached_retry_pagetable_stack.cpp.obj.d')
+            $pc=[regex]::Replace($pc,'-MF\s+\S+\.obj\.d','-MF imp008e_prod_no_runthread_teb_e2\rasterizer_cached_retry_pagetable_stack.cpp.obj.d')
             $e2Source=((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
             $pc=[regex]::Replace($pc,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$e2Source))
             $pc=$pc.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
@@ -92,8 +93,8 @@ jobs:
             $links=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
             if($links.Count-ne 1){throw "link count=$($links.Count)"}
             $l=[string]$links[0]
-            $l=$l.Replace($oldProbe,$newProbe).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_prod_x18_dispatcher_e2.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_prod_x18_dispatcher_e2.a')
-            $l=$l.Replace('src/core/libcore.a','imp008e_prod_x18_dispatcher_e2/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $l=$l.Replace($oldProbe,$newProbe).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_prod_no_runthread_teb_e2.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_prod_no_runthread_teb_e2.a')
+            $l=$l.Replace('src/core/libcore.a','imp008e_prod_no_runthread_teb_e2/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
             $l=$l.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
             & $env:ComSpec /D /S /C $l
             if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE"}
@@ -101,12 +102,12 @@ jobs:
 
           $eden=(Resolve-Path eden).Path
           $psi=New-Object Diagnostics.ProcessStartInfo
-          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_prod_x18_dispatcher_e2.exe').Path
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_prod_no_runthread_teb_e2.exe').Path
           $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
           $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timeout=-not $p.WaitForExit(60000); if($timeout){$p.Kill();$p.WaitForExit()}
           $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err
-          [IO.File]::WriteAllText((Join-Path $eden 'imp008e-prod-x18-dispatcher-e2.log'),$log)
-          Write-Host $out; Write-Host $err; Write-Host "IMP008E_X18_DISPATCHER_E2_RC=$rc"
+          [IO.File]::WriteAllText((Join-Path $eden 'imp008e-prod-no-runthread-teb-e2.log'),$log)
+          Write-Host $out; Write-Host $err; Write-Host "IMP008E_NO_RUNTHREAD_TEB_E2_RC=$rc"
           if($rc-ne 0){throw "E2 runtime rc=$rc"}
           foreach($marker in @('IMP008E_E2_GUEST_STACK_QUERY=PASS','IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')){if(-not $log.Contains($marker)){throw "missing $marker"}}
-          Write-Host 'IMP008E_X18_DISPATCHER_E2_GATE=PASS'
+          Write-Host 'IMP008E_NO_RUNTHREAD_TEB_E2_GATE=PASS'
