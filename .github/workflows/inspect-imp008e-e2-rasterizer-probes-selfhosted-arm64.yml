@@ -1,0 +1,40 @@
+name: Inspect IMP-008E E2 Rasterizer Probes
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp008e-e2-rasterizer-probes-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-e2-rasterizer-probes:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Find E2 rasterizer probes and historical workflow wiring
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          Write-Host ('RETAINED_HEAD=' + (git -C eden rev-parse HEAD).Trim())
+          Write-Host 'IMP008E_E2_PROBE_FILES_BEGIN'
+          Get-ChildItem 'eden/probes' -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'raster|retry|e2|fault' } |
+            ForEach-Object { $_.FullName.Substring((Resolve-Path 'eden').Path.Length + 1) }
+          Write-Host 'IMP008E_E2_PROBE_FILES_END'
+          Write-Host 'IMP008E_E2_WORKFLOW_FILES_BEGIN'
+          Get-ChildItem 'eden/.github/workflows' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'raster|retry|e2' } |
+            ForEach-Object { $_.Name }
+          Write-Host 'IMP008E_E2_WORKFLOW_FILES_END'
+          Write-Host 'IMP008E_E2_SOURCE_MARKERS_BEGIN'
+          Get-ChildItem 'eden/probes' -Recurse -File -Include *.cpp,*.h -ErrorAction SilentlyContinue |
+            Select-String -Pattern 'RASTERIZER|RASTER|CACHED_RETRY|RETRY_GATE|E2_GATE|IMP008E_E2' |
+            Select-Object -First 120 |
+            ForEach-Object { '{0}:{1}:{2}' -f $_.Path.Substring((Resolve-Path 'eden').Path.Length + 1),$_.LineNumber,$_.Line.Trim() }
+          Write-Host 'IMP008E_E2_SOURCE_MARKERS_END'
