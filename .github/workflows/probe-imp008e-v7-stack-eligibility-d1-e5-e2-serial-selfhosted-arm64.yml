@@ -1,0 +1,371 @@
+name: Probe IMP-008E V7 Stack Eligibility D1 E5 E2 Serial
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-v7-stack-eligibility-d1-e5-e2-serial
+  cancel-in-progress: false
+
+jobs:
+  v7-stack-eligibility-d1-e5-e2:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Build V7 eligibility-only candidate from retained V6
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+
+          $v6Src = 'eden/build/e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp'
+          $genericObj = 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj'
+          $e2Src = 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp'
+          foreach ($p in @($v6Src,$genericObj,$e2Src)) {
+            if (-not (Test-Path $p)) { throw "required retained file missing: $p" }
+          }
+
+          $dir = 'eden/build/imp008e_v7_stack_eligibility'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $v7Src = Join-Path (Resolve-Path $dir).Path 'arm_nce_windows.cpp'
+          $text = [IO.File]::ReadAllText((Resolve-Path $v6Src).Path).Replace("`r`n","`n")
+
+          if (-not $text.Contains('Diagnostic V6: the private stack lease belongs to the complete RunThread epoch.')) {
+            throw 'retained V6 lifetime marker missing'
+          }
+          if (-not $text.Contains('IMP008E_NCE_STACK_LEASE_REUSE=PASS')) {
+            throw 'retained V6 reuse marker missing'
+          }
+
+          $includeAnchor = '#include "core/hle/kernel/k_thread.h"'
+          if (-not $text.Contains('#include "core/hle/kernel/svc_types.h"')) {
+            if (([regex]::Matches($text,[regex]::Escape($includeAnchor))).Count -ne 1) {
+              throw 'svc_types include anchor mismatch'
+            }
+            $text = $text.Replace($includeAnchor, $includeAnchor + "`n" + '#include "core/hle/kernel/svc_types.h"')
+          }
+
+          $eligibilityAnchor = '        if (private_stack_active && private_stack_mbi.Type == MEM_PRIVATE) {'
+          if (([regex]::Matches($text,[regex]::Escape($eligibilityAnchor))).Count -ne 1) {
+            throw 'V6 eligibility anchor mismatch'
+          }
+          $eligibility = @'
+          Kernel::KMemoryInfo v7_guest_stack_info{};
+          Kernel::Svc::PageInfo v7_guest_stack_page{};
+          const auto v7_guest_stack_query = process->GetPageTable().QueryInfo(
+              std::addressof(v7_guest_stack_info), std::addressof(v7_guest_stack_page),
+              Kernel::KProcessAddress{m_guest_ctx.sp});
+          if (v7_guest_stack_query.IsFailure()) {
+              std::fprintf(stderr,
+                           "IMP008E_NCE_STACK_CLASS=STACK_QUERY_FAIL SP=0x%llX\n",
+                           static_cast<unsigned long long>(m_guest_ctx.sp));
+              std::fflush(stderr);
+              NCE::CurrentNceContext::Clear();
+              hr = HaltReason::PrefetchAbort;
+              break;
+          }
+
+          const bool v7_guest_sp_is_stack =
+              v7_guest_stack_info.GetState() == Kernel::KMemoryState::Stack;
+          if (!private_stack_active && private_stack_mbi.Type == MEM_PRIVATE) {
+              std::fprintf(stderr,
+                           "IMP008E_NCE_STACK_CLASS=PRIVATE_STACK_PASSTHROUGH SP=0x%llX STATE=0x%llX\n",
+                           static_cast<unsigned long long>(m_guest_ctx.sp),
+                           static_cast<unsigned long long>(v7_guest_stack_info.GetSvcState()));
+              std::fflush(stderr);
+          } else if (!private_stack_active && !v7_guest_sp_is_stack &&
+                     private_stack_mbi.Type == MEM_MAPPED) {
+              std::fprintf(stderr,
+                           "IMP008E_NCE_STACK_CLASS=NONSTACK_MAPPED_PASSTHROUGH SP=0x%llX STATE=0x%llX\n",
+                           static_cast<unsigned long long>(m_guest_ctx.sp),
+                           static_cast<unsigned long long>(v7_guest_stack_info.GetSvcState()));
+              std::fflush(stderr);
+          } else if (!private_stack_active && v7_guest_sp_is_stack &&
+                     private_stack_mbi.Type == MEM_MAPPED) {
+              std::fprintf(stderr,
+                           "IMP008E_NCE_STACK_CLASS=REAL_STACK_MAPPED_LEASE SP=0x%llX STATE=0x%llX\n",
+                           static_cast<unsigned long long>(m_guest_ctx.sp),
+                           static_cast<unsigned long long>(v7_guest_stack_info.GetSvcState()));
+              std::fflush(stderr);
+          }
+
+          '@
+          $text = $text.Replace($eligibilityAnchor, $eligibility.Replace("`r`n","`n") + $eligibilityAnchor)
+
+          $mappedAnchor = '        } else if (private_stack_mbi.Type == MEM_MAPPED) {'
+          if (([regex]::Matches($text,[regex]::Escape($mappedAnchor))).Count -ne 1) {
+            throw 'V6 mapped lease anchor mismatch'
+          }
+          $mappedReplacement = @'
+          } else if (!v7_guest_sp_is_stack && private_stack_mbi.Type == MEM_MAPPED) {
+              private_stack_passthrough = true;
+          } else if (private_stack_mbi.Type == MEM_MAPPED) {
+          '@
+          $text = $text.Replace($mappedAnchor, $mappedReplacement.Replace("`r`n","`n").TrimEnd("`n"))
+
+          [IO.File]::WriteAllText($v7Src,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja commands rc=$LASTEXITCODE" }
+            $armHits = @($commands | Where-Object {
+              (($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"
+            })
+            if ($armHits.Count -ne 1) { throw "arm_nce_windows compile command count=$($armHits.Count)" }
+            $compile = [string]$armHits[0]
+            if ($compile -notmatch '-o\s+([^\s]+arm_nce_windows\.cpp\.obj)') {
+              throw 'arm_nce_windows output object not found'
+            }
+            $oldObj = $Matches[1].Trim("'").Trim('"')
+            $newObj = 'imp008e_v7_stack_eligibility/arm_nce_windows.cpp.obj'
+            $compile = $compile.Replace($oldObj,$newObj)
+            $compile = [regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF imp008e_v7_stack_eligibility\arm_nce_windows.cpp.obj.d')
+            $srcPath = ((Resolve-Path 'imp008e_v7_stack_eligibility/arm_nce_windows.cpp').Path -replace '\\','/')
+            $compile = [regex]::Replace(
+              $compile,
+              "-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",
+              ('-c ' + $srcPath))
+            $compile = $compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $compile = $compile.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            $compile = $compile.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+            $compile = $compile.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile = [regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile 2>&1 | Tee-Object -FilePath '..\imp008e-v7-arm-compile.log'
+            if ($LASTEXITCODE -ne 0) { throw "V7 arm_nce_windows compile rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          if (-not (Test-Path 'eden/build/imp008e_v7_stack_eligibility/arm_nce_windows.cpp.obj')) {
+            throw 'V7 object missing after compile'
+          }
+          Write-Host 'IMP008E_V7_ELIGIBILITY_BUILD=PASS'
+
+      - name: D1 first with V7 candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = (Resolve-Path 'eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp').Path
+          $dir = (Resolve-Path 'eden/build/imp008e_v7_stack_eligibility').Path
+          $dst = Join-Path $dir 'data_fault_skip_runtime.cpp'
+          $text = [IO.File]::ReadAllText($src)
+          $needle = 'if (getter_literal_matches == 0) {'
+          if (([regex]::Matches($text,[regex]::Escape($needle))).Count -lt 1) {
+            throw 'D1 stale getter condition missing'
+          }
+          $text = $text.Replace($needle,'if (false && getter_literal_matches == 0) { // current patcher compatibility')
+          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja commands rc=$LASTEXITCODE" }
+            $compileHits = @($commands | Where-Object {
+              (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"
+            })
+            if ($compileHits.Count -ne 1) { throw "E5 probe compile command count=$($compileHits.Count)" }
+            $compile = [string]$compileHits[0]
+            $oldObj = 'src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj = 'imp008e_v7_stack_eligibility/data_fault_skip_runtime.cpp.obj'
+            $compile = $compile.Replace($oldObj,$newObj)
+            $compile = [regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF imp008e_v7_stack_eligibility\data_fault_skip_runtime.cpp.obj.d')
+            $d1Source = ((Resolve-Path 'imp008e_v7_stack_eligibility/data_fault_skip_runtime.cpp').Path -replace '\\','/')
+            $compile = [regex]::Replace(
+              $compile,
+              "-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",
+              ('-c ' + $d1Source))
+            $compile = $compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $compile = $compile.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            $compile = $compile.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+            $compile = $compile.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile = [regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "D1 V7 compile rc=$LASTEXITCODE" }
+
+            $linkHits = @($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link command count=$($linkHits.Count)" }
+            $link = [string]$linkHits[0]
+            $link = $link.Replace($oldObj,$newObj)
+            $link = $link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008d_d1_v7_eligibility.exe')
+            $link = $link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008d_d1_v7_eligibility.a')
+            $overrides = 'imp008e_v7_stack_eligibility/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a'
+            $link = $link.Replace('src/core/libcore.a',$overrides)
+            $link = $link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $link = $link.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008d-d1-v7-eligibility-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "D1 V7 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008d_d1_v7_eligibility.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'D1 V7 runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          $rc = if ($timeout) { 124 } else { $p.ExitCode }
+          $log = $out + $err
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008d-d1-v7-eligibility.log'),$log)
+          Write-Host $out; Write-Host $err
+          Write-Host "IMP008D_D1_V7_ELIGIBILITY_RC=$rc"
+          if ($rc -ne 0) { throw "D1 V7 runtime rc=$rc" }
+          if ($log.Contains('IMP008E_NCE_STACK_CLASS=STACK_QUERY_FAIL')) { throw 'D1 stack query failed' }
+          if (-not $log.Contains('IMP008E_NCE_STACK_CLASS=NONSTACK_MAPPED_PASSTHROUGH')) {
+            throw 'D1 did not classify synthetic module/DataSegment stack as non-stack mapped passthrough'
+          }
+          if (-not $log.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'D1 did not execute generic transition override' }
+          if (-not $log.Contains('IMP008D_D1_GATE=PASS')) { throw 'D1 V7 gate failed' }
+          Write-Host 'IMP008D_D1_V7_ELIGIBILITY=PASS'
+
+      - name: E5 same V7 candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja commands rc=$LASTEXITCODE" }
+            $linkHits = @($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link command count=$($linkHits.Count)" }
+            $link = [string]$linkHits[0]
+            $link = $link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008b_e5_v7_eligibility.exe')
+            $link = $link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008b_e5_v7_eligibility.a')
+            $overrides = 'imp008e_v7_stack_eligibility/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a'
+            $link = $link.Replace('src/core/libcore.a',$overrides)
+            $link = $link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $link = $link.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008b-e5-v7-eligibility-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "E5 V7 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008b_e5_v7_eligibility.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'E5 V7 runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          $rc = if ($timeout) { 124 } else { $p.ExitCode }
+          $log = $out + $err
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008b-e5-v7-eligibility.log'),$log)
+          Write-Host $out; Write-Host $err
+          Write-Host "IMP008B_E5_V7_ELIGIBILITY_RC=$rc"
+          if ($rc -ne 0) { throw "E5 V7 runtime rc=$rc" }
+          if ($log.Contains('IMP008E_NCE_STACK_CLASS=STACK_QUERY_FAIL')) { throw 'E5 stack query failed' }
+          if ($log.Contains('IMP008E_NCE_STACK_LEASE_BEGIN=PASS')) { throw 'E5 unexpectedly acquired private lease' }
+          if (-not $log.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'E5 did not execute generic transition override' }
+          if (-not $log.Contains('IMP008B_E5_GATE=PASS')) { throw 'E5 V7 gate failed' }
+          Write-Host 'IMP008B_E5_V7_ELIGIBILITY=PASS'
+
+      - name: E2 same V7 candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja commands rc=$LASTEXITCODE" }
+
+            $compileHits = @($commands | Where-Object {
+              (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"
+            })
+            if ($compileHits.Count -ne 1) { throw "E5 probe compile command count=$($compileHits.Count)" }
+            $compile = [string]$compileHits[0]
+            $oldObj = 'src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj = 'imp008e_v7_stack_eligibility/rasterizer_cached_retry_pagetable_stack.cpp.obj'
+            $compile = $compile.Replace($oldObj,$newObj)
+            $compile = [regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF imp008e_v7_stack_eligibility\rasterizer_cached_retry_pagetable_stack.cpp.obj.d')
+            $e2Source = ((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
+            $compile = [regex]::Replace(
+              $compile,
+              "-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",
+              ('-c ' + $e2Source))
+            $compile = $compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $compile = $compile.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            $compile = $compile.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+            $compile = $compile.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile = [regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "E2 V7 probe compile rc=$LASTEXITCODE" }
+
+            $linkHits = @($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link command count=$($linkHits.Count)" }
+            $link = [string]$linkHits[0]
+            $link = $link.Replace($oldObj,$newObj)
+            $link = $link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_v7_eligibility.exe')
+            $link = $link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_v7_eligibility.a')
+            $overrides = 'imp008e_v7_stack_eligibility/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a'
+            $link = $link.Replace('src/core/libcore.a',$overrides)
+            $link = $link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $link = $link.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008e-e2-v7-eligibility-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "E2 V7 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008e_e2_v7_eligibility.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'E2 V7 runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(60000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          $rc = if ($timeout) { 124 } else { $p.ExitCode }
+          $log = $out + $err
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-v7-eligibility.log'),$log)
+          Write-Host $out; Write-Host $err
+          Write-Host "IMP008E_E2_V7_ELIGIBILITY_RC=$rc"
+
+          $begin = ([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_BEGIN=PASS')).Count
+          $reuse = ([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_REUSE=PASS')).Count
+          $end = ([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_END=PASS')).Count
+          if ($rc -ne 0) { throw "E2 V7 runtime rc=$rc" }
+          if ($log.Contains('IMP008E_NCE_STACK_CLASS=STACK_QUERY_FAIL')) { throw 'E2 stack query failed' }
+          if (-not $log.Contains('IMP008E_NCE_STACK_CLASS=REAL_STACK_MAPPED_LEASE')) {
+            throw 'E2 real KPageTable Stack was not classified for lease'
+          }
+          if (-not $log.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'E2 did not execute generic transition override' }
+          if (-not $log.Contains('IMP008E_E2_GATE=PASS')) { throw 'E2 V7 gate failed' }
+          if ($begin -ne 1 -or $reuse -lt 1 -or $end -ne 1) {
+            throw "E2 V7 lease scope mismatch BEGIN=$begin REUSE=$reuse END=$end"
+          }
+          Write-Host "IMP008E_E2_V7_ELIGIBILITY=PASS BEGIN=$begin REUSE=$reuse END=$end"
+          Write-Host 'IMP008E_V7_D1_E5_E2_SERIAL_GATE=PASS'
+
+      - name: Upload V7 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-v7-stack-eligibility-d1-e5-e2
+          path: |
+            eden/imp008e-v7-arm-compile.log
+            eden/imp008d-d1-v7-eligibility-link.log
+            eden/imp008d-d1-v7-eligibility.log
+            eden/imp008b-e5-v7-eligibility-link.log
+            eden/imp008b-e5-v7-eligibility.log
+            eden/imp008e-e2-v7-eligibility-link.log
+            eden/imp008e-e2-v7-eligibility.log
+            eden/imp008d-d1-first-exception.bin
+            eden/build/imp008e_v7_stack_eligibility/arm_nce_windows.cpp
+          if-no-files-found: warn
