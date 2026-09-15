@@ -106,6 +106,14 @@ public:
         return m_thread != nullptr;
     }
 
+    [[nodiscard]] std::uintptr_t HostStackLow() const noexcept {
+        return m_host_stack_low;
+    }
+
+    [[nodiscard]] std::uintptr_t HostStackHigh() const noexcept {
+        return m_host_stack_high;
+    }
+
 private:
     void Reset() noexcept {
         if (m_thread != nullptr) {
