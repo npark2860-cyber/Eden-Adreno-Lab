@@ -40,26 +40,28 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $path = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
           $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          $nl = "`n"
           $text = $text.Replace('        stack_mbi.RegionSize < 0x2000) {', '        stack_mbi.AllocationBase == nullptr) {')
           $text = $text.Replace('reinterpret_cast<std::uint64_t>(stack_mbi.BaseAddress);', 'reinterpret_cast<std::uint64_t>(stack_mbi.AllocationBase);')
           $text = $text.Replace('stack_limit + static_cast<std::uint64_t>(stack_mbi.RegionSize);', 'stack_limit + 0x2000;')
           if (-not $text.Contains('IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS')) {
             $needle = '    TraceVirtualMapping("RESTORE_SP", context.Sp);'
-            $insert = @"
-    TraceVirtualMapping("RESTORE_SP", context.Sp);
-
-    using DirectNtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
-    const HMODULE direct_ntdll = GetModuleHandleW(L"ntdll.dll");
-    const auto direct_nt_continue = direct_ntdll != nullptr
-                                        ? reinterpret_cast<DirectNtContinueFn>(
-                                              GetProcAddress(direct_ntdll, "NtContinue"))
-                                        : nullptr;
-    if (direct_nt_continue == nullptr) {
-        std::abort();
-    }
-    std::fputs("IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS\n", stderr);
-    std::fflush(stderr);
-"@
+            $insertLines = @(
+              '    TraceVirtualMapping("RESTORE_SP", context.Sp);',
+              '',
+              '    using DirectNtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);',
+              '    const HMODULE direct_ntdll = GetModuleHandleW(L"ntdll.dll");',
+              '    const auto direct_nt_continue = direct_ntdll != nullptr',
+              '                                        ? reinterpret_cast<DirectNtContinueFn>(',
+              '                                              GetProcAddress(direct_ntdll, "NtContinue"))',
+              '                                        : nullptr;',
+              '    if (direct_nt_continue == nullptr) {',
+              '        std::abort();',
+              '    }',
+              '    std::fputs("IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS\n", stderr);',
+              '    std::fflush(stderr);'
+            )
+            $insert = $insertLines -join $nl
             if (-not $text.Contains($needle)) { throw 'RESTORE_SP trace anchor missing' }
             $text = $text.Replace($needle, $insert)
           }
@@ -69,12 +71,13 @@ jobs:
           $text = $text.Replace($limitLine + "`n" + $baseLine + "`n", '')
           $callNeedle = '    WindowsNceTransition::ContinueContext(context);'
           if ($text.Contains($callNeedle)) {
-            $directCall = @"
-    reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);
-    reinterpret_cast<NT_TIB*>(teb)->StackBase = reinterpret_cast<PVOID>(stack_base);
-    direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
-    std::abort();
-"@
+            $directLines = @(
+              '    reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);',
+              '    reinterpret_cast<NT_TIB*>(teb)->StackBase = reinterpret_cast<PVOID>(stack_base);',
+              '    direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);',
+              '    std::abort();'
+            )
+            $directCall = $directLines -join $nl
             $text = $text.Replace($callNeedle, $directCall)
           }
           if (-not $text.Contains('direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);')) { throw 'direct NtContinue call missing' }
