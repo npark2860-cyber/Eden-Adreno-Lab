@@ -1,0 +1,42 @@
+name: Inspect IMP-008E Production Stack Query Seam
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp008e-production-stack-query-seam-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-production-stack-query-seam:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect retained transition sources
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $paths=@(
+            'eden/src/core/arm/nce/windows_nce_transition.cpp',
+            'eden/build/generic_stacktop_ab/windows_nce_transition.cpp'
+          )
+          foreach ($p in $paths) {
+            if (-not (Test-Path $p)) { Write-Host "IMP008E_INSPECT_MISSING=$p"; continue }
+            Write-Host "IMP008E_INSPECT_BEGIN=$p"
+            $lines=Get-Content $p
+            for ($i=0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match 'StackLimit|StackBase|NtContinue|GENERIC_STACK_TOP|VirtualQuery|BEFORE_NT_CONTINUE') {
+                $s=[Math]::Max(0,$i-8); $e=[Math]::Min($lines.Count-1,$i+12)
+                for ($j=$s; $j -le $e; $j++) { Write-Host ('{0:D4}: {1}' -f ($j+1),$lines[$j]) }
+                Write-Host '---'
+              }
+            }
+            Write-Host "IMP008E_INSPECT_END=$p"
+          }
