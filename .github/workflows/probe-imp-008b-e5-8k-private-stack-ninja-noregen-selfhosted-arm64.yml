@@ -1,4 +1,4 @@
-name: Probe IMP-008B E5 8K Private Stack Ninja No-Regen
+name: Probe IMP-008B E5 Direct Command Extraction
 
 on:
   workflow_dispatch:
@@ -12,13 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: probe-imp-008b-e5-8k-private-stack-ninja-noregen
+  group: probe-imp-008b-e5-direct-command-extraction
   cancel-in-progress: false
 
 jobs:
-  e5-8k-private-stack-ninja-noregen:
+  e5-direct-command-extraction:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - name: Verify retained E5 8K A-B workspace
         shell: powershell
@@ -30,13 +30,16 @@ jobs:
           $probe = 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
           $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
           $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          $build = 'eden/build/build.ninja'
           $rules = 'eden/build/CMakeFiles/rules.ninja'
-          if (-not (Test-Path $rules)) { throw 'retained rules.ninja missing' }
+          foreach ($p in @($probe,$transition,$runtime,$build,$rules)) {
+            if (-not (Test-Path $p)) { throw "required retained file missing: $p" }
+          }
           if (-not (Select-String -Path $probe -SimpleMatch 'IMP008B_E5_8K_GUEST_STACK=PASS' -Quiet)) { throw '8K guest stack patch missing' }
           if (-not (Select-String -Path $transition -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet)) { throw '8K transition patch missing' }
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) { throw 'x18 VEH observer missing' }
-          Write-Host 'IMP008B_E5_8K_NOREGEN_WORKSPACE=PASS'
+          Write-Host 'IMP008B_E5_DIRECT_EXTRACT_WORKSPACE=PASS'
 
       - name: Set up CLANGARM64 toolchain
         uses: msys2/setup-msys2@v2
@@ -54,101 +57,78 @@ jobs:
             xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p libwebp:p
             libtiff:p brotli:p
 
-      - name: Disable only retained CMake regeneration edge
+      - name: Snapshot retained Ninja graph hashes
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $rules = 'eden/build/CMakeFiles/rules.ninja'
-          $lines = [System.Collections.Generic.List[string]](Get-Content $rules)
-          $foundRule = $false
-          $patched = $false
-          for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -eq 'rule RERUN_CMAKE') {
-              $foundRule = $true
-              continue
-            }
-            if ($foundRule -and $lines[$i].StartsWith('  command = ')) {
-              Write-Host ('IMP008B_E5_8K_NOREGEN_OLD=' + $lines[$i])
-              $lines[$i] = '  command = cmake.exe -E touch $out'
-              $patched = $true
-              break
-            }
-            if ($foundRule -and $lines[$i].StartsWith('rule ')) { break }
+          $build = (Get-FileHash 'eden/build/build.ninja' -Algorithm SHA256).Hash
+          $rules = (Get-FileHash 'eden/build/CMakeFiles/rules.ninja' -Algorithm SHA256).Hash
+          @(
+            "BUILD_NINJA=$build"
+            "RULES_NINJA=$rules"
+          ) | Set-Content -Encoding ASCII 'eden/imp008b-e5-direct-before.sha256'
+          Get-Content 'eden/imp008b-e5-direct-before.sha256'
+          Write-Host 'IMP008B_E5_DIRECT_HASH_BEFORE=PASS'
+
+      - name: Extract target commands with Ninja tool mode only
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          ninja -C build -t commands imp008b_e5_x18_runtime > imp008b-e5-direct-commands.txt
+          ninja -C build -t compdb > imp008b-e5-direct-compdb.json
+          ninja -C build -t query imp008b_e5_x18_runtime > imp008b-e5-direct-query.txt
+          test -s imp008b-e5-direct-commands.txt
+          test -s imp008b-e5-direct-compdb.json
+          test -s imp008b-e5-direct-query.txt
+          echo '=== DIRTY SOURCE COMMAND HITS ==='
+          grep -nE 'x18_runtime_invariant\.cpp|windows_nce_transition\.cpp|arm_nce_windows\.cpp' imp008b-e5-direct-commands.txt || true
+          echo '=== FINAL TARGET HITS ==='
+          grep -nE 'imp008b_e5_x18_runtime(\.exe)?' imp008b-e5-direct-commands.txt || true
+          echo '=== TARGET QUERY ==='
+          cat imp008b-e5-direct-query.txt
+          echo 'IMP008B_E5_DIRECT_TOOL_EXTRACT=PASS'
+
+      - name: Prove Ninja tool mode did not mutate graph
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $before = @{}
+          Get-Content 'eden/imp008b-e5-direct-before.sha256' | ForEach-Object {
+            $k,$v = $_ -split '=',2
+            $before[$k] = $v
           }
-          if (-not $patched) { throw 'RERUN_CMAKE command not found' }
-          $utf8 = New-Object System.Text.UTF8Encoding($false)
-          [IO.File]::WriteAllLines((Resolve-Path $rules), $lines, $utf8)
-          Write-Host 'IMP008B_E5_8K_NOREGEN_PATCH=PASS'
+          $build = (Get-FileHash 'eden/build/build.ninja' -Algorithm SHA256).Hash
+          $rules = (Get-FileHash 'eden/build/CMakeFiles/rules.ninja' -Algorithm SHA256).Hash
+          Write-Host "BUILD_NINJA_AFTER=$build"
+          Write-Host "RULES_NINJA_AFTER=$rules"
+          if ($build -ne $before['BUILD_NINJA']) { throw 'build.ninja changed during Ninja tool mode' }
+          if ($rules -ne $before['RULES_NINJA']) { throw 'rules.ninja changed during Ninja tool mode' }
+          Write-Host 'IMP008B_E5_DIRECT_GRAPH_UNCHANGED=PASS'
 
-      - name: Dry-run retained Ninja graph
-        shell: msys2 {0}
-        working-directory: eden
-        run: |
-          set -euo pipefail
-          ninja -C build -d explain -n imp008b_e5_x18_runtime 2>&1 | tee imp008b-e5-8k-ninja-dryrun.log
-          grep -q 'imp008b_e5_x18_runtime' imp008b-e5-8k-ninja-dryrun.log
-          echo 'IMP008B_E5_8K_NINJA_DRYRUN=PASS'
-
-      - name: Build E5 from retained Ninja graph without CMake extraction
-        shell: msys2 {0}
-        working-directory: eden
-        run: |
-          set -euo pipefail
-          ninja -C build -v imp008b_e5_x18_runtime 2>&1 | tee imp008b-e5-8k-ninja-build.log
-          test -f build/bin/imp008b_e5_x18_runtime.exe
-          echo 'IMP008B_E5_8K_NOREGEN_BUILD=PASS'
-
-      - name: Launch E5 8K private guest stack A-B
-        shell: msys2 {0}
-        working-directory: eden
-        run: |
-          set -uo pipefail
-          set +e
-          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-8k-noregen.out.log 2> imp008b-e5-8k-noregen.err.log
-          rc=$?
-          set -e
-          printf '%s\n' "$rc" > imp008b-e5-8k-noregen.rc
-          cat imp008b-e5-8k-noregen.out.log imp008b-e5-8k-noregen.err.log > imp008b-e5-8k-noregen.log 2>/dev/null || true
-          cat imp008b-e5-8k-noregen.log || true
-          echo "IMP008B_E5_8K_NOREGEN_RC=$rc"
-
-      - name: Classify E5 8K stack boundary
-        if: always()
+      - name: Summarize direct command candidates
         shell: powershell
         working-directory: eden
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path 'imp008b-e5-8k-noregen.log')) { throw 'runtime log missing' }
-          Get-Content 'imp008b-e5-8k-noregen.log' | Select-String -Pattern 'IMP008B_E5_(8K_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
-          $ready = Select-String -Path 'imp008b-e5-8k-noregen.log' -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet
-          $generic = Select-String -Path 'imp008b-e5-8k-noregen.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
-          $x18 = Select-String -Path 'imp008b-e5-8k-noregen.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
-          $fallback = Select-String -Path 'imp008b-e5-8k-noregen.log' -Pattern 'IMP008B_E5_X18_TRYREDIRECT.*PASS' -Quiet
-          $secondRestore = Select-String -Path 'imp008b-e5-8k-noregen.log' -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
-          $returned = Select-String -Path 'imp008b-e5-8k-noregen.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
-          $svc = Select-String -Path 'imp008b-e5-8k-noregen.log' -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
-          $x18result = Select-String -Path 'imp008b-e5-8k-noregen.log' -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
-          $gate = Select-String -Path 'imp008b-e5-8k-noregen.log' -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
-          Write-Host ('IMP008B_E5_8K_READY=' + $(if ($ready) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_8K_GENERIC_VEH=' + $(if ($generic) {'PASS'} else {'NO_ENTRY'}))
-          Write-Host ('IMP008B_E5_8K_X18_VEH=' + $(if ($x18) {'PASS'} else {'NO_ENTRY'}))
-          Write-Host ('IMP008B_E5_8K_FALLBACK=' + $(if ($fallback) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_8K_SECOND_RESTORE=' + $(if ($secondRestore) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_8K_RUNTHREAD_RETURNED=' + $(if ($returned) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_8K_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_8K_X18_RESULT=' + $(if ($x18result) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_8K_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
+          $lines = Get-Content 'imp008b-e5-direct-commands.txt'
+          $dirty = $lines | Where-Object { $_ -match 'x18_runtime_invariant\.cpp|windows_nce_transition\.cpp|arm_nce_windows\.cpp' }
+          $target = $lines | Where-Object { $_ -match 'imp008b_e5_x18_runtime(\.exe)?' }
+          Write-Host ('IMP008B_E5_DIRECT_COMMAND_COUNT=' + $lines.Count)
+          Write-Host ('IMP008B_E5_DIRECT_DIRTY_COMPILE_HITS=' + $dirty.Count)
+          Write-Host ('IMP008B_E5_DIRECT_TARGET_HITS=' + $target.Count)
+          if ($dirty.Count -lt 3) { throw 'did not recover all three dirty-source command lines' }
+          if ($target.Count -lt 1) { throw 'final target command not found' }
+          Write-Host 'IMP008B_E5_DIRECT_COMMAND_CANDIDATES=PASS'
 
-      - name: Upload diagnostic logs
+      - name: Upload extraction logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e5-8k-private-stack-ninja-noregen
+          name: e5-direct-command-extraction
           path: |
-            eden/imp008b-e5-8k-ninja-dryrun.log
-            eden/imp008b-e5-8k-ninja-build.log
-            eden/imp008b-e5-8k-noregen.log
-            eden/imp008b-e5-8k-noregen.out.log
-            eden/imp008b-e5-8k-noregen.err.log
-            eden/imp008b-e5-8k-noregen.rc
+            eden/imp008b-e5-direct-before.sha256
+            eden/imp008b-e5-direct-commands.txt
+            eden/imp008b-e5-direct-compdb.json
+            eden/imp008b-e5-direct-query.txt
           if-no-files-found: warn
