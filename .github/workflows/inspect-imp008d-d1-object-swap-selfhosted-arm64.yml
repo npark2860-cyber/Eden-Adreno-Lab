@@ -1,0 +1,55 @@
+name: Inspect IMP-008D D1 Object Swap Viability
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp008d-d1-object-swap-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inspect-imp008d-d1-object-swap
+  cancel-in-progress: false
+
+jobs:
+  inspect-d1-object-swap:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect D1 source and E5 commands
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $transition=[IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/windows_nce_transition.cpp'))
+          if (([regex]::Matches($transition,'IMP008B_E5_MIXED_TEB_LIMIT_AB')).Count -ne 1) { throw 'mixed TEB patch not retained exactly once' }
+
+          $d1='eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp'
+          $e5='eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          foreach ($path in @($d1,$e5)) { if (-not (Test-Path $path)) { throw "missing $path" } }
+
+          Write-Host 'IMP008D_D1_SOURCE_BEGIN'
+          Get-Content $d1
+          Write-Host 'IMP008D_D1_SOURCE_END'
+
+          $commands=& 'C:\msys64\usr\bin\ninja.exe' -C eden/build -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+          Write-Host 'IMP008D_D1_E5_COMMANDS_BEGIN'
+          $commands | Where-Object { $_ -match 'x18_runtime_invariant\.cpp|-o bin\\imp008b_e5_x18_runtime\.exe' }
+          Write-Host 'IMP008D_D1_E5_COMMANDS_END'
+
+          Write-Host 'IMP008D_D1_INCLUDE_DIFF_BEGIN'
+          $d1Includes=Get-Content $d1 | Where-Object { $_ -match '^#include' }
+          $e5Includes=Get-Content $e5 | Where-Object { $_ -match '^#include' }
+          Compare-Object $e5Includes $d1Includes | ForEach-Object { $_.ToString() }
+          Write-Host 'IMP008D_D1_INCLUDE_DIFF_END'
+
+          Write-Host 'IMP008D_D1_SYMBOL_HINTS_BEGIN'
+          Get-Content $d1 | Select-String -Pattern 'Core::|Kernel::|NCE::|Settings::|Memory::|System|KProcess|KThread|ArmInterface|Windows' | ForEach-Object { $_.Line }
+          Write-Host 'IMP008D_D1_SYMBOL_HINTS_END'
