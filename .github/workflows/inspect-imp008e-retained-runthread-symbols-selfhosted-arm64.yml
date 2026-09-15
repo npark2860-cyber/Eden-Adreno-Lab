@@ -1,0 +1,40 @@
+name: Inspect IMP-008E Retained RunThread Symbols
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/imp-008e-windows-nce-rasterizer-recovery-runtime]
+    paths:
+      - .github/workflows/inspect-imp008e-retained-runthread-symbols-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inspect-imp008e-retained-runthread-symbols
+  cancel-in-progress: false
+
+jobs:
+  inspect-retained-symbols:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 3
+    steps:
+      - name: Dump retained RunThread-related symbol lines
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $head=(git -C eden rev-parse HEAD).Trim()
+          Write-Host "RETAINED_HEAD=$head"
+          if($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
+          $path='eden/src/core/arm/nce/arm_nce_windows.cpp'
+          Write-Host '--- STATUS ---'
+          git -C eden status --short -- $path.Replace('eden/','')
+          Write-Host '--- MATCHES ---'
+          Select-String -Path $path -Pattern 'RunThread|CurrentNce|TebStack|InstallGuest|RestoreHost|WindowsNceEnterGuest|pending_nce|m_running_thread|for \(;;\)' | ForEach-Object { Write-Host ('{0:D4}: {1}' -f $_.LineNumber,$_.Line) }
+          Write-Host '--- RUNTHREAD BLOCK ---'
+          $lines=Get-Content $path
+          $run=Select-String -Path $path -Pattern 'HaltReason ArmNce::RunThread' | Select-Object -First 1
+          if($null -eq $run){throw 'RunThread definition not found'}
+          $start=$run.LineNumber
+          $end=[Math]::Min($lines.Count,$start+180)
+          for($i=$start;$i -le $end;$i++){Write-Host ('{0:D4}: {1}' -f $i,$lines[$i-1])}
