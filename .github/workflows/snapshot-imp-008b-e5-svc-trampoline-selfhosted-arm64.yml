@@ -1,0 +1,47 @@
+name: Snapshot IMP-008B E5 SVC Trampoline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/snapshot-imp-008b-e5-svc-trampoline-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot-svc:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Snapshot retained SVC sources
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $dir = 'eden/imp008b-e5-svc-snapshot'
+          Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $dir | Out-Null
+          foreach ($rel in @(
+            'src/core/arm/nce/patcher.cpp',
+            'src/core/arm/nce/patcher.h',
+            'src/core/arm/nce/windows_generated_context.h',
+            'src/core/arm/nce/windows_nce_entry.asm',
+            'src/core/arm/nce/arm_nce.s'
+          )) {
+            $src = Join-Path 'eden' $rel
+            if (-not (Test-Path $src)) { throw "missing $rel" }
+            Copy-Item $src (Join-Path $dir ([IO.Path]::GetFileName($rel))) -Force
+          }
+          Write-Host 'IMP008B_E5_SVC_SNAPSHOT=PASS'
+
+      - name: Upload SVC snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-svc-trampoline-snapshot
+          path: eden/imp008b-e5-svc-snapshot/
+          if-no-files-found: error
