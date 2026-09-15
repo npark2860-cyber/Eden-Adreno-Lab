@@ -28,7 +28,6 @@ jobs:
           $head=(git -C eden rev-parse HEAD).Trim()
           if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
           if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'generic transition object missing' }
-
           $src=(Resolve-Path 'eden/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp').Path
           $dir='eden/build/e2_two_phase_stacklimit_v1'
           New-Item -ItemType Directory -Force $dir | Out-Null
@@ -55,8 +54,7 @@ jobs:
 
           $a='    const u64 guest_sp = load_base + SyntheticNroSize - 0x20;'
           if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'guest sp anchor mismatch' }
-          $insert="    const u64 guest_sp = load_base + SyntheticNroSize - 0x20;`r`n    MEMORY_BASIC_INFORMATION guest_stack_mbi{};`r`n    if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &guest_stack_mbi, sizeof(guest_stack_mbi)) == 0 || guest_stack_mbi.AllocationBase == nullptr) {`r`n        Fatal(\"IMP008E_E2_GUEST_STACK_QUERY\", 69);`r`n    }`r`n    const u64 guest_stack_limit = reinterpret_cast<u64>(guest_stack_mbi.AllocationBase);"
-          $text=$text.Replace($a,$insert)
+          $text=$text.Replace($a,"    const u64 guest_sp = load_base + SyntheticNroSize - 0x20;`r`n    const u64 guest_stack_limit = guest_sp & ~0xFFFULL;")
 
           $a='    context.r[18] = X18Sentinel;'
           if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'x18 context anchor mismatch' }
@@ -68,7 +66,6 @@ jobs:
           $a='        Fatal("IMP008E_E2_PRODUCTION_RETRY_STATE", 95);'
           if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'legacy retry assertion anchor mismatch' }
           $text=$text.Replace($a,'        Trace("IMP008E_E2_PRODUCTION_RETRY_STATE_HOST_ROUNDTRIP");')
-
           [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
 
           Push-Location 'eden/build'
@@ -87,7 +84,6 @@ jobs:
             $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
             & $env:ComSpec /D /S /C $compile
             if ($LASTEXITCODE -ne 0) { throw "stacklimit compile rc=$LASTEXITCODE" }
-
             $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
             if ($linkHits.Count -ne 1) { throw "E5 link count=$($linkHits.Count)" }
             $link=[string]$linkHits[0]
@@ -96,7 +92,7 @@ jobs:
             $link=$link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_two_phase_stacklimit_v1.a')
             $link=$link.Replace('src/core/libcore.a','generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
             $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
-            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008e-e2-two-phase-stacklimit-v1-link.log'
+            & $env:ComSpec /D /S /C $link
             if ($LASTEXITCODE -ne 0) { throw "stacklimit link rc=$LASTEXITCODE" }
           } finally { Pop-Location }
           Write-Host 'IMP008E_E2_TWO_PHASE_STACKLIMIT_BUILD=PASS'
@@ -105,10 +101,9 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $edenPath=(Resolve-Path 'eden').Path
           $psi=New-Object System.Diagnostics.ProcessStartInfo
           $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_two_phase_stacklimit_v1.exe').Path
-          $psi.WorkingDirectory=$edenPath
+          $psi.WorkingDirectory=(Resolve-Path 'eden').Path
           $psi.UseShellExecute=$false
           $psi.RedirectStandardOutput=$true
           $psi.RedirectStandardError=$true
@@ -119,10 +114,8 @@ jobs:
           if ($timeout) { $p.Kill(); $p.WaitForExit() }
           $out=$ot.Result; $err=$et.Result
           if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
-          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-two-phase-stacklimit-v1.out.log'),$out)
-          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-two-phase-stacklimit-v1.err.log'),$err)
-          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-two-phase-stacklimit-v1.log'),$out+$err)
-          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-two-phase-stacklimit-v1.rc'),[string]$rc)
+          $log=$out+$err
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path 'eden').Path 'imp008e-e2-two-phase-stacklimit-v1.log'),$log)
           Write-Host $out; Write-Host $err
           Write-Host ('IMP008E_E2_TWO_PHASE_STACKLIMIT_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
 
@@ -131,23 +124,6 @@ jobs:
         run: |
           $log=Get-Content 'eden/imp008e-e2-two-phase-stacklimit-v1.log' -Raw
           Get-Content 'eden/imp008e-e2-two-phase-stacklimit-v1.log' | Select-String -Pattern 'IMP008B_GENERIC_STACK_TOP|IMP008E_E2_(DATA_AV|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|RETURNED|REEXECUTED_VALUE_EXACT|POST_SVC_PC_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|GATE|FAIL)'
-          if ($log.Contains('IMP008E_E2_GATE=PASS')) {
-            Write-Host 'IMP008E_E2_TWO_PHASE_STACKLIMIT_V1=PASS'
-          } elseif ($log.Contains('IMP008E_E2_DATA_AV CODE=')) {
-            Write-Host 'IMP008E_E2_TWO_PHASE_STACKLIMIT_V1=DATA_AV_DELIVERED'
-          } else {
-            Write-Host 'IMP008E_E2_TWO_PHASE_STACKLIMIT_V1=NO_DATA_AV'
-          }
-
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: imp008e-e2-two-phase-stacklimit-v1
-          path: |
-            eden/imp008e-e2-two-phase-stacklimit-v1-link.log
-            eden/imp008e-e2-two-phase-stacklimit-v1.log
-            eden/imp008e-e2-two-phase-stacklimit-v1.out.log
-            eden/imp008e-e2-two-phase-stacklimit-v1.err.log
-            eden/imp008e-e2-two-phase-stacklimit-v1.rc
-          if-no-files-found: warn
+          if ($log.Contains('IMP008E_E2_GATE=PASS')) { Write-Host 'IMP008E_E2_TWO_PHASE_STACKLIMIT_V1=PASS' }
+          elseif ($log.Contains('IMP008E_E2_DATA_AV CODE=')) { Write-Host 'IMP008E_E2_TWO_PHASE_STACKLIMIT_V1=DATA_AV_DELIVERED' }
+          else { Write-Host 'IMP008E_E2_TWO_PHASE_STACKLIMIT_V1=NO_DATA_AV' }
