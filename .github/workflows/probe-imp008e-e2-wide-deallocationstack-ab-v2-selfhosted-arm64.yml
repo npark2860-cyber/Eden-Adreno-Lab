@@ -1,0 +1,124 @@
+name: Probe IMP-008E E2 Wide DeallocationStack A-B V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-wide-deallocationstack-ab-v2-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-wide-deallocationstack-ab-v2
+  cancel-in-progress: false
+
+jobs:
+  e2-wide-deallocationstack-v2:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Build wide-DeallocationStack transition only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+
+          $previous='eden/build/guest_deallocationstack_ab/windows_nce_transition.cpp'
+          if (-not (Test-Path $previous)) { throw 'previous DeallocationStack A/B source missing' }
+          if (-not (Test-Path 'eden/build/guest_deallocationstack_ab/rasterizer_cached_retry.cpp.obj')) { throw 'retained E2 object missing' }
+          $text=[IO.File]::ReadAllText((Resolve-Path $previous))
+          $old='const auto guest_deallocation_stack = stack_base - 0x1000ULL;'
+          if (([regex]::Matches($text,[regex]::Escape($old))).Count -ne 1) { throw 'narrow DeallocationStack anchor mismatch' }
+          $new='const auto guest_deallocation_stack = static_cast<std::uint64_t>(context.Pc) & ~0xFFFULL; // IMP008B_E2_WIDE_DEALLOCATIONSTACK_AB'
+          $text=$text.Replace($old,$new)
+          $text=$text.Replace('IMP008B_GUEST_DEALLOCATIONSTACK_AB=PASS','IMP008B_WIDE_DEALLOCATIONSTACK_AB=PASS')
+          $text=$text.Replace('IMP008B_E2_DEALLOCATION_READY=PASS HOST=%p GUEST=0x%llX STACK_BASE=0x%llX','IMP008B_E2_WIDE_DEALLOCATION_READY=PASS HOST=%p GUEST=0x%llX STACK_BASE=0x%llX')
+
+          $dir='eden/build/wide_deallocationstack_ab'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item 'eden/src/core/arm/nce/*.inc' $dir -Force
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path $dir).Path 'windows_nce_transition.cpp'),$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja rc=$LASTEXITCODE" }
+            $transitionHits=@($commands | Where-Object { $_ -match 'windows_nce_transition\.cpp' -and $_ -match ' -c ' })
+            if ($transitionHits.Count -ne 1) { throw "transition compile count=$($transitionHits.Count)" }
+            $tc=[string]$transitionHits[0]
+            $objMatch=[regex]::Match($tc,'-o\s+(\S*windows_nce_transition\.cpp\.obj)')
+            if (-not $objMatch.Success) { throw 'transition object parse failed' }
+            $tc=$tc.Replace($objMatch.Groups[1].Value,'wide_deallocationstack_ab/windows_nce_transition.cpp.obj')
+            $tc=[regex]::Replace($tc,'-MF\s+\S*windows_nce_transition\.cpp\.obj\.d','-MF wide_deallocationstack_ab\windows_nce_transition.cpp.obj.d')
+            $tc=[regex]::Replace($tc,"-c\s+'?C:/[^']*?/src/core/arm/nce/windows_nce_transition\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/wide_deallocationstack_ab/windows_nce_transition.cpp')
+            $tc=$tc.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $tc=[regex]::Replace($tc,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $tc
+            if ($LASTEXITCODE -ne 0) { throw "wide transition compile rc=$LASTEXITCODE" }
+
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $e2Obj='guest_deallocationstack_ab/rasterizer_cached_retry.cpp.obj'
+            $link=$link.Replace($oldObj,$e2Obj)
+            $link=$link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_wide_deallocation_v2.exe')
+            $link=$link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_wide_deallocation_v2.a')
+            $link=$link.Replace('src/core/libcore.a','wide_deallocationstack_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008e-e2-wide-deallocation-v2-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "E2 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_WIDE_DEALLOCATION_BUILD=PASS'
+
+      - name: Run E2 wide DeallocationStack A-B once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $edenPath=(Resolve-Path 'eden').Path
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_wide_deallocation_v2.exe').Path
+          $psi.WorkingDirectory=$edenPath
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(300000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-wide-deallocation-v2.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-wide-deallocation-v2.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-wide-deallocation-v2.log'),$out+$err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-wide-deallocation-v2.rc'),[string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008E_E2_WIDE_DEALLOCATION_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify wide DeallocationStack A-B
+        shell: powershell
+        run: |
+          $log=Get-Content 'eden/imp008e-e2-wide-deallocation-v2.log' -Raw
+          Get-Content 'eden/imp008e-e2-wide-deallocation-v2.log' | Select-String -Pattern 'IMP008B_(WIDE_DEALLOCATIONSTACK_AB|E2_WIDE_DEALLOCATION)|IMP008E_E2_(DATA_AV|CONTINUE_STATE|RUNTHREAD_RETURNED|PRODUCTION_RETRY_STATE|FAILED_DATA_SKIP_NOT_USED|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|REEXECUTED_VALUE_EXACT|POST_SVC_PC_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|GATE|FAIL)'
+          $rc=(Get-Content 'eden/imp008e-e2-wide-deallocation-v2.rc' -Raw).Trim()
+          Write-Host "IMP008E_E2_WIDE_DEALLOCATION_RAW_RC=$rc"
+          if ($log.Contains('IMP008E_E2_GATE=PASS')) { Write-Host 'IMP008E_E2_WIDE_DEALLOCATION_V2=PASS' } else { Write-Host 'IMP008E_E2_WIDE_DEALLOCATION_V2=FAIL_OR_INCOMPLETE' }
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-wide-deallocation-v2
+          path: |
+            eden/imp008e-e2-wide-deallocation-v2-link.log
+            eden/imp008e-e2-wide-deallocation-v2.log
+            eden/imp008e-e2-wide-deallocation-v2.out.log
+            eden/imp008e-e2-wide-deallocation-v2.err.log
+            eden/imp008e-e2-wide-deallocation-v2.rc
+          if-no-files-found: warn
