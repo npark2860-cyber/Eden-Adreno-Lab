@@ -1,0 +1,36 @@
+name: Inspect IMP-008E Retained RunThread Private Stack Anchor
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/imp-008e-windows-nce-rasterizer-recovery-runtime]
+    paths:
+      - .github/workflows/inspect-imp008e-retained-runthread-private-stack-anchor-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inspect-imp008e-retained-runthread-private-stack-anchor
+  cancel-in-progress: false
+
+jobs:
+  inspect-retained-runthread:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 3
+    steps:
+      - name: Show retained RunThread anchors
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $head=(git -C eden rev-parse HEAD).Trim()
+          Write-Host "RETAINED_HEAD=$head"
+          if($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
+          $path='eden/src/core/arm/nce/arm_nce_windows.cpp'
+          $lines=Get-Content $path
+          $install=Select-String -Path $path -SimpleMatch 'CurrentNceContext::Install(thread_params)' | Select-Object -First 1
+          $restore=Select-String -Path $path -SimpleMatch 'RestoreHostTebStackBounds(teb_stack_bounds)' | Select-Object -First 1
+          if($null -eq $install -or $null -eq $restore){throw 'anchors not found'}
+          $start=[Math]::Max(1,$install.LineNumber-8)
+          $end=[Math]::Min($lines.Count,$restore.LineNumber+12)
+          for($i=$start;$i -le $end;$i++){Write-Host ('{0:D4}: {1}' -f $i,$lines[$i-1])}
