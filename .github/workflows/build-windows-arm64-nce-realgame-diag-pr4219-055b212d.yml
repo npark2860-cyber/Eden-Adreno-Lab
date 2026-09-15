@@ -23,6 +23,7 @@ env:
   CI_REF: afead830f3a444427f9fdfd841218f932465c03a
   TEST_NAME: realgame-diag-pr4219-055b212d
   SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-telemetry.py
+  HOST_MEMORY_SCRIPT_PATH: .github/diagnostics/apply-pr4219-host-memory-windows.py
 
 jobs:
   build-package:
@@ -66,7 +67,7 @@ jobs:
           path: build/validation/${{ github.sha }}/realgame-diag-pr4219-055b212d/upstream4219
           fetch-depth: 2
 
-      - name: Verify provenance and apply exact PR4219 diff
+      - name: Verify provenance and apply PR4219 with NCE HostMemory merge
         shell: bash
         run: |
           set -euo pipefail
@@ -84,9 +85,17 @@ jobs:
           test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no)"
 
           git -C "$UPSTREAM" show --format= --binary --full-index "$PR4219_SHA" > "$PROV/pr4219.git-object.patch"
-          git -C "$SOURCE" apply --check "$PROV/pr4219.git-object.patch"
-          git -C "$SOURCE" apply "$PROV/pr4219.git-object.patch"
+          git -C "$SOURCE" apply --check --exclude=src/common/host_memory.cpp "$PROV/pr4219.git-object.patch"
+          git -C "$SOURCE" apply --exclude=src/common/host_memory.cpp "$PROV/pr4219.git-object.patch"
+
+          git -C "$CONTROL" show "$GITHUB_SHA:$HOST_MEMORY_SCRIPT_PATH" > "$PROV/apply-pr4219-host-memory-windows.py.git-object"
+          git -C "$SOURCE" show "$SOURCE_SHA:src/common/host_memory.cpp" > "$PROV/host_memory.cpp.base.git-object"
+          python "$PROV/apply-pr4219-host-memory-windows.py.git-object" "$SOURCE/src/common/host_memory.cpp"
+
           git -C "$SOURCE" diff --check
+          grep -Fq 'SparseLargeVector' "$SOURCE/src/common/page_table.h"
+          grep -Fq 'bool fallback_buffer{false}' "$SOURCE/src/common/host_memory.h"
+          grep -Fq 'void* Allocate(size_t size)' "$SOURCE/src/common/host_memory.cpp"
           git -C "$SOURCE" diff > "$PROV/pr4219.applied.diff"
 
           git -C "$CONTROL" show "$GITHUB_SHA:$SCRIPT_PATH" > "$PROV/apply-windows-nce-realgame-telemetry.py.git-object"
@@ -98,8 +107,8 @@ jobs:
           grep -Fq 'NCE_REALGAME_DIAG_FAULT' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           git -C "$SOURCE" diff -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/arm_nce_windows.cpp.telemetry.diff"
 
-          printf 'SOURCE_SHA=%s\nPR4219_SHA=%s\nPR4219_PARENT=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nUPSTREAM_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus exact PR4219 Git-object diff plus telemetry-transform Git object\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\n' \
-            "$SOURCE_SHA" "$PR4219_SHA" "$PR4219_PARENT" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' 'eden-emulator/mirror' "$GITHUB_SHA" "$TEST_NAME" "$SCRIPT_PATH" > "$PROV/BUILD_INFO.txt"
+          printf 'SOURCE_SHA=%s\nPR4219_SHA=%s\nPR4219_PARENT=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nUPSTREAM_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus exact PR4219 Git-object diff with HostMemory NCE-preserving transform plus telemetry-transform Git object\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\nHOST_MEMORY_SCRIPT_PATH=%s\n' \
+            "$SOURCE_SHA" "$PR4219_SHA" "$PR4219_PARENT" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' 'eden-emulator/mirror' "$GITHUB_SHA" "$TEST_NAME" "$SCRIPT_PATH" "$HOST_MEMORY_SCRIPT_PATH" > "$PROV/BUILD_INFO.txt"
           echo 'PR4219_REALGAME_DIAG_GIT_OBJECT_GUARD=PASS'
 
       - name: Checkout fixed Eden CI workflow
@@ -180,6 +189,7 @@ jobs:
           Copy-Item (Join-Path $prov 'BUILD_INFO.txt') $upload -Force
           Copy-Item (Join-Path $prov 'pr4219.git-object.patch') $upload -Force
           Copy-Item (Join-Path $prov 'pr4219.applied.diff') $upload -Force
+          Copy-Item (Join-Path $prov 'apply-pr4219-host-memory-windows.py.git-object') $upload -Force
           Copy-Item (Join-Path $prov 'apply-windows-nce-realgame-telemetry.py.git-object') $upload -Force
           Copy-Item (Join-Path $prov 'arm_nce_windows.cpp.telemetry.diff') $upload -Force
           $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
