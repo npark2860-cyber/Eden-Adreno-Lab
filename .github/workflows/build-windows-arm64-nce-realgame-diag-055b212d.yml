@@ -2,6 +2,11 @@ name: Build Windows ARM64 NCE real-game diagnostics 055b212d
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - fix/windows-nce-realgame-regression-055b212d
+    paths:
+      - .github/workflows/build-windows-arm64-nce-realgame-diag-055b212d.yml
 
 permissions:
   contents: read
