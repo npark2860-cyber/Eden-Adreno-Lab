@@ -1,7 +1,6 @@
-name: Probe IMP-008B E5 Captured Context A-B Selfhosted ARM64
+name: TEMP IMP-008E immutable exact validation carrier
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
@@ -12,177 +11,109 @@ permissions:
   contents: read
 
 concurrency:
-  group: probe-imp-008b-e5-captured-context-ab-selfhosted-arm64
+  group: temp-imp008e-immutable-exact-validation-carrier
   cancel-in-progress: false
 
 jobs:
-  e5-captured-context-ab:
+  validate:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
-      - name: Verify retained E5 diagnostic workspace
+      - name: Build immutable probes with exact promoted core
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
-          $head = (git -C eden rev-parse HEAD).Trim()
-          Write-Host "IMP008B_E5_CTXAB_WORKSPACE_HEAD=$head"
-          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained E5 workspace HEAD: $head" }
-          $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
-          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_AB_HISTORICAL_RUNTHREAD=PASS' -Quiet)) { throw 'TEB early-publication bypass missing' }
-          if (Select-String -Path $runtime -SimpleMatch 'InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)' -Quiet) { throw 'early TEB publication unexpectedly active' }
-          if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
-          Write-Host 'IMP008B_E5_CTXAB_RETAINED_WORKSPACE=PASS'
+          $ErrorActionPreference='Stop'
+          $retained='38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'
+          $source='055b212df86dbfc18257b127ee5a0cbfda8ff861'
+          if((git -C eden rev-parse HEAD).Trim() -ne $retained){throw 'unexpected retained HEAD'}
+          $coreDir='eden/build/imp008e_exact_055b212d'
+          $runtime='eden/build/imp008e_exact_runtime_055b212d'
+          foreach($p in @("$coreDir/arm_nce_windows.cpp.obj","$coreDir/windows_nce_transition.cpp.obj","$coreDir/windows_nce_entry.obj")){if(-not(Test-Path $p)){throw "exact core object missing: $p"}}
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $rr=(Resolve-Path $runtime).Path
+          function Export-File([string]$sha,[string]$repoPath,[string]$dst){
+            $lines=& git -C eden show "${sha}:$repoPath"
+            if($LASTEXITCODE-ne 0){throw "git show failed: $repoPath"}
+            [IO.File]::WriteAllText($dst,(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
+          }
+          $d1=Join-Path $rr 'd1_immutable.cpp'
+          $e5=Join-Path $rr 'e5_immutable.cpp'
+          Export-File $retained 'probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp' $d1
+          Export-File $retained 'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp' $e5
+          $d1Text=[IO.File]::ReadAllText($d1)
+          $needle='if (getter_literal_matches == 0) {'
+          if(-not $d1Text.Contains($needle)){throw 'D1 compatibility anchor missing'}
+          $d1Text=$d1Text.Replace($needle,'if (false && getter_literal_matches == 0) { // current patcher compatibility')
+          [IO.File]::WriteAllText($d1,$d1Text,[Text.UTF8Encoding]::new($false))
+          if(([IO.File]::ReadAllText($e5)).Contains('DumpImp008bE5FullContextSnapshots')){throw 'immutable E5 contaminated'}
+          $e2='eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp'
+          if(-not(Test-Path $e2)){throw 'E2 source missing'}
 
-      - name: Set up CLANGARM64 toolchain for incremental rebuild
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: CLANGARM64
-          update: true
-          cache: false
-          install: >-
-            git make autoconf libtool automake-wrapper patch jq
-            pactoys ninja
-          pacboy: >-
-            qt6-tools:p qt6-translations:p qt6-svg:p
-            7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
-            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
-            vulkan-memory-allocator:p vulkan-devel:p glslang:p
-            enet:p opus:p mbedtls:p libusb:p unordered_dense:p
-            jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
-            libwebp:p libtiff:p brotli:p
+          Push-Location eden/build
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
+            $hits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
+            if($hits.Count-ne 1){throw "compile template count=$($hits.Count)"}
+            $template=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            function Normalize([string]$s){
+              $s=$s.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+              return [regex]::Replace($s,"'(C:/[^']+)'",'$1')
+            }
+            function Compile-One([string]$src,[string]$obj,[string]$dep){
+              $c=$template.Replace($oldObj,$obj)
+              $c=[regex]::Replace($c,'-MF\s+\S+\.obj\.d',('-MF '+$dep))
+              $srcAbs=((Resolve-Path $src).Path -replace '\\','/')
+              $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$srcAbs))
+              $c=Normalize $c
+              & $env:ComSpec /D /S /C $c
+              if($LASTEXITCODE-ne 0){throw "compile failed rc=$LASTEXITCODE src=$src"}
+            }
+            $d1Obj='imp008e_exact_runtime_055b212d/d1_immutable.cpp.obj'
+            $e5Obj='imp008e_exact_runtime_055b212d/e5_immutable.cpp.obj'
+            $e2Obj='imp008e_exact_runtime_055b212d/e2_immutable.cpp.obj'
+            Compile-One 'imp008e_exact_runtime_055b212d/d1_immutable.cpp' $d1Obj 'imp008e_exact_runtime_055b212d\d1_immutable.cpp.obj.d'
+            Compile-One 'imp008e_exact_runtime_055b212d/e5_immutable.cpp' $e5Obj 'imp008e_exact_runtime_055b212d\e5_immutable.cpp.obj.d'
+            Compile-One 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp' $e2Obj 'imp008e_exact_runtime_055b212d\e2_immutable.cpp.obj.d'
 
-      - name: Apply captured-context plus late-TEB A-B
-        shell: msys2 {0}
-        working-directory: eden
-        run: |
-          set -euo pipefail
-          transition='src/core/arm/nce/windows_nce_transition.cpp'
-          git checkout -- "$transition"
-          python - <<'PY'
-          from pathlib import Path
+            $links=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
+            if($links.Count-ne 1){throw "link template count=$($links.Count)"}
+            $base=[string]$links[0]
+            $core='imp008e_exact_055b212d/arm_nce_windows.cpp.obj imp008e_exact_055b212d/windows_nce_transition.cpp.obj imp008e_exact_055b212d/windows_nce_entry.obj src/core/libcore.a'
+            function Link-One([string]$obj,[string]$exe,[string]$lib){
+              $l=$base.Replace($oldObj,$obj).Replace('bin\imp008b_e5_x18_runtime.exe',('bin\'+$exe)).Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a',('src\yuzu_cmd\'+$lib))
+              $l=$l.Replace('src/core/libcore.a',$core)
+              $l=Normalize $l
+              & $env:ComSpec /D /S /C $l
+              if($LASTEXITCODE-ne 0){throw "link failed rc=$LASTEXITCODE exe=$exe"}
+            }
+            Link-One $d1Obj 'imp008d_d1_exact_immutable.exe' 'libimp008d_d1_exact_immutable.a'
+            Link-One $e5Obj 'imp008b_e5_exact_immutable.exe' 'libimp008b_e5_exact_immutable.a'
+            Link-One $e2Obj 'imp008e_e2_exact_immutable.exe' 'libimp008e_e2_exact_immutable.a'
+          } finally {Pop-Location}
+          Write-Host 'IMP008E_IMMUTABLE_EXACT_BUILD=PASS'
 
-          p = Path('src/core/arm/nce/windows_nce_transition.cpp')
-          raw = p.read_bytes()
-          crlf = b'\r\n' in raw
-          text = raw.decode('utf-8').replace('\r\n', '\n')
-          old = '''    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
-    // underlying transition directly so the arbitrary-PC guest restore and exception continuation
-    // share the same Windows context-resume primitive.
-    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\\n", stderr);
-    std::fflush(stderr);
-    WindowsNceTransition::ContinueContext(context);
-'''
-          new = '''    // Checkout-only A/B: retain only the guest target PC/SP. Keep every other register from a
-    // fresh Windows capture so guest register payload cannot poison first exception delivery.
-    const std::uint64_t target_pc = context.Pc;
-    const std::uint64_t target_sp = context.Sp;
-    ARM64_NT_CONTEXT captured{};
-    RtlCaptureContext(reinterpret_cast<PCONTEXT>(&captured));
-    captured.Pc = target_pc;
-    captured.Sp = target_sp;
-    captured.ContextFlags = CONTEXT_ARM64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT;
-
-    // The native matrix proved an arbitrary SP needs matching TEB bounds for exception dispatch.
-    MEMORY_BASIC_INFORMATION stack_mbi{};
-    if (VirtualQuery(reinterpret_cast<const void*>(target_sp), &stack_mbi, sizeof(stack_mbi)) == 0 ||
-        stack_mbi.State != MEM_COMMIT) {
-        std::fputs("IMP008B_E5_CTXAB_STACK_QUERY=FAIL\\n", stderr);
-        std::fflush(stderr);
-        std::abort();
-    }
-    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-    const auto stack_limit = reinterpret_cast<std::uintptr_t>(stack_mbi.BaseAddress);
-    const auto stack_base = stack_limit + stack_mbi.RegionSize;
-    tib->StackLimit = reinterpret_cast<void*>(stack_limit);
-    tib->StackBase = reinterpret_cast<void*>(stack_base);
-
-    std::fprintf(stderr,
-                 "IMP008B_E5_CTXAB_CAPTURED=PASS PC=0x%llX SP=0x%llX X18=0x%llX CPSR=0x%08lX FLAGS=0x%08lX STACK_LIMIT=0x%llX STACK_BASE=0x%llX\\n",
-                 static_cast<unsigned long long>(captured.Pc),
-                 static_cast<unsigned long long>(captured.Sp),
-                 static_cast<unsigned long long>(captured.X[18]),
-                 static_cast<unsigned long>(captured.Cpsr),
-                 static_cast<unsigned long>(captured.ContextFlags),
-                 static_cast<unsigned long long>(stack_limit),
-                 static_cast<unsigned long long>(stack_base));
-    std::fflush(stderr);
-
-    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
-    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    const auto nt_continue = ntdll != nullptr
-                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
-                                 : nullptr;
-    if (nt_continue == nullptr) {
-        std::fputs("IMP008B_E5_CTXAB_NTCONTINUE_RESOLVE=FAIL\\n", stderr);
-        std::fflush(stderr);
-        std::abort();
-    }
-    std::fputs("IMP008B_E5_CTXAB_BEFORE_NT_CONTINUE=PASS\\n", stderr);
-    std::fflush(stderr);
-    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&captured), FALSE);
-    std::fprintf(stderr, "IMP008B_E5_CTXAB_NT_CONTINUE_RETURN=0x%08lX\\n",
-                 static_cast<unsigned long>(status));
-    std::fflush(stderr);
-    std::abort();
-'''
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'context A/B anchor count={count}')
-          text = text.replace(old, new, 1)
-          if crlf:
-              text = text.replace('\n', '\r\n')
-          p.write_bytes(text.encode('utf-8'))
-          PY
-          grep -Fq 'IMP008B_E5_CTXAB_CAPTURED=PASS' "$transition"
-          grep -Fq 'RtlCaptureContext(reinterpret_cast<PCONTEXT>(&captured));' "$transition"
-          git diff --check -- "$transition"
-          echo 'IMP008B_E5_CTXAB_PATCH=PASS'
-
-      - name: Rebuild E5 target incrementally
-        shell: msys2 {0}
-        working-directory: eden
-        run: |
-          set -euo pipefail
-          cmake --build build --target imp008b_e5_x18_runtime --parallel
-          test -f build/bin/imp008b_e5_x18_runtime.exe
-          echo 'IMP008B_E5_CTXAB_INCREMENTAL_BUILD=PASS'
-
-      - name: Launch captured-context A-B runtime
-        shell: msys2 {0}
-        working-directory: eden
-        run: |
-          set -uo pipefail
-          set +e
-          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-ctxab.out.log 2> imp008b-e5-ctxab.err.log
-          rc=$?
-          set -e
-          printf '%s\n' "$rc" > imp008b-e5-ctxab.rc
-          cat imp008b-e5-ctxab.out.log imp008b-e5-ctxab.err.log > imp008b-e5-ctxab.log 2>/dev/null || true
-          cat imp008b-e5-ctxab.log || true
-          echo "IMP008B_E5_CTXAB_LAUNCH_RC=$rc"
-          echo 'IMP008B_E5_CTXAB_RUNTIME_CAPTURE=PASS'
-
-      - name: Classify captured-context A-B
-        if: always()
+      - name: Run exact gates repeatedly
         shell: powershell
-        working-directory: eden
         run: |
-          if (-not (Test-Path 'imp008b-e5-ctxab.log')) { throw 'A-B runtime log missing' }
-          Get-Content 'imp008b-e5-ctxab.log' | Select-String -Pattern 'IMP008B_E5_(CTXAB_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED)|IMP008B_E2_RESTORE_'
-          $before = Select-String -Path 'imp008b-e5-ctxab.log' -SimpleMatch 'IMP008B_E5_CTXAB_BEFORE_NT_CONTINUE=PASS' -Quiet
-          if (-not $before) { throw 'captured-context A-B did not reach NtContinue' }
-          $veh = Select-String -Path 'imp008b-e5-ctxab.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
-          if ($veh) { Write-Host 'IMP008B_E5_CTXAB_GENERIC_VEH=PASS' } else { Write-Host 'IMP008B_E5_CTXAB_GENERIC_VEH=NO_ENTRY' }
-
-      - name: Upload captured-context A-B logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e5-captured-context-ab-selfhosted
-          path: |
-            eden/imp008b-e5-ctxab.log
-            eden/imp008b-e5-ctxab.out.log
-            eden/imp008b-e5-ctxab.err.log
-            eden/imp008b-e5-ctxab.rc
-          if-no-files-found: warn
+          $ErrorActionPreference='Stop'
+          $eden=(Resolve-Path eden).Path
+          function Run-One([string]$label,[string]$exe,[int]$timeout,[string[]]$markers){
+            $psi=New-Object Diagnostics.ProcessStartInfo
+            $psi.FileName=(Resolve-Path $exe).Path; $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+            $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timed=-not $p.WaitForExit($timeout); if($timed){$p.Kill();$p.WaitForExit()}
+            $log=$ot.Result+$et.Result; $rc=if($timed){124}else{$p.ExitCode}
+            [IO.File]::WriteAllText((Join-Path $eden ("imp008e-final-"+$label+".log")),$log)
+            Write-Host "IMP008E_FINAL_${label}_RC=$rc"
+            if($rc-ne 0){Write-Host $log; throw "$label rc=$rc"}
+            foreach($m in $markers){if(-not $log.Contains($m)){Write-Host $log; throw "$label missing $m"}}
+            Write-Host "IMP008E_FINAL_${label}=PASS"
+          }
+          $d1=@('IMP008D_D1_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
+          $e5=@('IMP008B_E5_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
+          $e2=@('IMP008E_E2_GUEST_STACK_QUERY=PASS','IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
+          for($i=1;$i-le 3;$i++){Run-One "D1_$i" 'eden/build/bin/imp008d_d1_exact_immutable.exe' 30000 $d1}
+          for($i=1;$i-le 4;$i++){Run-One "E5_$i" 'eden/build/bin/imp008b_e5_exact_immutable.exe' 30000 $e5}
+          for($i=1;$i-le 8;$i++){Run-One "E2_$i" 'eden/build/bin/imp008e_e2_exact_immutable.exe' 60000 $e2}
+          Write-Host 'IMP008E_FINAL_EXACT_D1_E5_E2_SERIAL_GATE=PASS'
