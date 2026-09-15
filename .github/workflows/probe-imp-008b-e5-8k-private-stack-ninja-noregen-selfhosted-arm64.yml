@@ -39,6 +39,28 @@ jobs:
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) { throw 'x18 VEH observer missing' }
           Write-Host 'IMP008B_E5_DIRECT_RUNTIME_WORKSPACE=PASS'
 
+      - name: Normalize retained diagnostic TEB stack access
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          if ($text.Contains('teb->NtTib.StackLimit') -or $text.Contains('teb->NtTib.StackBase')) {
+            $text = [regex]::Replace($text, 'auto\s*\*\s*teb\s*=\s*NtCurrentTeb\(\);', 'auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());')
+            $text = $text.Replace('teb->NtTib.StackLimit', 'tib->StackLimit')
+            $text = $text.Replace('teb->NtTib.StackBase', 'tib->StackBase')
+            $utf8 = New-Object System.Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText((Resolve-Path $path), $text, $utf8)
+            Write-Host 'IMP008B_E5_TEB_NTTIB_NORMALIZED=PASS'
+          } elseif ($text.Contains('tib->StackLimit') -and $text.Contains('tib->StackBase')) {
+            Write-Host 'IMP008B_E5_TEB_NTTIB_ALREADY_NORMALIZED=PASS'
+          } else {
+            throw 'expected retained TEB stack diagnostic pattern not found'
+          }
+          $check = [IO.File]::ReadAllText((Resolve-Path $path))
+          if ($check.Contains('teb->NtTib.StackLimit') -or $check.Contains('teb->NtTib.StackBase')) { throw 'incomplete _TEB member access remains' }
+          if (-not $check.Contains('reinterpret_cast<NT_TIB*>(NtCurrentTeb())')) { throw 'NT_TIB diagnostic access missing' }
+
       - name: Set up direct-build CLANGARM64 toolchain
         uses: msys2/setup-msys2@v2
         with:
