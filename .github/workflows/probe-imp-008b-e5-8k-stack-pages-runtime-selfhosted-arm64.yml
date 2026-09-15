@@ -1,0 +1,233 @@
+name: Probe IMP-008B E5 8K Stack Pages Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-8k-stack-pages-runtime-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-8k-stack-pages-runtime
+  cancel-in-progress: false
+
+jobs:
+  e5-8k-stack-pages-runtime:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 35
+    steps:
+      - name: Verify retained E5 state
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          foreach ($p in @(
+            'eden/src/core/arm/nce/windows_nce_transition.cpp',
+            'eden/build/build.ninja',
+            'eden/build/CMakeFiles/rules.ninja',
+            'eden/build/src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj',
+            'eden/build/src/core/CMakeFiles/core.dir/arm/nce/arm_nce_windows.cpp.obj')) {
+            if (-not (Test-Path $p)) { throw "required retained file missing: $p" }
+          }
+          Write-Host 'IMP008B_E5_STACK_PAGES_RETAINED_STATE=PASS'
+
+      - name: Patch checkout-only stack validation to allocation pages
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          if ($text.Contains('IMP008B_E5_8K_STACK_PAGES=PASS')) {
+            Write-Host 'IMP008B_E5_STACK_PAGES_PATCH_ALREADY=PASS'
+            exit 0
+          }
+          $pattern = '(?s)    MEMORY_BASIC_INFORMATION stack_mbi\{\};.*?    auto\* const teb = NtCurrentTeb\(\);'
+          $matches = [regex]::Matches($text, $pattern)
+          if ($matches.Count -ne 1) { throw "stack validation block count=$($matches.Count)" }
+          $replacement = @'
+    MEMORY_BASIC_INFORMATION stack_mbi{};
+    if (VirtualQuery(reinterpret_cast<const void*>(context.Sp), &stack_mbi, sizeof(stack_mbi)) == 0 ||
+        stack_mbi.State != MEM_COMMIT || stack_mbi.Type != MEM_PRIVATE ||
+        stack_mbi.AllocationBase == nullptr) {
+        std::fprintf(stderr,
+                     "IMP008B_E5_8K_STACK_QUERY=FAIL STATE=0x%lX TYPE=0x%lX SIZE=0x%llX\n",
+                     static_cast<unsigned long>(stack_mbi.State),
+                     static_cast<unsigned long>(stack_mbi.Type),
+                     static_cast<unsigned long long>(stack_mbi.RegionSize));
+        std::fflush(stderr);
+        std::abort();
+    }
+
+    constexpr std::uint64_t GuestStackBytes = 0x2000;
+    const auto stack_limit = reinterpret_cast<std::uint64_t>(stack_mbi.AllocationBase);
+    const auto stack_base = stack_limit + GuestStackBytes;
+    MEMORY_BASIC_INFORMATION stack_page0{};
+    MEMORY_BASIC_INFORMATION stack_page1{};
+    if (VirtualQuery(reinterpret_cast<const void*>(stack_limit), &stack_page0, sizeof(stack_page0)) == 0 ||
+        VirtualQuery(reinterpret_cast<const void*>(stack_limit + 0x1000), &stack_page1,
+                     sizeof(stack_page1)) == 0 ||
+        stack_page0.State != MEM_COMMIT || stack_page1.State != MEM_COMMIT ||
+        stack_page0.Type != MEM_PRIVATE || stack_page1.Type != MEM_PRIVATE ||
+        stack_page0.AllocationBase != stack_mbi.AllocationBase ||
+        stack_page1.AllocationBase != stack_mbi.AllocationBase) {
+        std::fprintf(stderr,
+                     "IMP008B_E5_8K_STACK_PAGES=FAIL P0_STATE=0x%lX P0_TYPE=0x%lX "
+                     "P1_STATE=0x%lX P1_TYPE=0x%lX\n",
+                     static_cast<unsigned long>(stack_page0.State),
+                     static_cast<unsigned long>(stack_page0.Type),
+                     static_cast<unsigned long>(stack_page1.State),
+                     static_cast<unsigned long>(stack_page1.Type));
+        std::fflush(stderr);
+        std::abort();
+    }
+    if (context.Sp < stack_limit || context.Sp >= stack_base) {
+        std::fputs("IMP008B_E5_8K_STACK_RANGE=FAIL\n", stderr);
+        std::fflush(stderr);
+        std::abort();
+    }
+    std::fprintf(stderr,
+                 "IMP008B_E5_8K_STACK_PAGES=PASS LIMIT=0x%llX BASE=0x%llX "
+                 "P0_SIZE=0x%llX P1_SIZE=0x%llX TYPE=0x%lX\n",
+                 static_cast<unsigned long long>(stack_limit),
+                 static_cast<unsigned long long>(stack_base),
+                 static_cast<unsigned long long>(stack_page0.RegionSize),
+                 static_cast<unsigned long long>(stack_page1.RegionSize),
+                 static_cast<unsigned long>(stack_page1.Type));
+    std::fflush(stderr);
+
+    auto* const teb = NtCurrentTeb();
+'@
+          $newText = [regex]::Replace($text, $pattern, $replacement, 1)
+          if (-not $newText.Contains('IMP008B_E5_8K_STACK_PAGES=PASS')) { throw 'stack pages patch marker missing' }
+          if (-not $newText.Contains('reinterpret_cast<NT_TIB*>(teb)->StackLimit')) { throw 'TEB StackLimit publication lost' }
+          if (-not $newText.Contains('reinterpret_cast<NT_TIB*>(teb)->StackBase')) { throw 'TEB StackBase publication lost' }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText((Resolve-Path $path), $newText, $utf8)
+          Write-Host 'IMP008B_E5_STACK_PAGES_PATCH=PASS'
+
+      - name: Set up minimal CLANGARM64 link toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          cache: false
+          install: >-
+            ninja
+          pacboy: >-
+            clang:p lld:p sccache:p libusb:p zlib:p enet:p boost:p fmt:p lz4:p
+            zstd:p opus:p libiconv:p
+
+      - name: Extract commands read-only
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          b0=$(sha256sum build/build.ninja | awk '{print $1}')
+          r0=$(sha256sum build/CMakeFiles/rules.ninja | awk '{print $1}')
+          ninja -C build -t commands imp008b_e5_x18_runtime > imp008b-e5-pages-commands.txt
+          b1=$(sha256sum build/build.ninja | awk '{print $1}')
+          r1=$(sha256sum build/CMakeFiles/rules.ninja | awk '{print $1}')
+          test "$b0" = "$b1"
+          test "$r0" = "$r1"
+          echo 'IMP008B_E5_STACK_PAGES_GRAPH_UNCHANGED=PASS'
+
+      - name: Compile transition and refresh fmt ABI objects
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-pages-commands.txt')
+          function One([string]$pattern, [string]$label) {
+            $hits = @($lines | Where-Object { $_ -match $pattern })
+            if ($hits.Count -ne 1) { throw "$label command count=$($hits.Count)" }
+            return [string]$hits[0]
+          }
+          function Run([string]$label, [string]$line) {
+            if ($line -match 'RERUN_CMAKE|regenerate-during-build') { throw "$label contains regeneration" }
+            $cmd = [regex]::Replace($line, "'(C:/[^']+)'", '$1')
+            & $env:ComSpec /D /S /C $cmd
+            $rc = $LASTEXITCODE
+            Write-Host "IMP008B_E5_PAGES_${label}_RC=$rc"
+            if ($rc -ne 0) { throw "$label failed rc=$rc" }
+          }
+          Run 'TRANSITION' (One " -c '?C:/[^']*windows_nce_transition\.cpp'?$" 'TRANSITION')
+          Run 'SERVICE' (One " -c '?C:/[^']*/src/core/hle/service/service\.cpp'?$" 'SERVICE')
+          Run 'NIFM' (One " -c '?C:/[^']*/src/core/hle/service/nifm/nifm\.cpp'?$" 'NIFM')
+          Run 'CONDITION' (One " -c '?C:/[^']*/src/shader_recompiler/frontend/ir/condition\.cpp'?$" 'CONDITION')
+          Write-Host 'IMP008B_E5_STACK_PAGES_COMPILE=PASS'
+
+      - name: Direct link E5
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-pages-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "link command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-pages-link.log'
+          $rc = $LASTEXITCODE
+          Write-Host "IMP008B_E5_STACK_PAGES_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "link failed rc=$rc" }
+          Write-Host 'IMP008B_E5_STACK_PAGES_LINK=PASS'
+
+      - name: Launch E5 private stack A-B
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -uo pipefail
+          set +e
+          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-pages.out.log 2> imp008b-e5-pages.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-pages.rc
+          cat imp008b-e5-pages.out.log imp008b-e5-pages.err.log > imp008b-e5-pages.log 2>/dev/null || true
+          cat imp008b-e5-pages.log || true
+          echo "IMP008B_E5_STACK_PAGES_RUNTIME_RC=$rc"
+
+      - name: Classify runtime
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'imp008b-e5-pages.log')) {
+            Write-Host 'IMP008B_E5_STACK_PAGES_RUNTIME=NOT_REACHED'
+            exit 0
+          }
+          Get-Content 'imp008b-e5-pages.log' | Select-String -Pattern 'IMP008B_E5_(8K_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
+          foreach ($pair in @(
+            @('PAGES','IMP008B_E5_8K_STACK_PAGES=PASS'),
+            @('READY','IMP008B_E5_8K_STACK_READY=PASS'),
+            @('BEFORE_NT','IMP008B_E2_BEFORE_NT_CONTINUE=PASS'),
+            @('GENERIC_VEH','IMP008B_E5_GENERIC_VEH_ENTER=PASS'),
+            @('X18_VEH','IMP008B_E5_X18_VEH_ENTER=PASS'),
+            @('RETURNED','IMP008B_E5_RUNTHREAD_RETURNED=PASS'),
+            @('SVC55','IMP008B_E5_SVC_NUMBER_RAW=0x00000055'),
+            @('X18_RESULT','IMP008B_E5_GUEST_X18_EXECUTED=PASS'),
+            @('GATE','IMP008B_E5_GATE=PASS'))) {
+            $ok = Select-String -Path 'imp008b-e5-pages.log' -SimpleMatch $pair[1] -Quiet
+            Write-Host ("IMP008B_E5_STACK_PAGES_{0}={1}" -f $pair[0], $(if ($ok) {'PASS'} else {'NO'}))
+          }
+          $generic = Select-String -Path 'imp008b-e5-pages.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          Write-Host ('IMP008B_E5_STACK_VAD_BOUNDARY=' + $(if ($generic) {'CONFIRMED'} else {'NOT_CONFIRMED'}))
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-8k-stack-pages-runtime
+          path: |
+            eden/imp008b-e5-pages-commands.txt
+            eden/imp008b-e5-pages-link.log
+            eden/imp008b-e5-pages.log
+            eden/imp008b-e5-pages.out.log
+            eden/imp008b-e5-pages.err.log
+            eden/imp008b-e5-pages.rc
+          if-no-files-found: warn
