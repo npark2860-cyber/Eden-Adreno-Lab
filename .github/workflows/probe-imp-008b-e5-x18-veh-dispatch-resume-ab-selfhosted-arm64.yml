@@ -1,0 +1,198 @@
+name: Probe IMP-008B E5 X18 VEH Dispatcher Resume A/B
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-x18-veh-dispatch-resume-ab-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-x18-veh-dispatch-resume-ab
+  cancel-in-progress: false
+
+jobs:
+  e5-x18-veh-dispatch-resume-ab:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify retained state and V3 diagnostics
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $armPath='eden/src/core/arm/nce/arm_nce_windows.cpp'
+          $transitionPath='eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $probePath='eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          foreach ($path in @($armPath,$transitionPath,$probePath)) {
+            if (-not (Test-Path $path)) { throw "missing retained source $path" }
+          }
+          $transition=[IO.File]::ReadAllText((Resolve-Path $transitionPath))
+          $probe=[IO.File]::ReadAllText((Resolve-Path $probePath))
+          if (-not $transition.Contains('Imp008bE5CaptureFullContext(context);')) { throw 'V3 non-CRT capture is not retained' }
+          if (-not $probe.Contains('IMP008B_E5_FULLCTX_SAFE_DUMP_CALL_V3')) { throw 'V3 safe dump is not retained' }
+          Remove-Item 'eden/imp008b-e5-x18-dispatch.log','eden/imp008b-e5-x18-dispatch.out.log','eden/imp008b-e5-x18-dispatch.err.log','eden/imp008b-e5-x18-dispatch.rc','eden/imp008b-e5-x18-dispatch-link.log','eden/imp008b-e5-x18-dispatch-commands.txt','eden/imp008b-e5-x18-dispatch-before.txt','eden/imp008b-e5-x18-dispatch-after.txt' -Force -ErrorAction SilentlyContinue
+          Write-Host ('IMP008B_E5_X18_DISPATCH_RETAINED_HEAD=' + $head)
+          Write-Host ('IMP008B_E5_X18_DISPATCH_DIRTY_ENTRIES=' + @((git -C eden status --short)).Count)
+          Write-Host 'IMP008B_E5_X18_DISPATCH_RETAINED_STATE=PASS'
+
+      - name: Replace only nested x18 VEH ContinueContext
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $path=(Resolve-Path 'eden/src/core/arm/nce/arm_nce_windows.cpp').Path
+          $text=[IO.File]::ReadAllText($path)
+
+          $breakStart=$text.IndexOf('if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT')
+          $avStart=$text.IndexOf('if (NCE::WindowsExceptionContext::IsAccessViolation', $breakStart + 1)
+          if ($breakStart -lt 0 -or $avStart -le $breakStart) { throw 'x18/AV branch boundaries not found' }
+          $block=$text.Substring($breakStart,$avStart-$breakStart)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'eden/imp008b-e5-x18-dispatch-before.txt'),$block)
+
+          if (-not $block.Contains('NCE::WindowsX18FallbackTrap::TryRedirect')) { throw 'x18 TryRedirect missing from breakpoint block' }
+          $needle='NCE::WindowsNceTransition::ContinueContext(context);'
+          $count=([regex]::Matches($block,[regex]::Escape($needle))).Count
+          if ($count -ne 1) { throw "x18 nested ContinueContext count=$count" }
+          if ($block.Contains('IMP008B_E5_X18_VEH_DISPATCH_RESUME_AB')) { throw 'x18 dispatch A/B already applied' }
+
+          $replacement="// IMP008B_E5_X18_VEH_DISPATCH_RESUME_AB`r`n            return EXCEPTION_CONTINUE_EXECUTION;"
+          $newBlock=$block.Replace($needle,$replacement)
+          if (([regex]::Matches($newBlock,'IMP008B_E5_X18_VEH_DISPATCH_RESUME_AB')).Count -ne 1) { throw 'A/B marker count mismatch' }
+          if ($newBlock.Contains($needle)) { throw 'nested ContinueContext still present in x18 block' }
+          $text=$text.Substring(0,$breakStart)+$newBlock+$text.Substring($avStart)
+          $utf8=New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText($path,$text,$utf8)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'eden/imp008b-e5-x18-dispatch-after.txt'),$newBlock,$utf8)
+
+          $verify=[IO.File]::ReadAllText($path)
+          $markerCount=([regex]::Matches($verify,'IMP008B_E5_X18_VEH_DISPATCH_RESUME_AB')).Count
+          if ($markerCount -ne 1) { throw "global A/B marker count=$markerCount" }
+          Write-Host 'IMP008B_E5_X18_DISPATCH_PATCH=PASS'
+          Write-Host 'IMP008B_E5_X18_DISPATCH_VARIABLE=nested_ContinueContext_to_dispatcher_EXCP_CONTINUE_EXECUTION'
+
+      - name: Extract direct commands read-only
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference='Stop'
+          $commands=& 'C:\msys64\usr\bin\ninja.exe' -C build -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+          [IO.File]::WriteAllLines((Join-Path (Get-Location) 'imp008b-e5-x18-dispatch-commands.txt'),[string[]]$commands)
+          Write-Host 'IMP008B_E5_X18_DISPATCH_COMMANDS=PASS'
+
+      - name: Compile arm_nce_windows object only
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference='Stop'
+          $lines=@(Get-Content '../imp008b-e5-x18-dispatch-commands.txt')
+          $hits=@($lines | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$" })
+          if ($hits.Count -ne 1) { throw "arm_nce_windows command count=$($hits.Count)" }
+          $cmd=[string]$hits[0]
+          $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd=$cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          $cmd=$cmd.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+          $cmd=$cmd.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+          $cmd=[regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+          & $env:ComSpec /D /S /C $cmd
+          $rc=$LASTEXITCODE
+          Write-Host "IMP008B_E5_X18_DISPATCH_COMPILE_RC=$rc"
+          if ($rc -ne 0) { throw "arm_nce_windows compile failed rc=$rc" }
+
+      - name: Link E5 runtime
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference='Stop'
+          $lines=@(Get-Content '../imp008b-e5-x18-dispatch-commands.txt')
+          $hits=@($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "link command count=$($hits.Count)" }
+          $cmd=[string]$hits[0]
+          $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd=$cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-x18-dispatch-link.log'
+          $rc=$LASTEXITCODE
+          Write-Host "IMP008B_E5_X18_DISPATCH_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "link failed rc=$rc" }
+
+      - name: Run E5 A/B exactly once
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference='Stop'
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'build/bin/imp008b_e5_x18_runtime.exe').Path
+          $psi.WorkingDirectory=(Get-Location).Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process
+          $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-x18-dispatch.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-x18-dispatch.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-x18-dispatch.log'),$out+$err)
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-x18-dispatch.rc'),[string]$rc)
+          Write-Host $out
+          Write-Host $err
+          Write-Host ('IMP008B_E5_X18_DISPATCH_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify A/B result
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-x18-dispatch.log')) { Write-Host 'IMP008B_E5_X18_DISPATCH_RUNTIME=NOT_REACHED'; exit 0 }
+          $text=Get-Content 'imp008b-e5-x18-dispatch.log' -Raw
+          foreach ($marker in @(
+            'IMP008B_E5_RUNTHREAD_RETURNED=PASS',
+            'IMP008B_E5_HALT_REASON',
+            'IMP008B_E5_SVC_NUMBER',
+            'IMP008B_E5_RETURN_CONTEXT',
+            'IMP008B_E5_EXCEPTION_CODE',
+            'IMP008B_E5_EXCEPTION_ADDRESS',
+            'IMP008B_E5_EXCEPTION_PC',
+            'IMP008B_E2_RESTORE_CONTEXT',
+            'IMP008B_E2_BEFORE_NT_CONTINUE',
+            'IMP008B_E5_FULLCTX_SAFE_DUMP_BEGIN')) {
+            Get-Content 'imp008b-e5-x18-dispatch.log' | Select-String -SimpleMatch $marker
+          }
+          $restoreCount=([regex]::Matches($text,'IMP008B_E2_RESTORE_CONTEXT PC=')).Count
+          $beforeCount=([regex]::Matches($text,'IMP008B_E2_BEFORE_NT_CONTINUE=PASS')).Count
+          Write-Host ('IMP008B_E5_X18_DISPATCH_RESTORE_COUNT=' + $restoreCount)
+          Write-Host ('IMP008B_E5_X18_DISPATCH_BEFORE_NT_COUNT=' + $beforeCount)
+          if ($text.Contains('IMP008B_E5_RUNTHREAD_RETURNED=PASS') -and $text.Contains('IMP008B_E5_SVC_NUMBER=PASS')) {
+            Write-Host 'IMP008B_E5_X18_DISPATCH_AB=POSITIVE_ROOT_CAUSE_CANDIDATE'
+          } elseif ($text.Contains('IMP008B_E5_EXCEPTION_CODE=0xC0000005')) {
+            Write-Host 'IMP008B_E5_X18_DISPATCH_AB=NO_FIX_AV_REMAINS'
+          } else {
+            Write-Host 'IMP008B_E5_X18_DISPATCH_AB=BEHAVIOR_CHANGED_REVIEW_REQUIRED'
+          }
+          if (Test-Path 'imp008b-e5-x18-dispatch.rc') { Write-Host ('IMP008B_E5_X18_DISPATCH_RAW_RC=' + (Get-Content 'imp008b-e5-x18-dispatch.rc' -Raw).Trim()) }
+
+      - name: Upload x18 dispatcher A/B diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-x18-veh-dispatch-resume-ab
+          path: |
+            eden/imp008b-e5-x18-dispatch-before.txt
+            eden/imp008b-e5-x18-dispatch-after.txt
+            eden/imp008b-e5-x18-dispatch-commands.txt
+            eden/imp008b-e5-x18-dispatch-link.log
+            eden/imp008b-e5-x18-dispatch.log
+            eden/imp008b-e5-x18-dispatch.out.log
+            eden/imp008b-e5-x18-dispatch.err.log
+            eden/imp008b-e5-x18-dispatch.rc
+          if-no-files-found: warn
