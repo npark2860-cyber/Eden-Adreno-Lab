@@ -1,0 +1,120 @@
+name: Probe IMP-008E E2 No Data Fault Control V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-no-data-fault-control-v1-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-no-data-fault-control-v1
+  cancel-in-progress: false
+
+jobs:
+  e2-no-data-fault-control-v1:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Build E2 clean-control probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'generic transition object missing' }
+
+          $src=(Resolve-Path 'eden/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp').Path
+          $dir='eden/build/e2_no_data_fault_control'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dst=Join-Path (Resolve-Path $dir).Path 'rasterizer_cached_retry_no_fault.cpp'
+          $text=[IO.File]::ReadAllText($src)
+          $old='constexpr u32 GuestLdrX3X2 = 0xF9400043U;'
+          if (([regex]::Matches($text,[regex]::Escape($old))).Count -ne 1) { throw 'guest LDR constant anchor mismatch' }
+          $new='constexpr u32 GuestLdrX3X2 = 0xD503201FU; // NOP: IMP008E_E2_NO_DATA_FAULT_CONTROL'
+          $text=$text.Replace($old,$new)
+          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja rc=$LASTEXITCODE" }
+            $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($hits.Count -ne 1) { throw "E5 compile count=$($hits.Count)" }
+            $compile=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='e2_no_data_fault_control/rasterizer_cached_retry_no_fault.cpp.obj'
+            $compile=$compile.Replace($oldObj,$newObj)
+            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF e2_no_data_fault_control\rasterizer_cached_retry_no_fault.cpp.obj.d')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/e2_no_data_fault_control/rasterizer_cached_retry_no_fault.cpp')
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "clean-control compile rc=$LASTEXITCODE" }
+
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj)
+            $link=$link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_no_data_fault_control_v1.exe')
+            $link=$link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_no_data_fault_control_v1.a')
+            $link=$link.Replace('src/core/libcore.a','generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008e-e2-no-data-fault-control-v1-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "clean-control link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_NO_DATA_FAULT_CONTROL_BUILD=PASS'
+
+      - name: Run E2 clean control exactly once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $edenPath=(Resolve-Path 'eden').Path
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_no_data_fault_control_v1.exe').Path
+          $psi.WorkingDirectory=$edenPath
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(300000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-no-data-fault-control-v1.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-no-data-fault-control-v1.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-no-data-fault-control-v1.log'),$out+$err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-no-data-fault-control-v1.rc'),[string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008E_E2_NO_DATA_FAULT_CONTROL_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify clean control
+        shell: powershell
+        run: |
+          $log=Get-Content 'eden/imp008e-e2-no-data-fault-control-v1.log' -Raw
+          Get-Content 'eden/imp008e-e2-no-data-fault-control-v1.log' | Select-String -Pattern 'IMP008B_GENERIC_STACK_TOP|IMP008E_E2_(PRE_RUNTHREAD|RUNTHREAD_RETURNED|DATA_AV_EXACT|PRODUCTION_RETRY_STATE|SUPERVISOR_CALL_RETURN|SVC_NUMBER|FAIL)'
+          if ($log.Contains('IMP008E_E2_RUNTHREAD_RETURNED=PASS')) {
+            Write-Host 'IMP008E_E2_NO_DATA_FAULT_CONTROL_RUNTHREAD=PASS'
+          } else {
+            Write-Host 'IMP008E_E2_NO_DATA_FAULT_CONTROL_RUNTHREAD=FAIL'
+          }
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-no-data-fault-control-v1
+          path: |
+            eden/imp008e-e2-no-data-fault-control-v1-link.log
+            eden/imp008e-e2-no-data-fault-control-v1.log
+            eden/imp008e-e2-no-data-fault-control-v1.out.log
+            eden/imp008e-e2-no-data-fault-control-v1.err.log
+            eden/imp008e-e2-no-data-fault-control-v1.rc
+          if-no-files-found: warn
