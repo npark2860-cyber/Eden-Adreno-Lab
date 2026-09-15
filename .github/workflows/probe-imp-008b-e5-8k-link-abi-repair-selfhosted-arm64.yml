@@ -27,21 +27,18 @@ jobs:
           if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
           $head = (git -C eden rev-parse HEAD).Trim()
           if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
-
           $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
           $armnce = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
           $breakHeader = 'eden/src/core/arm/nce/windows_cross_thread_break.h'
           foreach ($p in @($transition,$armnce,$breakHeader)) {
             if (-not (Test-Path $p)) { throw "retained source missing: $p" }
           }
-
           $t = [IO.File]::ReadAllText((Resolve-Path $transition))
           $a = [IO.File]::ReadAllText((Resolve-Path $armnce))
           if (-not $t.Contains('IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS')) { throw 'late TEB/direct NtContinue staging missing' }
           if (-not $a.Contains('IMP008B_E5_GENERIC_CRT_FREE_AB')) { throw 'generic VEH CRT-free state missing' }
           if (-not $a.Contains('IMP008B_E5_X18_CRT_FREE_AB')) { throw 'x18 VEH CRT-free state missing' }
           if (-not $a.Contains('return EXCEPTION_CONTINUE_EXECUTION;')) { throw 'continue-execution x18 return missing' }
-
           $clang = 'C:\msys64\clangarm64\bin\clang++.exe'
           $ninja = 'C:\msys64\usr\bin\ninja.exe'
           if (-not (Test-Path $clang)) { throw "local clang++ missing: $clang" }
@@ -49,7 +46,6 @@ jobs:
           & $clang --version | Select-Object -First 1
           & $ninja --version
           Write-Host 'IMP008B_E5_LOCAL_TOOLCHAIN=PASS'
-
           Remove-Item 'eden/imp008b-e5-hostteb.log','eden/imp008b-e5-hostteb.out.log','eden/imp008b-e5-hostteb.err.log','eden/imp008b-e5-hostteb.rc' -Force -ErrorAction SilentlyContinue
           Write-Host 'IMP008B_E5_HOST_TEB_RETAINED_STATE=PASS'
 
@@ -60,62 +56,48 @@ jobs:
           $headerPath = 'eden/src/core/arm/nce/windows_cross_thread_break.h'
           $armPath = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
           $utf8 = New-Object System.Text.UTF8Encoding($false)
-
           $header = [IO.File]::ReadAllText((Resolve-Path $headerPath))
           if (-not $header.Contains('IMP008B_E5_HOST_STACK_ACCESSORS_AB')) {
-            $anchor = @"
-    [[nodiscard]] bool IsBound() const noexcept {
-        return m_thread != nullptr;
-    }
-"@
-            if (-not $header.Contains($anchor)) {
-              $anchor = $anchor.Replace("`n", "`r`n")
-            }
-            if (-not $header.Contains($anchor)) { throw 'IsBound accessor anchor missing' }
-            $replacement = @"
-    // IMP008B_E5_HOST_STACK_ACCESSORS_AB: expose the host bounds captured before guest entry.
-    [[nodiscard]] std::uintptr_t HostStackLow() const noexcept {
-        return m_host_stack_low;
-    }
-
-    [[nodiscard]] std::uintptr_t HostStackHigh() const noexcept {
-        return m_host_stack_high;
-    }
-
-    [[nodiscard]] bool IsBound() const noexcept {
-        return m_thread != nullptr;
-    }
-"@
-            if ($anchor.Contains("`r`n")) { $replacement = $replacement.Replace("`n", "`r`n") }
-            $header = $header.Replace($anchor, $replacement)
+            $needle = '    [[nodiscard]] bool IsBound() const noexcept {'
+            if (-not $header.Contains($needle)) { throw 'IsBound accessor anchor missing' }
+            $insert = @(
+              '    // IMP008B_E5_HOST_STACK_ACCESSORS_AB: expose host bounds captured before guest entry.',
+              '    [[nodiscard]] std::uintptr_t HostStackLow() const noexcept {',
+              '        return m_host_stack_low;',
+              '    }',
+              '',
+              '    [[nodiscard]] std::uintptr_t HostStackHigh() const noexcept {',
+              '        return m_host_stack_high;',
+              '    }',
+              '',
+              '    [[nodiscard]] bool IsBound() const noexcept {'
+            ) -join "`n"
+            $header = $header.Replace($needle, $insert)
             [IO.File]::WriteAllText((Resolve-Path $headerPath), $header, $utf8)
           }
-
           $arm = [IO.File]::ReadAllText((Resolve-Path $armPath))
           if (-not $arm.Contains('IMP008B_E5_HOST_TEB_BOUNDS_AB')) {
             $pattern = '(?s)        if \(imp008b_e5_redirected\) \{\r?\n            return EXCEPTION_CONTINUE_EXECUTION;\r?\n        \}'
             $matches = [regex]::Matches($arm, $pattern)
             if ($matches.Count -ne 1) { throw "x18 continue-execution anchor count=$($matches.Count)" }
-            $replacement = @"
-        if (imp008b_e5_redirected) {
-            // IMP008B_E5_HOST_TEB_BOUNDS_AB: RedirectToHost changed the target CONTEXT back to
-            // the saved host SP/PC. Restore the TEB bounds to the host stack before asking the
-            // Windows exception dispatcher to continue with that host context.
-            auto* const teb = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-            teb->StackLimit =
-                reinterpret_cast<PVOID>(nce->m_windows_break->HostStackLow());
-            teb->StackBase =
-                reinterpret_cast<PVOID>(nce->m_windows_break->HostStackHigh());
-            return EXCEPTION_CONTINUE_EXECUTION;
-        }
-"@
-            $arm = [regex]::Replace($arm, $pattern, $replacement.TrimEnd("`r","`n"), 1)
+            $replacement = @(
+              '        if (imp008b_e5_redirected) {',
+              '            // IMP008B_E5_HOST_TEB_BOUNDS_AB: context now targets the saved host SP/PC.',
+              '            // Match TEB stack bounds to that host context before dispatcher continuation.',
+              '            auto* const teb = reinterpret_cast<NT_TIB*>(NtCurrentTeb());',
+              '            teb->StackLimit =',
+              '                reinterpret_cast<PVOID>(nce->m_windows_break->HostStackLow());',
+              '            teb->StackBase =',
+              '                reinterpret_cast<PVOID>(nce->m_windows_break->HostStackHigh());',
+              '            return EXCEPTION_CONTINUE_EXECUTION;',
+              '        }'
+            ) -join "`n"
+            $arm = [regex]::Replace($arm, $pattern, $replacement, 1)
             [IO.File]::WriteAllText((Resolve-Path $armPath), $arm, $utf8)
           }
-
           $headerCheck = [IO.File]::ReadAllText((Resolve-Path $headerPath))
           $armCheck = [IO.File]::ReadAllText((Resolve-Path $armPath))
-          if (-not $headerCheck.Contains('IMP008B_E5_HOST_STACK_ACCESSORS_AB')) { throw 'host stack accessors patch missing' }
+          if (-not $headerCheck.Contains('IMP008B_E5_HOST_STACK_ACCESSORS_AB')) { throw 'host stack accessor patch missing' }
           if (-not $headerCheck.Contains('HostStackLow()') -or -not $headerCheck.Contains('HostStackHigh()')) { throw 'host stack accessors missing' }
           if (-not $armCheck.Contains('IMP008B_E5_HOST_TEB_BOUNDS_AB')) { throw 'host TEB restore patch missing' }
           if (-not $armCheck.Contains('teb->StackLimit') -or -not $armCheck.Contains('teb->StackBase')) { throw 'TEB bound stores missing' }
@@ -137,7 +119,6 @@ jobs:
               $sha.Dispose()
             }
           }
-
           $beforeBuild = Get-Sha256 'build/build.ninja'
           $beforeRules = Get-Sha256 'build/CMakeFiles/rules.ninja'
           $ninja = 'C:\msys64\usr\bin\ninja.exe'
@@ -155,13 +136,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $lines = @(Get-Content '../imp008b-e5-hostteb-commands.txt')
-
           function Get-One([string]$pattern, [string]$label) {
             $hits = @($lines | Where-Object { $_ -match $pattern })
             if ($hits.Count -ne 1) { throw "$label command count=$($hits.Count)" }
             return [string]$hits[0]
           }
-
           function Normalize-Local([string]$line) {
             $cmd = $line.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
             $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
@@ -169,7 +148,6 @@ jobs:
             $cmd = [regex]::Replace($cmd, "'(C:/[^']+)'", '$1')
             return $cmd
           }
-
           function Invoke-Direct([string]$label, [string]$line) {
             if ($line -match 'RERUN_CMAKE|regenerate-during-build') { throw "$label unexpectedly contains regeneration" }
             $cmd = Normalize-Local $line
@@ -178,7 +156,6 @@ jobs:
             Write-Host "IMP008B_E5_HOST_TEB_${label}_RC=$rc"
             if ($rc -ne 0) { throw "$label compile failed rc=$rc" }
           }
-
           Invoke-Direct 'ARMNCE' (Get-One " -c '?C:/[^']*/src/core/arm/nce/arm_nce_windows\.cpp'?$" 'ARMNCE')
           Invoke-Direct 'TRANSITION' (Get-One " -c '?C:/[^']*windows_nce_transition\.cpp'?$" 'TRANSITION')
           Invoke-Direct 'SERVICE' (Get-One " -c '?C:/[^']*/src/core/hle/service/service\.cpp'?$" 'SERVICE')
@@ -211,7 +188,6 @@ jobs:
           $exe = (Resolve-Path 'build/bin/imp008b_e5_x18_runtime.exe').Path
           $outPath = Join-Path (Get-Location) 'imp008b-e5-hostteb.out.log'
           $errPath = Join-Path (Get-Location) 'imp008b-e5-hostteb.err.log'
-
           $psi = New-Object System.Diagnostics.ProcessStartInfo
           $psi.FileName = $exe
           $psi.WorkingDirectory = (Get-Location).Path
@@ -233,7 +209,6 @@ jobs:
           [IO.File]::WriteAllText($outPath, $stdout)
           [IO.File]::WriteAllText($errPath, $stderr)
           [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-hostteb.log'), $stdout + $stderr)
-
           if ($timedOut) { $rc = 124 } else { $rc = $process.ExitCode }
           [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-hostteb.rc'), [string]$rc)
           Write-Host $stdout
