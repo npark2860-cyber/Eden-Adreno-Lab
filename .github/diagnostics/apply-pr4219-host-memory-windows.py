@@ -41,8 +41,8 @@ replace_once(
 
 replacements = [
     (
-        "MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);",
-        "MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_NOCORE, -1, 0);",
+        """        void* map_pointer =\n            mmap(reinterpret_cast<void*>(hint_address), virtual_size, PROT_READ | PROT_WRITE,\n                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);\n""",
+        """        void* map_pointer =\n            mmap(reinterpret_cast<void*>(hint_address), virtual_size, PROT_READ | PROT_WRITE,\n                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_NOCORE, -1, 0);\n""",
         "arm64 ChooseVirtualBase MAP_NOCORE",
     ),
     (
