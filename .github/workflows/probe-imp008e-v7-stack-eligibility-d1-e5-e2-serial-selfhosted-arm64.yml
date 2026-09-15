@@ -2,6 +2,11 @@ name: Probe IMP-008E V7 Stack Eligibility D1 E5 E2 Serial
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-v7-stack-eligibility-run
+    paths:
+      - .github/workflows/probe-imp008e-v7-stack-eligibility-d1-e5-e2-serial-selfhosted-arm64.yml
 
 permissions:
   contents: read
