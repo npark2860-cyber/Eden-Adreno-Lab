@@ -31,7 +31,15 @@ jobs:
           $abExe='eden/build/bin/imp008e_prod_av_dispatcher_e2.exe'
           $finalExe='eden/build/bin/imp008e_e2_final_production.exe'
           foreach($p in @($abSrc,$finalSrc,$abObj,$finalObj,$abExe,$finalExe)){if(-not(Test-Path $p)){throw "missing retained file: $p"}}
-          foreach($p in @($abSrc,$finalSrc,$abObj,$finalObj,$abExe,$finalExe)){$h=(Get-FileHash -Algorithm SHA256 $p).Hash; Write-Host "IMP008E_HASH PATH=$p SHA256=$h"}
+          function Get-Sha256([string]$path){
+            $sha=[Security.Cryptography.SHA256]::Create()
+            try {
+              $stream=[IO.File]::OpenRead((Resolve-Path $path).Path)
+              try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','') }
+              finally { $stream.Dispose() }
+            } finally { $sha.Dispose() }
+          }
+          foreach($p in @($abSrc,$finalSrc,$abObj,$finalObj,$abExe,$finalExe)){$h=Get-Sha256 $p; Write-Host "IMP008E_HASH PATH=$p SHA256=$h"}
           $abText=[IO.File]::ReadAllText((Resolve-Path $abSrc).Path).Replace("`r`n","`n")
           $finalText=[IO.File]::ReadAllText((Resolve-Path $finalSrc).Path).Replace("`r`n","`n")
           Write-Host ("IMP008E_SOURCE_IDENTICAL=" + ($abText -ceq $finalText))
