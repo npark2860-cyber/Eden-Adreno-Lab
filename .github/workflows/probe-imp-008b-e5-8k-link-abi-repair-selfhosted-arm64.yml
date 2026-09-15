@@ -32,6 +32,7 @@ jobs:
           if (-not $check.Contains('IMP008B_E5_8K_STACK_READY=PASS')) { throw '8K transition marker missing' }
           if (-not $check.Contains('reinterpret_cast<NT_TIB*>(teb)->StackLimit')) { throw 'TEB StackLimit publication missing' }
           if (-not $check.Contains('reinterpret_cast<NT_TIB*>(teb)->StackBase')) { throw 'TEB StackBase publication missing' }
+          Remove-Item 'eden/imp008b-e5-8k-abi.log','eden/imp008b-e5-8k-abi.out.log','eden/imp008b-e5-8k-abi.err.log','eden/imp008b-e5-8k-abi.rc' -Force -ErrorAction SilentlyContinue
           Write-Host 'IMP008B_E5_ABI_REPAIR_RETAINED_STATE=PASS'
 
       - name: Keep allocation-base 8K bounds and stage NtContinue before TEB publish
@@ -41,10 +42,12 @@ jobs:
           $path = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
           $text = [IO.File]::ReadAllText((Resolve-Path $path))
           $nl = "`n"
-          $text = $text.Replace('        stack_mbi.RegionSize < 0x2000) {', '        stack_mbi.AllocationBase == nullptr) {')
-          $text = $text.Replace('reinterpret_cast<std::uint64_t>(stack_mbi.BaseAddress);', 'reinterpret_cast<std::uint64_t>(stack_mbi.AllocationBase);')
-          $text = $text.Replace('stack_limit + static_cast<std::uint64_t>(stack_mbi.RegionSize);', 'stack_limit + 0x2000;')
-          if (-not $text.Contains('IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS')) {
+          if ($text.Contains('IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS') -and $text.Contains('direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);')) {
+            Write-Host 'IMP008B_E5_DIRECT_NT_AFTER_TEB_ALREADY_STAGED=PASS'
+          } else {
+            $text = $text.Replace('        stack_mbi.RegionSize < 0x2000) {', '        stack_mbi.AllocationBase == nullptr) {')
+            $text = $text.Replace('reinterpret_cast<std::uint64_t>(stack_mbi.BaseAddress);', 'reinterpret_cast<std::uint64_t>(stack_mbi.AllocationBase);')
+            $text = $text.Replace('stack_limit + static_cast<std::uint64_t>(stack_mbi.RegionSize);', 'stack_limit + 0x2000;')
             $needle = '    TraceVirtualMapping("RESTORE_SP", context.Sp);'
             $insertLines = @(
               '    TraceVirtualMapping("RESTORE_SP", context.Sp);',
@@ -61,32 +64,29 @@ jobs:
               '    std::fputs("IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS\n", stderr);',
               '    std::fflush(stderr);'
             )
-            $insert = $insertLines -join $nl
             if (-not $text.Contains($needle)) { throw 'RESTORE_SP trace anchor missing' }
-            $text = $text.Replace($needle, $insert)
-          }
-          $limitLine = '    reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);'
-          $baseLine = '    reinterpret_cast<NT_TIB*>(teb)->StackBase = reinterpret_cast<PVOID>(stack_base);'
-          $text = $text.Replace($limitLine + "`r`n" + $baseLine + "`r`n", '')
-          $text = $text.Replace($limitLine + "`n" + $baseLine + "`n", '')
-          $callNeedle = '    WindowsNceTransition::ContinueContext(context);'
-          if ($text.Contains($callNeedle)) {
+            $text = $text.Replace($needle, ($insertLines -join $nl))
+            $limitLine = '    reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);'
+            $baseLine = '    reinterpret_cast<NT_TIB*>(teb)->StackBase = reinterpret_cast<PVOID>(stack_base);'
+            $text = $text.Replace($limitLine + "`r`n" + $baseLine + "`r`n", '')
+            $text = $text.Replace($limitLine + "`n" + $baseLine + "`n", '')
+            $callNeedle = '    WindowsNceTransition::ContinueContext(context);'
+            if (-not $text.Contains($callNeedle)) { throw 'ContinueContext call anchor missing' }
             $directLines = @(
               '    reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);',
               '    reinterpret_cast<NT_TIB*>(teb)->StackBase = reinterpret_cast<PVOID>(stack_base);',
               '    direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);',
               '    std::abort();'
             )
-            $directCall = $directLines -join $nl
-            $text = $text.Replace($callNeedle, $directCall)
+            $text = $text.Replace($callNeedle, ($directLines -join $nl))
+            $utf8 = New-Object System.Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText((Resolve-Path $path), $text, $utf8)
+            Write-Host 'IMP008B_E5_DIRECT_NT_AFTER_TEB=PASS'
           }
-          if (-not $text.Contains('direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);')) { throw 'direct NtContinue call missing' }
-          $firstLimit = $text.IndexOf('reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);')
-          $beforeNt = $text.IndexOf('IMP008B_E2_BEFORE_NT_CONTINUE=PASS')
+          $check = [IO.File]::ReadAllText((Resolve-Path $path))
+          $firstLimit = $check.IndexOf('reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);')
+          $beforeNt = $check.IndexOf('IMP008B_E2_BEFORE_NT_CONTINUE=PASS')
           if ($firstLimit -lt 0 -or $beforeNt -lt 0 -or $firstLimit -lt $beforeNt) { throw 'TEB publish still occurs before final diagnostic host calls' }
-          $utf8 = New-Object System.Text.UTF8Encoding($false)
-          [IO.File]::WriteAllText((Resolve-Path $path), $text, $utf8)
-          Write-Host 'IMP008B_E5_DIRECT_NT_AFTER_TEB=PASS'
 
       - name: Set up minimal direct-link CLANGARM64 toolchain
         uses: msys2/setup-msys2@v2
