@@ -19,112 +19,12 @@ jobs:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 8
     steps:
-      - name: Build sticky RunThread lease probe
+      - name: Execute sticky RunThread lease probe
         shell: powershell
         run: |
-          $ErrorActionPreference='Stop'
-          if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
-          if(-not(Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')){throw 'generic transition object missing'}
-          if(-not(Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')){throw 'E2 source missing'}
-          $v4src='eden/build/e2_runthread_private_stack_lease_v4/arm_nce_windows.cpp'
-          if(-not(Test-Path $v4src)){throw 'v4 generated RunThread source missing'}
-          $dir='eden/build/e2_runthread_private_stack_lease_sticky_v5'
-          New-Item -ItemType Directory -Force $dir | Out-Null
-          $armSrc=Join-Path (Resolve-Path $dir).Path 'arm_nce_windows.cpp'
-          $text=[IO.File]::ReadAllText((Resolve-Path $v4src).Path).Replace("`r`n","`n")
-
-          $decl=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBib29sIHByaXZhdGVfc3RhY2tfYWN0aXZlID0gZmFsc2U7CiAgICAgICAgYm9vbCBwcml2YXRlX3N0YWNrX3Bhc3N0aHJvdWdoID0gZmFsc2U7CiAgICAgICAgdTY0IHByaXZhdGVfc3RhY2tfYmFzZSA9IDA7CiAgICAgICAgc2l6ZV90IHByaXZhdGVfc3RhY2tfc2l6ZSA9IDA7CiAgICAgICAgc2l6ZV90IHByaXZhdGVfc3RhY2tfYmFja2luZ19vZmZzZXQgPSAwOwoK'))
-          if(([regex]::Matches($text,[regex]::Escape($decl))).Count-ne 1){throw 'v4 lease declaration anchor mismatch'}
-          $text=$text.Replace($decl,'')
-
-          $loopAnchor=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIGNvbnN0IGF1dG8mIHBvc3RfaGFuZGxlcnMgPSBwcm9jZXNzLT5HZXRQb3N0SGFuZGxlcnMoKTsKCiAgICBmb3IgKDs7KSB7'))
-          $loopState=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIGNvbnN0IGF1dG8mIHBvc3RfaGFuZGxlcnMgPSBwcm9jZXNzLT5HZXRQb3N0SGFuZGxlcnMoKTsKCiAgICAvLyBEaWFnbm9zdGljIFY1OiBsZWFzZSBsaWZldGltZSBpcyB0aGUgZW50aXJlIFJ1blRocmVhZCBmYXVsdC9yZXRyeSBlcG9jaCwgbm90IG9uZSBsb29wIGl0ZXJhdGlvbi4KICAgIGJvb2wgcHJpdmF0ZV9zdGFja19hY3RpdmUgPSBmYWxzZTsKICAgIGJvb2wgcHJpdmF0ZV9zdGFja19wYXNzdGhyb3VnaCA9IGZhbHNlOwogICAgdTY0IHByaXZhdGVfc3RhY2tfYmFzZSA9IDA7CiAgICBzaXplX3QgcHJpdmF0ZV9zdGFja19zaXplID0gMDsKICAgIHNpemVfdCBwcml2YXRlX3N0YWNrX2JhY2tpbmdfb2Zmc2V0ID0gMDsKCiAgICBmb3IgKDs7KSB7'))
-          if(([regex]::Matches($text,[regex]::Escape($loopAnchor))).Count-ne 1){throw 'RunThread loop anchor mismatch'}
-          $text=$text.Replace($loopAnchor,$loopState)
-
-          $privateAnchor=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBpZiAocHJpdmF0ZV9zdGFja19tYmkuVHlwZSA9PSBNRU1fUFJJVkFURSkgew=='))
-          $privateReuse=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBpZiAocHJpdmF0ZV9zdGFja19hY3RpdmUgJiYgcHJpdmF0ZV9zdGFja19tYmkuVHlwZSA9PSBNRU1fUFJJVkFURSkgewogICAgICAgICAgICBjb25zdCB1NjQgcHJpdmF0ZV9zdGFja19lbmQgPQogICAgICAgICAgICAgICAgcHJpdmF0ZV9zdGFja19iYXNlICsgc3RhdGljX2Nhc3Q8dTY0Pihwcml2YXRlX3N0YWNrX3NpemUpOwogICAgICAgICAgICBpZiAobV9ndWVzdF9jdHguc3AgPD0gcHJpdmF0ZV9zdGFja19iYXNlIHx8IG1fZ3Vlc3RfY3R4LnNwID49IHByaXZhdGVfc3RhY2tfZW5kIHx8CiAgICAgICAgICAgICAgICByZWludGVycHJldF9jYXN0PHU2ND4ocHJpdmF0ZV9zdGFja19tYmkuQWxsb2NhdGlvbkJhc2UpICE9IHByaXZhdGVfc3RhY2tfYmFzZSkgewogICAgICAgICAgICAgICAgTkNFOjpDdXJyZW50TmNlQ29udGV4dDo6Q2xlYXIoKTsKICAgICAgICAgICAgICAgIGhyID0gSGFsdFJlYXNvbjo6UHJlZmV0Y2hBYm9ydDsKICAgICAgICAgICAgICAgIGJyZWFrOwogICAgICAgICAgICB9CiAgICAgICAgICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgICAgICAgICAiSU1QMDA4RV9OQ0VfU1RBQ0tfTEVBU0VfUkVVU0U9UEFTUyBCQVNFPTB4JWxsWCBTSVpFPTB4JWxsWCBUWVBFPTB4JWxYXG4iLAogICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihwcml2YXRlX3N0YWNrX2Jhc2UpLAogICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihwcml2YXRlX3N0YWNrX3NpemUpLAogICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4ocHJpdmF0ZV9zdGFja19tYmkuVHlwZSkpOwogICAgICAgICAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgICAgIH0gZWxzZSBpZiAocHJpdmF0ZV9zdGFja19tYmkuVHlwZSA9PSBNRU1fUFJJVkFURSkgew=='))
-          if(([regex]::Matches($text,[regex]::Escape($privateAnchor))).Count-ne 1){throw 'MEM_PRIVATE lease anchor mismatch'}
-          $text=$text.Replace($privateAnchor,$privateReuse)
-
-          $cleanupAnchor='        if (private_stack_active) {'
-          if(([regex]::Matches($text,[regex]::Escape($cleanupAnchor))).Count-ne 1){throw 'lease cleanup anchor mismatch'}
-          $text=$text.Replace($cleanupAnchor,'        if (private_stack_active && !m_windows_pending_nce_fault) {')
-          [IO.File]::WriteAllText($armSrc,$text,[Text.UTF8Encoding]::new($false))
-
-          Push-Location eden/build
-          try {
-            $cmds=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
-            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
-            $arm=@($cmds|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
-            if($arm.Count-ne 1){throw "arm compile count=$($arm.Count)"}
-            $c=[string]$arm[0]
-            $m=[regex]::Match($c,'-o\s+(\S*arm_nce_windows\.cpp\.obj)')
-            if(!$m.Success){throw 'arm object path missing'}
-            $oldArm=$m.Groups[1].Value.Trim("'")
-            $newArm='e2_runthread_private_stack_lease_sticky_v5/arm_nce_windows.cpp.obj'
-            $c=$c.Replace($oldArm,$newArm)
-            $c=[regex]::Replace($c,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF e2_runthread_private_stack_lease_sticky_v5\arm_nce_windows.cpp.obj.d')
-            $armSource=((Resolve-Path 'e2_runthread_private_stack_lease_sticky_v5/arm_nce_windows.cpp').Path -replace '\\','/')
-            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$armSource))
-            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
-            & $env:ComSpec /D /S /C $c
-            if($LASTEXITCODE-ne 0){throw "arm compile rc=$LASTEXITCODE"}
-
-            $main=@($cmds|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
-            if($main.Count-ne 1){throw "main compile count=$($main.Count)"}
-            $c=[string]$main[0]
-            $oldMain='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
-            $newMain='e2_runthread_private_stack_lease_sticky_v5/rasterizer_cached_retry.cpp.obj'
-            $c=$c.Replace($oldMain,$newMain)
-            $c=[regex]::Replace($c,'-MF\s+\S+\.obj\.d','-MF e2_runthread_private_stack_lease_sticky_v5\rasterizer_cached_retry.cpp.obj.d')
-            $e2Source=((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
-            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$e2Source))
-            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
-            & $env:ComSpec /D /S /C $c
-            if($LASTEXITCODE-ne 0){throw "main compile rc=$LASTEXITCODE"}
-
-            $links=@($cmds|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
-            if($links.Count-ne 1){throw "link count=$($links.Count)"}
-            $l=[string]$links[0]
-            $l=$l.Replace($oldMain,$newMain).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_runthread_private_stack_lease_sticky_v5.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_runthread_private_stack_lease_sticky_v5.a').Replace('src/core/libcore.a',"$newArm generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a")
-            $l=$l.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
-            & $env:ComSpec /D /S /C $l
-            if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE"}
-          } finally { Pop-Location }
-          Write-Host 'IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_STICKY_V5_BUILD=PASS'
-
-      - name: Run sticky E2 exactly once
-        shell: powershell
-        run: |
-          $psi=New-Object Diagnostics.ProcessStartInfo
-          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_runthread_private_stack_lease_sticky_v5.exe').Path
-          $psi.WorkingDirectory=(Resolve-Path eden).Path
-          $psi.UseShellExecute=$false
-          $psi.RedirectStandardOutput=$true
-          $psi.RedirectStandardError=$true
-          $p=New-Object Diagnostics.Process
-          $p.StartInfo=$psi
-          [void]$p.Start()
-          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
-          $timeout=-not $p.WaitForExit(60000); if($timeout){$p.Kill();$p.WaitForExit()}
-          $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err
-          [IO.File]::WriteAllText((Join-Path (Resolve-Path eden).Path 'imp008e-e2-runthread-private-stack-lease-sticky-v5.log'),$log)
-          Write-Host $out; Write-Host $err; Write-Host "IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_STICKY_V5_RC=$rc"
-
-      - name: Classify sticky lease result
-        shell: powershell
-        run: |
-          $log=Get-Content 'eden/imp008e-e2-runthread-private-stack-lease-sticky-v5.log' -Raw
-          Get-Content 'eden/imp008e-e2-runthread-private-stack-lease-sticky-v5.log' | Select-String -Pattern 'IMP008E_NCE_STACK_LEASE|IMP008E_E2_(DATA_AV_EXACT|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|REEXECUTED_VALUE_EXACT|POST_SVC_PC_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|GATE|FAIL)'
-          $begin=([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_BEGIN=PASS')).Count
-          $reuse=([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_REUSE=PASS')).Count
-          $end=([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_END=PASS')).Count
-          if($log.Contains('IMP008E_E2_GATE=PASS') -and $begin -eq 1 -and $reuse -ge 1 -and $end -eq 1){
-            Write-Host "IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_STICKY_V5=PASS BEGIN=$begin REUSE=$reuse END=$end"
-            exit 0
-          }
-          Write-Host "IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_STICKY_V5=FAIL BEGIN=$begin REUSE=$reuse END=$end"
-          exit 1
+          $payload='JEVycm9yQWN0aW9uUHJlZmVyZW5jZT0nU3RvcCcKCmlmKChnaXQgLUMgZWRlbiByZXYtcGFyc2UgSEVBRCkuVHJpbSgpIC1uZSAnMzhmZmQ4ZjM2Zjc5N2M0ODdlM2U4OGVjN2RiZTRjYWMzMjdhMmMzMScpe3Rocm93ICd1bmV4cGVjdGVkIHJldGFpbmVkIEhFQUQnfQppZigtbm90KFRlc3QtUGF0aCAnZWRlbi9idWlsZC9nZW5lcmljX3N0YWNrdG9wX2FiL3dpbmRvd3NfbmNlX3RyYW5zaXRpb24uY3BwLm9iaicpKXt0aHJvdyAnZ2VuZXJpYyB0cmFuc2l0aW9uIG9iamVjdCBtaXNzaW5nJ30KaWYoLW5vdChUZXN0LVBhdGggJ2VkZW4vYnVpbGQvZTJfcGFnZXRhYmxlX3N0YWNrX3F1ZXJ5X3YxL3Jhc3Rlcml6ZXJfY2FjaGVkX3JldHJ5X3BhZ2V0YWJsZV9zdGFjay5jcHAnKSl7dGhyb3cgJ0UyIHNvdXJjZSBtaXNzaW5nJ30KJHY0c3JjPSdlZGVuL2J1aWxkL2UyX3J1bnRocmVhZF9wcml2YXRlX3N0YWNrX2xlYXNlX3Y0L2FybV9uY2Vfd2luZG93cy5jcHAnCmlmKC1ub3QoVGVzdC1QYXRoICR2NHNyYykpe3Rocm93ICd2NCBnZW5lcmF0ZWQgUnVuVGhyZWFkIHNvdXJjZSBtaXNzaW5nJ30KCiRkaXI9J2VkZW4vYnVpbGQvZTJfcnVudGhyZWFkX3ByaXZhdGVfc3RhY2tfbGVhc2Vfc3RpY2t5X3Y1JwpOZXctSXRlbSAtSXRlbVR5cGUgRGlyZWN0b3J5IC1Gb3JjZSAkZGlyIHwgT3V0LU51bGwKJGFybVNyYz1Kb2luLVBhdGggKFJlc29sdmUtUGF0aCAkZGlyKS5QYXRoICdhcm1fbmNlX3dpbmRvd3MuY3BwJwokdGV4dD1bSU8uRmlsZV06OlJlYWRBbGxUZXh0KChSZXNvbHZlLVBhdGggJHY0c3JjKS5QYXRoKS5SZXBsYWNlKCJgcmBuIiwiYG4iKQoKJGRlY2w9W1RleHQuRW5jb2RpbmddOjpVVEY4LkdldFN0cmluZyhbQ29udmVydF06OkZyb21CYXNlNjRTdHJpbmcoJ0lDQWdJQ0FnSUNCaWIyOXNJSEJ5YVhaaGRHVmZjM1JoWTJ0ZllXTjBhWFpsSUQwZ1ptRnNjMlU3Q2lBZ0lDQWdJQ0FnWW05dmJDQndjbWwyWVhSbFgzTjBZV05yWDNCaGMzTjBhSEp2ZFdkb0lEMGdabUZzYzJVN0NpQWdJQ0FnSUNBZ2RUWTBJSEJ5YVhaaGRHVmZjM1JoWTJ0ZlltRnpaU0E5SURBN0NpQWdJQ0FnSUNBZ2MybDZaVjkwSUhCeWFYWmhkR1ZmYzNSaFkydGZjMmw2WlNBOUlEQTdDaUFnSUNBZ0lDQWdjMmw2WlY5MElIQnlhWFpoZEdWZmMzUmhZMnRmWW1GamEybHVaMTl2Wm1aelpYUWdQU0F3T3dvSycpKQppZigoW3JlZ2V4XTo6TWF0Y2hlcygkdGV4dCxbcmVnZXhdOjpFc2NhcGUoJGRlY2wpKSkuQ291bnQtbmUgMSl7dGhyb3cgJ3Y0IGxlYXNlIGRlY2xhcmF0aW9uIGFuY2hvciBtaXNtYXRjaCd9CiR0ZXh0PSR0ZXh0LlJlcGxhY2UoJGRlY2wsJycpCgokbG9vcEFuY2hvcj1bVGV4dC5FbmNvZGluZ106OlVURjguR2V0U3RyaW5nKFtDb252ZXJ0XTo6RnJvbUJhc2U2NFN0cmluZygnSUNBZ0lHTnZibk4wSUdGMWRHOG1JSEJ2YzNSZmFHRnVaR3hsY25NZ1BTQndjbTlqWlhOekxUNUhaWFJRYjNOMFNHRnVaR3hsY25Nb0tUc0tDaUFnSUNCbWIzSWdLRHM3S1NCNycpKQokbG9vcFN0YXRlPVtUZXh0LkVuY29kaW5nXTo6VVRGOC5HZXRTdHJpbmcoW0NvbnZlcnRdOjpGcm9tQmFzZTY0U3RyaW5nKCdJQ0FnSUdOdmJuTjBJR0YxZEc4bUlIQnZjM1JmYUdGdVpHeGxjbk1nUFNCd2NtOWpaWE56TFQ1SFpYUlFiM04wU0dGdVpHeGxjbk1vS1RzS0NpQWdJQ0F2THlCRWFXRm5ibTl6ZEdsaklGWTFPaUJzWldGelpTQnNhV1psZEdsdFpTQnBjeUIwYUdVZ1pXNTBhWEpsSUZKMWJsUm9jbVZoWkNCbVlYVnNkQzl5WlhSeWVTQmxjRzlqYUN3Z2JtOTBJRzl1WlNCc2IyOXdJR2wwWlhKaGRHbHZiaTRLSUNBZ0lHSnZiMndnY0hKcGRtRjBaVjl6ZEdGamExOWhZM1JwZG1VZ1BTQm1ZV3h6WlRzS0lDQWdJR0p2YjJ3Z2NISnBkbUYwWlY5emRHRmphMTl3WVhOemRHaHliM1ZuYUNBOUlHWmhiSE5sT3dvZ0lDQWdkVFkwSUhCeWFYWmhkR1ZmYzNSaFkydGZZbUZ6WlNBOUlEQTdDaUFnSUNCemFYcGxYM1FnY0hKcGRtRjBaVjl6ZEdGamExOXphWHBsSUQwZ01Ec0tJQ0FnSUhOcGVtVmZkQ0J3Y21sMllYUmxYM04wWVdOclgySmhZMnRwYm1kZmIyWm1jMlYwSUQwZ01Ec0tDaUFnSUNCbWIzSWdLRHM3S1NCNycpKQppZigoW3JlZ2V4XTo6TWF0Y2hlcygkdGV4dCxbcmVnZXhdOjpFc2NhcGUoJGxvb3BBbmNob3IpKSkuQ291bnQtbmUgMSl7dGhyb3cgJ1J1blRocmVhZCBsb29wIGFuY2hvciBtaXNtYXRjaCd9CiR0ZXh0PSR0ZXh0LlJlcGxhY2UoJGxvb3BBbmNob3IsJGxvb3BTdGF0ZSkKCiRwcml2YXRlQW5jaG9yPVtUZXh0LkVuY29kaW5nXTo6VVRGOC5HZXRTdHJpbmcoW0NvbnZlcnRdOjpGcm9tQmFzZTY0U3RyaW5nKCdJQ0FnSUNBZ0lDQnBaaUFvY0hKcGRtRjBaVjl6ZEdGamExOXRZbWt1Vkhsd1pTQTlQU0JOUlUxZlVGSkpWa0ZVUlNrZ2V3PT0nKSkKJHByaXZhdGVSZXVzZT1bVGV4dC5FbmNvZGluZ106OlVURjguR2V0U3RyaW5nKFtDb252ZXJ0XTo6RnJvbUJhc2U2NFN0cmluZygnSUNBZ0lDQWdJQ0JwWlNBb2NISnBkbUYwWlY5emRHRmphMTloWTNScGRtVWdKaVlnY0hKcGRtRjBaVjl6ZEdGamExOXRZbWt1Vkhsd1pTQTlQU0JOUlUxZlVGSkpWa0ZVUlNrZ2V3b2dJQ0FnSUNBZ0lDQWdJQ0JqYjI1emRDQjFOalFnY0hKcGRtRjBaVjl6ZEdGamExOWxibVFnUFFvZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnY0hKcGRtRjBaVjl6ZEdGamExOWlZWE5sSUNzZ2MzUmhkR2xqWDJOaGMzUThkVFkwUGlod2NtbDJZWFJsWDNOMFlXTnJYM05wZW1VcE93b2dJQ0FnSUNBZ0lDQWdJQ0JwWlNBb2JWOW5kV1Z6ZEY5amRIZ3VjM0FnUEQwZ2NISnBkbUYwWlY5emRHRmphMTlpWVhObElIeDhJRzFmWjNWbGMzUmZZM1I0TG5Od0lENDlJSEJ5YVhaaGRHVmZjM1JoWTJ0ZlpXNWtJSHg4Q2lBZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0J5WldsdWRHVnljSEpsZEY5allYTjBQSFUyTkQ0b2NISnBkbUYwWlY5emRHRmphMTl0WW1rdVFXeHNiMk5oZEdsdmJrSmhjMlVwSUNFOUlIQnlhWFpoZEdWZmMzUmhZMnRmWW1GelpTa2dld29nSUNBZ0lDQWdJQ0FnSUNBZ0lDQWdUa05GT2pwRGRYSnlaVzUwVG1ObFEyOXVkR1Y0ZERvNlEyeGxZWElvS1RzS0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnSUdoeUlEMGdTR0ZzZEZKbFlYTnZiam82VUhKbFptVjBZMmhCWW05eWREc0tJQ0FnSUNBZ0lDQWdJQ0FnSUNBZ0lHSnlaV0ZyT3dvZ0lDQWdJQ0FnSUNBZ0lDQjlDaUFnSUNBZ0lDQWdJQ0FnSUhOMFpEbzZabkJ5YVc1MFppaHpkR1JsY25Jc0NpQWdJQ0FnSUNBZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnSUNBaVNVMVFNREE0UlY5T1EwVmZVMVJCUTB0ZlRFVkJVMFZmVWtWVlUwVTlVRUZUVXlCQ1FWTkZQVEI0Sld4c1dDQlRTVnBGUFRCNEpXeHNXQ0JVV1ZCRlBUQjRKV3hZWEc0aUxBb2dJQ0FnSUNBZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnSUNBZ2MzUmhkR2xqWDJOaGMzUThkVzV6YVdkdVpXUWdiRzl1WnlCc2IyNW5QaWh3Y21sMllYUmxYM04wWVdOclgySmhjMlVwTEFvZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnYzNSaGRHbGpYMk5oYzNROGRXNXphV2R1WldRZ2JHOXVaeUJzYjI1blBpaHdjbWwyWVhSbFgzTjBZV05yWDNOcGVtVXBMQW9nSUNBZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnSUNBZ0lDQWdjM1JoZEdsalgyTmhjM1E4ZFc1emFXZHVaV1FnYkc5dVp6NG9jSEpwZG1GMFpWOXpkR0ZqYTE5dFlta3VWSGx3WlNrcE93b2dJQ0FnSUNBZ0lDQWdJQ0J6ZEdRNk9tWm1iSFZ6YUNoemRHUmxjbklwT3dvZ0lDQWdJQ0FnSUgwZ1pXeHpaU0JwWmlBb2NISnBkbUYwWlY5emRHRmphMTl0WW1rdVZIbHdaU0E5UFNCTlJVMWZVRkpKVmtGVVJTa2dldz09JykpCmlmKChbcmVnZXhdOjpNYXRjaGVzKCR0ZXh0LFtyZWdleF06OkVzY2FwZSgkcHJpdmF0ZUFuY2hvcikpKS5Db3VudC1uZSAxKXt0aHJvdyAnTUVNX1BSSVZBVEUgbGVhc2UgYW5jaG9yIG1pc21hdGNoJ30KJHRleHQ9JHRleHQuUmVwbGFjZSgkcHJpdmF0ZUFuY2hvciwkcHJpdmF0ZVJldXNlKQoKJGNsZWFudXBBbmNob3I9JyAgICAgICAgaWYgKHByaXZhdGVfc3RhY2tfYWN0aXZlKSB7JwppZigoW3JlZ2V4XTo6TWF0Y2hlcygkdGV4dCxbcmVnZXhdOjpFc2NhcGUoJGNsZWFudXBBbmNob3IpKSkuQ291bnQtbmUgMSl7dGhyb3cgJ2xlYXNlIGNsZWFudXAgYW5jaG9yIG1pc21hdGNoJ30KJHRleHQ9JHRleHQuUmVwbGFjZSgkY2xlYW51cEFuY2hvciwnICAgICAgICBpZiAocHJpdmF0ZV9zdGFja19hY3RpdmUgJiYgIW1fd2luZG93c19wZW5kaW5nX25jZV9mYXVsdCkgeycpCltJTy5GaWxlXTo6V3JpdGVBbGxUZXh0KCRhcm1TcmMsJHRleHQsW1RleHQuVVRGOEVuY29kaW5nXTo6bmV3KCRmYWxzZSkpCgpQdXNoLUxvY2F0aW9uIGVkZW4vYnVpbGQKdHJ5IHsKICAkY21kcz0mICdDOlxtc3lzNjRcdXNyXGJpblxuaW5qYS5leGUnIC10IGNvbW1hbmRzIGltcDAwOGJfZTVfeDE4X3J1bnRpbWUKICBpZigkTEFTVEVYSVRDT0RFLW5lIDApe3Rocm93ICJuaW5qYSBjb21tYW5kcyByYz0kTEFTVEVYSVRDT0RFIn0KCiAgJGFybT1AKCRjbWRzfFdoZXJlLU9iamVjdHsoKCRfIC1yZXBsYWNlICdcXCcsJy8nKSkgLW1hdGNoICIgLWMgJz9DOi8uKj8vc3JjL2NvcmUvYXJtL25jZS9hcm1fbmNlX3dpbmRvd3NcLmNwcCc/JCJ9KQogIGlmKCRhcm0uQ291bnQtbmUgMSl7dGhyb3cgImFybSBjb21waWxlIGNvdW50PSQoJGFybS5Db3VudCkifQogICRjPVtzdHJpbmddJGFybVswXQogICRtPVtyZWdleF06Ok1hdGNoKCRjLCctb1xzKyhcUyphcm1fbmNlX3dpbmRvd3NcLmNwcFwub2JqKScpCiAgaWYoISRtLlN1Y2Nlc3Mpe3Rocm93ICdhcm0gb2JqZWN0IHBhdGggbWlzc2luZyd9CiAgJG9sZEFybT0kbS5Hcm91cHNbMV0uVmFsdWUuVHJpbSgiJyIpCiAgJG5ld0FybT0nZTJfcnVudGhyZWFkX3ByaXZhdGVfc3RhY2tfbGVhc2Vfc3RpY2t5X3Y1L2FybV9uY2Vfd2luZG93cy5jcHAub2JqJwogICRjPSRjLlJlcGxhY2UoJG9sZEFybSwkbmV3QXJtKQogICRjPVtyZWdleF06OlJlcGxhY2UoJGMsJy1NRlxzK1xTKmFybV9uY2Vfd2luZG93c1wuY3BwXC5vYmpcLmQnLCctTUYgZTJfcnVudGhyZWFkX3ByaXZhdGVfc3RhY2tfbGVhc2Vfc3RpY2t5X3Y1XGFybV9uY2Vfd2luZG93cy5jcHAub2JqLmQnKQogICRhcm1Tb3VyY2U9KChSZXNvbHZlLVBhdGggJ2UyX3J1bnRocmVhZF9wcml2YXRlX3N0YWNrX2xlYXNlX3N0aWNreV92NS9hcm1fbmNlX3dpbmRvd3MuY3BwJykuUGF0aCAtcmVwbGFjZSAnXFwnLCcvJykKICAkYz1bcmVnZXhdOjpSZXBsYWNlKCRjLCItY1xzKyc/QzovW14nXSoL3NyYy9jb3JlL2FybS9uY2UvYXJtX25jZV93aW5kb3dzXC5jcHAnPyIsKCctYyAnKyRhcm1Tb3VyY2UpKQogICRjPSRjLlJlcGxhY2UoJ0M6XGFjdGlvbnMtcnVubmVyXF93b3JrXF90ZW1wXG1zeXM2NFxjbGFuZ2FybTY0JywnQzpcbXN5czY0XGNsYW5nYXJtNjQnKS5SZXBsYWNlKCdDOi9hY3Rpb25zLXJ1bm5lci9fd29yay9fdGVtcC9tc3lzNjQvY2xhbmdhcm02NCcsJ0M6L21zeXM2NC9jbGFuZ2FybTY0JykuUmVwbGFjZSgnQzpcbXN5czY0XGNsYW5nYXJtNjRcYmluXHNjY2FjaGUuZXhlICcsJycpLlJlcGxhY2UoJ0M6L21zeXM2NC9jbGFuZ2FybTY0L2Jpbi9zY2NhY2hlLmV4ZSAnLCcnKQogICRjPVtyZWdleF06OlJlcGxhY2UoJGMsIicoQzovW14nXSspJyIsJyQxJykKICAmICRlbnY6Q29tU3BlYyAvRCAvUyAvQyAkYwogIGlmKCRMQVNURVhJVENPREUtbmUgMCl7dGhyb3cgImFybSBjb21waWxlIHJjPSRMQVNURVhJVENPREUifQoKICAkbWFpbj1AKCRjbWRzfFdoZXJlLU9iamVjdHsoKCRfIC1yZXBsYWNlICdcXCcsJy8nKSkgLW1hdGNoICIgLWMgJz9DOi8uKj8vcHJvYmVzL3dpbmRvd3MtYXJtNjQtbmNlLXJ1bnRocmVhZC1lNS94MThfcnVudGltZV9pbnZhcmlhbnRcLmNwcCc/JCJ9KQogIGlmKCRtYWluLkNvdW50LW5lIDEpe3Rocm93ICJtYWluIGNvbXBpbGUgY291bnQ9JCgkbWFpbi5Db3VudCkifQogICRjPVtzdHJpbmddJG1haW5bMF0KICAkb2xkTWFpbj0nc3JjL3l1enVfY21kL0NNYWtlRmlsZXMvaW1wMDA4Yl9lNV94MThfcnVudGltZS5kaXIvX18vX18vcHJvYmVzL3dpbmRvd3MtYXJtNjQtbmNlLXJ1bnRocmVhZC1lNS94MThfcnVudGltZV9pbnZhcmlhbnQuY3BwLm9iaicKICAkbmV3TWFpbj0nZTJfcnVudGhyZWFkX3ByaXZhdGVfc3RhY2tfbGVhc2Vfc3RpY2t5X3Y1L3Jhc3Rlcml6ZXJfY2FjaGVkX3JldHJ5LmNwcC5vYmonCiAgJGM9JGMuUmVwbGFjZSgkb2xkTWFpbiwkbmV3TWFpbikKICAkYz1bcmVnZXhdOjpSZXBsYWNlKCRjLCctTUZccytcUytcLm9ialwuZCcsJy1NRiBlMl9ydW50aHJlYWRfcHJpdmF0ZV9zdGFja19sZWFzZV9zdGlja3lfdjVccmFzdGVyaXplcl9jYWNoZWRfcmV0cnkuY3BwLm9iai5kJykKICAkZTJTb3VyY2U9KChSZXNvbHZlLVBhdGggJ2UyX3BhZ2V0YWJsZV9zdGFja19xdWVyeV92MS9yYXN0ZXJpemVyX2NhY2hlZF9yZXRyeV9wYWdldGFibGVfc3RhY2suY3BwJykuUGF0aCAtcmVwbGFjZSAnXFwnLCcvJykKICAkYz1bcmVnZXhdOjpSZXBsYWNlKCRjLCItY1xzKyc/QzovW14nXSoL3Byb2Jlcy93aW5kb3dzLWFybTY0LW5jZS1ydW50aHJlYWQtZTUveDE4X3J1bnRpbWVfaW52YXJpYW50XC5jcHAnPyIsKCctYyAnKyRlMlNvdXJjZSkpCiAgJGM9JGMuUmVwbGFjZSgnQzpcYWN0aW9ucy1ydW5uZXJcX3dvcmtcX3RlbXBcbXN5czY0XGNsYW5nYXJtNjQnLCdDOlxtc3lzNjRcY2xhbmdhcm02NCcpLlJlcGxhY2UoJ0M6L2FjdGlvbnMtcnVubmVyL193b3JrL190ZW1wL21zeXM2NC9jbGFuZ2FybTY0JywnQzovbXN5czY0L2NsYW5nYXJtNjQnKS5SZXBsYWNlKCdDOlxtc3lzNjRcY2xhbmdhcm02NFxiaW5cc2NjYWNoZS5leGUgJywnJykuUmVwbGFjZSgnQzovbXN5czY0L2NsYW5nYXJtNjQvYmluL3NjY2FjaGUuZXhlICcsJycpCiAgJGM9W3JlZ2V4XTo6UmVwbGFjZSgkYywiJyhDOi9bXiddKyknIiwnJDEnKQogICYgJGVudjpDb21TcGVjIC9EIC9TIC9DICRjCiAgaWYoJExBU1RFWElUQ09ERS1uZSAwKXt0aHJvdyAibWFpbiBjb21waWxlIHJjPSRMQVNURVhJVENPREUifQoKICAkbGlua3M9QCgkY21kc3xXaGVyZS1PYmplY3R7JF8gLW1hdGNoICctbyBiaW5cXGltcDAwOGJfZTVfeDE4X3J1bnRpbWVcLmV4ZSd9KQogIGlmKCRsaW5rcy5Db3VudC1uZSAxKXt0aHJvdyAibGluayBjb3VudD0kKCRsaW5rcy5Db3VudCkifQogICRsPVtzdHJpbmddJGxpbmtzWzBdCiAgJGw9JGwuUmVwbGFjZSgkb2xkTWFpbiwkbmV3TWFpbikuUmVwbGFjZSgnYmluXGltcDAwOGJfZTVfeDE4X3J1bnRpbWUuZXhlJywnYmluXGltcDAwOGVfZTJfcnVudGhyZWFkX3ByaXZhdGVfc3RhY2tfbGVhc2Vfc3RpY2t5X3Y1LmV4ZScpLlJlcGxhY2UoJ3NyY1x5dXp1X2NtZFxsaWJpbXAwMDhiX2U1X3gxOF9ydW50aW1lLmEnLCdzcmNceXV6dV9jbWRcbGliaW1wMDA4ZV9lMl9ydW50aHJlYWRfcHJpdmF0ZV9zdGFja19sZWFzZV9zdGlja3lfdjUuYScpLlJlcGxhY2UoJ3NyYy9jb3JlL2xpYmNvcmUuYScsIiRuZXdBcm0gZ2VuZXJpY19zdGFja3RvcF9hYi93aW5kb3dzX25jZV90cmFuc2l0aW9uLmNwcC5vYmogc3JjL2NvcmUvbGliY29yZS5hIikKICAkbD0kbC5SZXBsYWNlKCdDOlxhY3Rpb25zLXJ1bm5lclxfd29ya1xfdGVtcFxtc3lzNjRcY2xhbmdhcm02NCcsJ0M6XG1zeXM2NFxjbGFuZ2FybTY0JykuUmVwbGFjZSgnQzovYWN0aW9ucy1ydW5uZXIvX3dvcmsvX3RlbXAvbXN5czY0L2NsYW5nYXJtNjQnLCdDOi9tc3lzNjQvY2xhbmdhcm02NCcpCiAgJiAkZW52OkNvbVNwZWMgL0QgL1MgL0MgJGwKICBpZigkTEFTVEVYSVRDT0RFLW5lIDApe3Rocm93ICJsaW5rIHJjPSRMQVNURVhJVENPREUifQp9IGZpbmFsbHkgewogIFBvcC1Mb2NhdGlvbgp9CldyaXRlLUhvc3QgJ0lNUDAwOEVfRTJfUlVOVEhSRUFEX1BSSVZBVEVfU1RBQ0tfTEVBU0VfU1RJQ0tZX1Y1X0JVSUxEPVBBU1MnCgokcHNpPU5ldy1PYmplY3QgRGlhZ25vc3RpY3MuUHJvY2Vzc1N0YXJ0SW5mbwokcHNpLkZpbGVOYW1lPShSZXNvbHZlLVBhdGggJ2VkZW4vYnVpbGQvYmluL2ltcDAwOGVfZTJfcnVudGhyZWFkX3ByaXZhdGVfc3RhY2tfbGVhc2Vfc3RpY2t5X3Y1LmV4ZScpLlBhdGgKJHBzaS5Xb3JraW5nRGlyZWN0b3J5PShSZXNvbHZlLVBhdGggZWRlbikuUGF0aAokcHNpLlVzZVNoZWxsRXhlY3V0ZT0kZmFsc2UKJHBzaS5SZWRpcmVjdFN0YW5kYXJkT3V0cHV0PSR0cnVlCiRwc2kuUmVkaXJlY3RTdGFuZGFyZEVycm9yPSR0cnVlCiRwPU5ldy1PYmplY3QgRGlhZ25vc3RpY3MuUHJvY2VzcwokcC5TdGFydEluZm89JHBzaQpbdm9pZF0kcC5TdGFydCgpCiRvdD0kcC5TdGFuZGFyZE91dHB1dC5SZWFkVG9FbmRBc3luYygpCiRldD0kcC5TdGFuZGFyZEVycm9yLlJlYWRUb0VuZEFzeW5jKCkKJHRpbWVvdXQ9LW5vdCAkcC5XYWl0Rm9yRXhpdCg2MDAwMCkKaWYoJHRpbWVvdXQpeyRwLktpbGwoKTskcC5XYWl0Rm9yRXhpdCgpfQokb3V0PSRvdC5SZXN1bHQKJGVycj0kZXQuUmVzdWx0CiRyYz1pZigkdGltZW91dCl7MTI0fWVsc2V7JHAuRXhpdENvZGV9CiRsb2c9JG91dCskZXJyCltJTy5GaWxlXTo6V3JpdGVBbGxUZXh0KChKb2luLVBhdGggKFJlc29sdmUtUGF0aCBlZGVuKS5QYXRoICdpbXAwMDhlLWUyLXJ1bnRocmVhZC1wcml2YXRlLXN0YWNrLWxlYXNlLXN0aWNreS12NS5sb2cnKSwkbG9nKQpXcml0ZS1Ib3N0ICRvdXQKV3JpdGUtSG9zdCAkZXJyCldyaXRlLUhvc3QgIklNUDAwOEVfRTJfUlVOVEhSRUFEX1BSSVZBVEVfU1RBQ0tfTEVBU0VfU1RJQ0tZX1Y1X1JDPSRyYyIKCiRiZWdpbj0oW3JlZ2V4XTo6TWF0Y2hlcygkbG9nLCdJTVAwMDhFX05DRV9TVEFDS19MRUFTRV9CRUdJTj1QQVNTJykpLkNvdW50CiRyZXVzZT0oW3JlZ2V4XTo6TWF0Y2hlcygkbG9nLCdJTVAwMDhFX05DRV9TVEFDS19MRUFTRV9SRVVTRT1QQVNTJykpLkNvdW50CiRlbmQ9KFtyZWdleF06Ok1hdGNoZXMoJGxvZywnSU1QMDA4RV9OQ0VfU1RBQ0tfTEVBU0VfRU5EPVBBU1MnKSkuQ291bnQKaWYoJGxvZy5Db250YWlucygnSU1QMDA4RV9FMl9HQVRFPVBBU1MnKSAtYW5kICRiZWdpbiAtZXEgMSAtYW5kICRyZXVzZSAtZ2UgMSAtYW5kICRlbmQgLWVxIDEpewogIFdyaXRlLUhvc3QgIklNUDAwOEVfRTJfUlVOVEhSRUFEX1BSSVZBVEVfU1RBQ0tfTEVBU0VfU1RJQ0tZX1Y1PVBBU1MgQkVHSU49JGJlZ2luIFJFVVNFPSRyZXVzZSBFTkQ9JGVuZCIKICBleGl0IDAKfQpXcml0ZS1Ib3N0ICJJTVAwMDhFX0UyX1JVTlRIUkVBRF9QUklWQVRFX1NUQUNLX0xFQVNFX1NUSUNLWV9WNT1GQUlMIEJFR0lOPSRiZWdpbiBSRVVTRT0kcmV1c2UgRU5EPSRlbmQiCmV4aXQgMQo='
+          $script=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))
+          $scriptPath=Join-Path $env:RUNNER_TEMP 'imp008e-sticky-v5.ps1'
+          [IO.File]::WriteAllText($scriptPath,$script,[Text.UTF8Encoding]::new($false))
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath
+          exit $LASTEXITCODE
