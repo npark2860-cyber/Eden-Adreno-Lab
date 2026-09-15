@@ -1,0 +1,206 @@
+name: Probe IMP-008E V6 E5 D1 E2 Serial Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-v6-e5-d1-e2-serial-regression-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-v6-e5-d1-e2-serial-regression
+  cancel-in-progress: false
+
+jobs:
+  v6-e5-d1-e2-serial:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Verify retained V6 candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+
+          $v6Src = 'eden/build/e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp'
+          $v6Obj = 'eden/build/e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp.obj'
+          $genericSrc = 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp'
+          $genericObj = 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj'
+          $e2Exe = 'eden/build/bin/imp008e_e2_runthread_private_stack_lease_scope_v6.exe'
+          foreach ($p in @($v6Src,$v6Obj,$genericSrc,$genericObj,$e2Exe)) {
+            if (-not (Test-Path $p)) { throw "required retained V6 candidate file missing: $p" }
+          }
+          $v6 = [IO.File]::ReadAllText((Resolve-Path $v6Src))
+          $generic = [IO.File]::ReadAllText((Resolve-Path $genericSrc))
+          if (-not $v6.Contains('Diagnostic V6: the private stack lease belongs to the complete RunThread epoch.')) { throw 'V6 RunThread-scope marker missing' }
+          if (-not $v6.Contains('IMP008E_NCE_STACK_LEASE_REUSE=PASS')) { throw 'V6 lease reuse marker missing' }
+          if (-not $generic.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'generic StackTop marker missing' }
+          Write-Host 'IMP008E_V6_SERIAL_CANDIDATE_READY=PASS'
+
+      - name: E5 with exact V6 plus generic transition
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja commands rc=$LASTEXITCODE" }
+            $linkHits = @($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link command count=$($linkHits.Count)" }
+            $link = [string]$linkHits[0]
+            $link = $link.Replace('bin\imp008b_e5_x18_runtime.exe', 'bin\imp008b_e5_v6_serial.exe')
+            $link = $link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a', 'src\yuzu_cmd\libimp008b_e5_v6_serial.a')
+            $overrides = 'e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a'
+            $link = $link.Replace('src/core/libcore.a', $overrides)
+            $link = $link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
+            $link = $link.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008b-e5-v6-serial-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "E5 V6 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008b_e5_v6_serial.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'E5 runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          $rc = if ($timeout) { 124 } else { $p.ExitCode }
+          $log = $out + $err
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008b-e5-v6-serial.log'), $log)
+          Write-Host $out; Write-Host $err
+          Write-Host "IMP008B_E5_V6_SERIAL_RC=$rc"
+          if ($rc -ne 0) { throw "E5 V6 runtime rc=$rc" }
+          if (-not $log.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'E5 did not execute generic transition override' }
+          if (-not $log.Contains('IMP008B_E5_GATE=PASS')) { throw 'E5 V6 gate failed' }
+          Write-Host 'IMP008B_E5_V6_SERIAL=PASS'
+
+      - name: D1 with same exact V6 plus generic transition
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = (Resolve-Path 'eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp').Path
+          $dir = Join-Path (Resolve-Path 'eden/build').Path 'v6_serial_regression'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dst = Join-Path $dir 'data_fault_skip_runtime.cpp'
+          $text = [IO.File]::ReadAllText($src)
+          $needle = 'if (getter_literal_matches == 0) {'
+          if (([regex]::Matches($text, [regex]::Escape($needle))).Count -lt 1) { throw 'D1 stale getter condition missing' }
+          $text = $text.Replace($needle, 'if (false && getter_literal_matches == 0) { // current patcher compatibility')
+          [IO.File]::WriteAllText($dst, $text, [Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja commands rc=$LASTEXITCODE" }
+            $compileHits = @($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($compileHits.Count -ne 1) { throw "E5 probe compile command count=$($compileHits.Count)" }
+            $compile = [string]$compileHits[0]
+            $oldObj = 'src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj = 'v6_serial_regression/data_fault_skip_runtime.cpp.obj'
+            $compile = $compile.Replace($oldObj, $newObj)
+            $compile = [regex]::Replace($compile, '-MF\s+\S+\.obj\.d', '-MF v6_serial_regression\data_fault_skip_runtime.cpp.obj.d')
+            $d1Source = ((Resolve-Path 'v6_serial_regression/data_fault_skip_runtime.cpp').Path -replace '\\','/')
+            $compile = [regex]::Replace($compile, "-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?", ('-c ' + $d1Source))
+            $compile = $compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
+            $compile = $compile.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
+            $compile = $compile.Replace('C:\msys64\clangarm64\bin\sccache.exe ', '')
+            $compile = $compile.Replace('C:/msys64/clangarm64/bin/sccache.exe ', '')
+            $compile = [regex]::Replace($compile, "'(C:/[^']+)'", '$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "D1 V6 compile rc=$LASTEXITCODE" }
+
+            $linkHits = @($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link command count=$($linkHits.Count)" }
+            $link = [string]$linkHits[0]
+            $link = $link.Replace($oldObj, $newObj)
+            $link = $link.Replace('bin\imp008b_e5_x18_runtime.exe', 'bin\imp008d_d1_v6_serial.exe')
+            $link = $link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a', 'src\yuzu_cmd\libimp008d_d1_v6_serial.a')
+            $overrides = 'e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a'
+            $link = $link.Replace('src/core/libcore.a', $overrides)
+            $link = $link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
+            $link = $link.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008d-d1-v6-serial-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "D1 V6 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008d_d1_v6_serial.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'D1 runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          $rc = if ($timeout) { 124 } else { $p.ExitCode }
+          $log = $out + $err
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008d-d1-v6-serial.log'), $log)
+          Write-Host $out; Write-Host $err
+          Write-Host "IMP008D_D1_V6_SERIAL_RC=$rc"
+          if ($rc -ne 0) { throw "D1 V6 runtime rc=$rc" }
+          if (-not $log.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'D1 did not execute generic transition override' }
+          if (-not $log.Contains('IMP008D_D1_GATE=PASS')) { throw 'D1 V6 gate failed' }
+          Write-Host 'IMP008D_D1_V6_SERIAL=PASS'
+
+      - name: E2 exact retained V6 candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008e_e2_runthread_private_stack_lease_scope_v6.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'E2 V6 runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(60000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          $rc = if ($timeout) { 124 } else { $p.ExitCode }
+          $log = $out + $err
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-v6-serial.log'), $log)
+          Write-Host $out; Write-Host $err
+          Write-Host "IMP008E_E2_V6_SERIAL_RC=$rc"
+          $begin = ([regex]::Matches($log, 'IMP008E_NCE_STACK_LEASE_BEGIN=PASS')).Count
+          $reuse = ([regex]::Matches($log, 'IMP008E_NCE_STACK_LEASE_REUSE=PASS')).Count
+          $end = ([regex]::Matches($log, 'IMP008E_NCE_STACK_LEASE_END=PASS')).Count
+          if ($rc -ne 0) { throw "E2 V6 runtime rc=$rc" }
+          if (-not $log.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'E2 did not execute generic transition override' }
+          if (-not $log.Contains('IMP008E_E2_GATE=PASS')) { throw 'E2 V6 gate failed' }
+          if ($begin -ne 1 -or $reuse -lt 1 -or $end -ne 1) { throw "E2 V6 lease scope mismatch BEGIN=$begin REUSE=$reuse END=$end" }
+          Write-Host "IMP008E_E2_V6_SERIAL=PASS BEGIN=$begin REUSE=$reuse END=$end"
+          Write-Host 'IMP008E_V6_E5_D1_E2_SERIAL_GATE=PASS'
+
+      - name: Upload serial regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-v6-e5-d1-e2-serial-regression
+          path: |
+            eden/imp008b-e5-v6-serial-link.log
+            eden/imp008b-e5-v6-serial.log
+            eden/imp008d-d1-v6-serial-link.log
+            eden/imp008d-d1-v6-serial.log
+            eden/imp008e-e2-v6-serial.log
+            eden/imp008d-d1-first-exception.bin
+          if-no-files-found: warn
