@@ -16,13 +16,17 @@ jobs:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 5
     steps:
-      - name: Verify retained checkout and print stack-query diagnostic source
+      - name: Verify retained checkout and print stack diagnostic source
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
           $head = (git -C eden rev-parse HEAD).Trim()
           if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
-          $path = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
-          Select-String -Path $path -SimpleMatch 'IMP008B_E5_8K_STACK_QUERY' -Context 24,24
-          Write-Host 'IMP008B_E5_STACK_QUERY_SOURCE_INSPECT=PASS'
+          $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $probe = 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          Write-Host '=== TRANSITION STACK QUERY ==='
+          Select-String -Path $transition -SimpleMatch 'IMP008B_E5_8K_STACK_QUERY' -Context 24,32
+          Write-Host '=== PROBE STACK CREATION ==='
+          Select-String -Path $probe -SimpleMatch 'IMP008B_E5_8K_GUEST_STACK' -Context 32,24
+          Write-Host 'IMP008B_E5_STACK_SOURCE_INSPECT=PASS'
