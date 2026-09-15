@@ -1,0 +1,29 @@
+name: Inspect IMP-008B Generic NtContinue Return
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp008b-generic-ntcontinue-return-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-ntcontinue-return:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect retained and generic transition around NtContinue
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          foreach ($path in @('eden/src/core/arm/nce/windows_nce_transition.cpp','eden/build/generic_stacktop_ab/windows_nce_transition.cpp')) {
+            if (-not (Test-Path $path)) { throw "missing $path" }
+            Write-Host ("IMP008B_NTCONTINUE_SOURCE_BEGIN=" + $path)
+            Get-Content $path | Select-String -Pattern 'NtContinue|direct_nt_continue|ContinueContext|DeallocationStack|StackBase|StackLimit|abort|terminate|ExitProcess' -Context 8,12
+            Write-Host ("IMP008B_NTCONTINUE_SOURCE_END=" + $path)
+          }
