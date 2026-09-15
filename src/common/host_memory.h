@@ -44,6 +44,42 @@ public:
     HostMemory(HostMemory&& other) noexcept;
     HostMemory& operator=(HostMemory&& other) noexcept;
 
+#ifdef _WIN32
+    /**
+     * Owns a temporary MEM_PRIVATE replacement for one exact direct-mapped HostMemory range.
+     * Destruction restores the original section-backed mapping and copies private writes back to
+     * the HostMemory backing store. This is intentionally scoped to Windows direct mappings.
+     */
+    class PrivateMappingLease {
+    public:
+        ~PrivateMappingLease();
+
+        PrivateMappingLease(const PrivateMappingLease&) = delete;
+        PrivateMappingLease& operator=(const PrivateMappingLease&) = delete;
+        PrivateMappingLease(PrivateMappingLease&& other) noexcept;
+        PrivateMappingLease& operator=(PrivateMappingLease&& other) noexcept;
+
+        [[nodiscard]] bool Restore() noexcept;
+        [[nodiscard]] bool ContainsAddress(u64 address) const noexcept;
+
+    private:
+        friend class HostMemory;
+
+        PrivateMappingLease(HostMemory* owner_, u8* virtual_address_, size_t host_offset_,
+                            size_t length_, MemoryPermission perms_) noexcept;
+
+        HostMemory* owner{};
+        u8* virtual_address{};
+        size_t host_offset{};
+        size_t length{};
+        MemoryPermission perms{};
+        bool active{};
+    };
+
+    [[nodiscard]] std::optional<PrivateMappingLease> AcquireDirectMappedPrivateLease(
+        void* virtual_address, size_t host_offset, size_t length, MemoryPermission perms);
+#endif
+
     void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms,
              bool separate_heap);
 

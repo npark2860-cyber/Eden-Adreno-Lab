@@ -12,8 +12,11 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
+#include <utility>
 
+#include "common/host_memory_windows_lease.h"
 #include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/arm_nce_asm_definitions.h"
 #include "core/arm/nce/current_nce_context.h"
@@ -24,8 +27,10 @@
 #include "core/arm/nce/windows_x18_fallback_runner.h"
 #include "core/arm/nce/windows_x18_fallback_trap.h"
 #include "core/core.h"
+#include "core/device_memory.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/svc_types.h"
 #include "core/memory.h"
 
 namespace Core {
@@ -101,6 +106,119 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     bounds.tib->StackLimit = bounds.host_stack_limit;
     bounds.tib = nullptr;
 }
+
+[[nodiscard]] bool EnsureWindowsGuestStackLease(
+    System& system, Kernel::KProcess* process, u64 guest_sp,
+    std::optional<Common::HostMemory::PrivateMappingLease>& stack_lease) {
+    if (process == nullptr || guest_sp == 0) {
+        LOG_ERROR(Core_ARM, "Windows NCE stack lease received an invalid process or SP");
+        return false;
+    }
+
+    Kernel::KMemoryInfo guest_stack_info{};
+    Kernel::Svc::PageInfo guest_stack_page{};
+    const auto guest_stack_query = process->GetPageTable().QueryInfo(
+        std::addressof(guest_stack_info), std::addressof(guest_stack_page),
+        Kernel::KProcessAddress{guest_sp});
+    if (guest_stack_query.IsFailure()) {
+        LOG_ERROR(Core_ARM, "Windows NCE guest stack page-table query failed");
+        return false;
+    }
+
+    const bool guest_sp_is_stack = guest_stack_info.GetState() == Kernel::KMemoryState::Stack;
+
+    MEMORY_BASIC_INFORMATION stack_mbi{};
+    if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi,
+                     sizeof(stack_mbi)) == 0 ||
+        stack_mbi.AllocationBase == nullptr) {
+        LOG_ERROR(Core_ARM, "Windows NCE guest stack VirtualQuery failed");
+        return false;
+    }
+
+    if (stack_lease.has_value()) {
+        if (!guest_sp_is_stack || stack_mbi.Type != MEM_PRIVATE ||
+            !stack_lease->ContainsAddress(guest_sp - 1)) {
+            LOG_ERROR(Core_ARM, "Windows NCE active private stack lease no longer owns guest SP");
+            return false;
+        }
+        return true;
+    }
+
+    // Preserve the V7 eligibility policy: already-private stacks and synthetic/non-Stack mapped
+    // probe stacks do not need a lease. Only a real KPageTable Stack backed by MEM_MAPPED does.
+    if (stack_mbi.Type == MEM_PRIVATE) {
+        return true;
+    }
+    if (!guest_sp_is_stack && stack_mbi.Type == MEM_MAPPED) {
+        return true;
+    }
+    if (!guest_sp_is_stack || stack_mbi.Type != MEM_MAPPED) {
+        LOG_ERROR(Core_ARM, "Windows NCE guest stack has unsupported host backing type/state");
+        return false;
+    }
+
+    const auto stack_base = reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase);
+    std::uintptr_t stack_end = stack_base;
+    for (std::uintptr_t cursor = stack_base;;) {
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||
+            region.AllocationBase != stack_mbi.AllocationBase) {
+            break;
+        }
+        const auto region_end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) +
+                                static_cast<std::uintptr_t>(region.RegionSize);
+        if (region_end <= cursor) {
+            break;
+        }
+        stack_end = region_end;
+        cursor = region_end;
+    }
+
+    if (stack_end <= stack_base || guest_sp <= stack_base || guest_sp >= stack_end ||
+        (stack_base & Memory::YUZU_PAGEMASK) != 0 ||
+        ((stack_end - stack_base) & Memory::YUZU_PAGEMASK) != 0) {
+        LOG_ERROR(Core_ARM, "Windows NCE real guest stack host allocation is invalid");
+        return false;
+    }
+
+    const auto stack_size = static_cast<size_t>(stack_end - stack_base);
+    auto* const backing_pointer =
+        process->GetMemory().GetPointer(Common::ProcessAddress{stack_base});
+    if (backing_pointer == nullptr) {
+        LOG_ERROR(Core_ARM, "Windows NCE real guest stack has no backing pointer");
+        return false;
+    }
+
+    for (size_t offset = 0; offset < stack_size; offset += Memory::YUZU_PAGESIZE) {
+        auto* const page_pointer =
+            process->GetMemory().GetPointer(Common::ProcessAddress{stack_base + offset});
+        if (page_pointer != backing_pointer + offset) {
+            LOG_ERROR(Core_ARM, "Windows NCE real guest stack backing is not contiguous");
+            return false;
+        }
+    }
+
+    auto& buffer = system.DeviceMemory().buffer;
+    const auto backing_base = reinterpret_cast<std::uintptr_t>(buffer.BackingBasePointer());
+    const auto backing_address = reinterpret_cast<std::uintptr_t>(backing_pointer);
+    if (backing_address < backing_base) {
+        LOG_ERROR(Core_ARM, "Windows NCE real guest stack backing pointer is outside HostMemory");
+        return false;
+    }
+    const auto backing_offset = static_cast<size_t>(backing_address - backing_base);
+
+    auto acquired = buffer.AcquireDirectMappedPrivateLease(
+        reinterpret_cast<void*>(stack_base), backing_offset, stack_size,
+        Common::MemoryPermission::ReadWrite);
+    if (!acquired.has_value()) {
+        LOG_ERROR(Core_ARM, "Windows NCE failed to acquire private HostMemory stack lease");
+        return false;
+    }
+
+    stack_lease.emplace(std::move(*acquired));
+    return true;
+}
+
 struct BreakTransformState {
     ArmNce* nce{};
     bool transformed{};
@@ -275,9 +393,17 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     }
 
     const auto& post_handlers = process->GetPostHandlers();
+    std::optional<Common::HostMemory::PrivateMappingLease> private_stack_lease;
 
     for (;;) {
         NCE::CurrentNceContext::Install(thread_params);
+
+        if (!EnsureWindowsGuestStackLease(m_system, process, m_guest_ctx.sp,
+                                          private_stack_lease)) {
+            NCE::CurrentNceContext::Clear();
+            hr = HaltReason::PrefetchAbort;
+            break;
+        }
 
         WindowsTebStackBounds teb_stack_bounds{};
         if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
@@ -338,6 +464,13 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
         // A normal one-instruction x18 fallback updated GuestContext::pc. Re-enter the native NCE
         // path using the same post-handler/arbitrary-PC selection contract as ordinary RunThread.
+    }
+
+    // The private replacement belongs to the complete RunThread epoch. Internal NCE fault/retry
+    // iterations reuse it; restore the section-backed mapping exactly once when the epoch exits.
+    if (private_stack_lease.has_value() && !private_stack_lease->Restore()) {
+        LOG_ERROR(Core_ARM, "Failed to restore Windows NCE private stack lease");
+        hr = HaltReason::PrefetchAbort;
     }
 
     std::atomic_thread_fence(std::memory_order_acquire);
