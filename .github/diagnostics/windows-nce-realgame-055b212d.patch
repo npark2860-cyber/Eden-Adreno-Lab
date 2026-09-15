@@ -1,0 +1,188 @@
+diff --git a/src/core/arm/nce/arm_nce_windows.cpp b/src/core/arm/nce/arm_nce_windows.cpp
+index 1b61254d9..000000000 100644
+--- a/src/core/arm/nce/arm_nce_windows.cpp
++++ b/src/core/arm/nce/arm_nce_windows.cpp
+@@ -43,6 +43,23 @@ static_assert(offsetof(NativeExecutionParameters, magic) == TpidrEl0TlsMagic);
+ 
+ std::once_flag g_windows_veh_once;
+ PVOID g_windows_veh_handle{};
++
++struct WindowsNceFaultTelemetry {
++    bool pending{};
++    DWORD exception_code{};
++    ULONG_PTR access_type{};
++    u64 fault_address{};
++    u64 pc{};
++    u64 sp{};
++};
++
++thread_local WindowsNceFaultTelemetry g_windows_nce_fault_telemetry{};
++thread_local u32 g_windows_nce_fault_log_count{};
++thread_local u32 g_windows_nce_stack_log_count{};
++thread_local bool g_windows_nce_fastmem_logged{};
++constexpr u32 WindowsNceFaultLogLimit = 16;
++constexpr u32 WindowsNceStackLogLimit = 8;
+ 
+ struct WindowsTebStackBounds {
+     NT_TIB* tib{};
+@@ -118,7 +135,9 @@ inline bool EnsureWindowsGuestStackLease(
+         std::addressof(guest_stack_info), std::addressof(guest_stack_page),
+         Kernel::KProcessAddress{guest_sp});
+     if (guest_stack_query.IsFailure()) {
+-        LOG_ERROR(Core_ARM, "Windows NCE guest stack page-table query failed");
++        LOG_ERROR(Core_ARM,
++                  "NCE_REALGAME_DIAG_STACK result=page_table_query_failed guest_sp=0x{:016X}",
++                  guest_sp);
+         return false;
+     }
+ 
+@@ -128,7 +147,10 @@ inline bool EnsureWindowsGuestStackLease(
+     if (VirtualQuery(reinterpret_cast<const void*>(guest_sp - 1), &stack_mbi,
+                      sizeof(stack_mbi)) == 0 ||
+         stack_mbi.AllocationBase == nullptr) {
+-        LOG_ERROR(Core_ARM, "Windows NCE guest stack VirtualQuery failed");
++        LOG_ERROR(Core_ARM,
++                  "NCE_REALGAME_DIAG_STACK result=virtual_query_failed guest_sp=0x{:016X} "
++                  "fastmem_base={:p}",
++                  guest_sp, static_cast<void*>(system.DeviceMemory().buffer.VirtualBasePointer()));
+         return false;
+     }
+ 
+@@ -142,12 +164,28 @@ inline bool EnsureWindowsGuestStackLease(
+     // Preserve the V7 eligibility policy: already-private stacks and synthetic/non-Stack mapped
+     // probe stacks do not need a lease. Only a real KPageTable Stack backed by MEM_MAPPED does.
+     if (stack_mbi.Type == MEM_PRIVATE) {
++        if (g_windows_nce_stack_log_count < WindowsNceStackLogLimit) {
++            LOG_INFO(Core_ARM,
++                     "NCE_REALGAME_DIAG_STACK result=already_private guest_sp=0x{:016X} "
++                     "state=0x{:X} protect=0x{:X} type=0x{:X}",
++                     guest_sp, stack_mbi.State, stack_mbi.Protect, stack_mbi.Type);
++            ++g_windows_nce_stack_log_count;
++        }
+         return true;
+     }
+     if (!guest_sp_is_stack && stack_mbi.Type == MEM_MAPPED) {
++        if (g_windows_nce_stack_log_count < WindowsNceStackLogLimit) {
++            LOG_INFO(Core_ARM,
++                     "NCE_REALGAME_DIAG_STACK result=mapped_nonstack guest_sp=0x{:016X} "
++                     "state=0x{:X} protect=0x{:X} type=0x{:X}",
++                     guest_sp, stack_mbi.State, stack_mbi.Protect, stack_mbi.Type);
++            ++g_windows_nce_stack_log_count;
++        }
+         return true;
+     }
+     if (!guest_sp_is_stack || stack_mbi.Type != MEM_MAPPED) {
+-        LOG_ERROR(Core_ARM, "Windows NCE guest stack has unsupported host backing type/state");
++        LOG_ERROR(Core_ARM,
++                  "NCE_REALGAME_DIAG_STACK result=unsupported_backing guest_sp=0x{:016X} "
++                  "guest_is_stack={} state=0x{:X} protect=0x{:X} type=0x{:X}",
++                  guest_sp, guest_sp_is_stack, stack_mbi.State, stack_mbi.Protect, stack_mbi.Type);
+         return false;
+     }
+@@ -198,11 +236,21 @@ inline bool EnsureWindowsGuestStackLease(
+         reinterpret_cast<void*>(stack_base), backing_offset, stack_size,
+         Common::MemoryPermission::ReadWrite);
+     if (!acquired.has_value()) {
+-        LOG_ERROR(Core_ARM, "Windows NCE failed to acquire private HostMemory stack lease");
++        LOG_ERROR(Core_ARM,
++                  "NCE_REALGAME_DIAG_STACK result=lease_acquire_failed guest_sp=0x{:016X} "
++                  "stack_base=0x{:016X} stack_size=0x{:X} backing_offset=0x{:X}",
++                  guest_sp, static_cast<u64>(stack_base), stack_size, backing_offset);
+         return false;
+     }
+ 
+     stack_lease.emplace(std::move(*acquired));
++    if (g_windows_nce_stack_log_count < WindowsNceStackLogLimit) {
++        LOG_INFO(Core_ARM,
++                 "NCE_REALGAME_DIAG_STACK result=lease_acquired guest_sp=0x{:016X} "
++                 "stack_base=0x{:016X} stack_size=0x{:X} backing_offset=0x{:X}",
++                 guest_sp, static_cast<u64>(stack_base), stack_size, backing_offset);
++        ++g_windows_nce_stack_log_count;
++    }
+     return true;
+ }
+@@ -303,6 +351,14 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception)
+     if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {
+         const auto fault_address = reinterpret_cast<u64>(
+             NCE::WindowsExceptionContext::GetFaultAddress(*exception->ExceptionRecord));
++        auto& telemetry = g_windows_nce_fault_telemetry;
++        telemetry.pending = true;
++        telemetry.exception_code = exception->ExceptionRecord->ExceptionCode;
++        telemetry.access_type = exception->ExceptionRecord->NumberParameters > 0
++                                    ? exception->ExceptionRecord->ExceptionInformation[0]
++                                    : ~ULONG_PTR{0};
++        telemetry.fault_address = fault_address;
++        telemetry.pc = context.Pc;
++        telemetry.sp = context.Sp;
+         nce->m_windows_pending_nce_fault = true;
+         nce->m_windows_pending_nce_fault_address = fault_address;
+         nce->m_windows_pending_nce_fault_page = fault_address & ~Memory::YUZU_PAGEMASK;
+@@ -365,6 +421,17 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
+     auto* const thread_params = &thread->GetNativeExecutionParameters();
+     auto* const process = thread->GetOwnerProcess();
+ 
++    if (!g_windows_nce_fastmem_logged) {
++        auto& diag_buffer = m_system.DeviceMemory().buffer;
++        LOG_INFO(Core_ARM,
++                 "NCE_REALGAME_DIAG_FASTMEM core={} virtual_base={:p} backing_base={:p} ready={}",
++                 m_core_index, static_cast<void*>(diag_buffer.VirtualBasePointer()),
++                 static_cast<void*>(diag_buffer.BackingBasePointer()),
++                 diag_buffer.VirtualBasePointer() != nullptr);
++        g_windows_nce_fastmem_logged = true;
++    }
++
+     m_running_thread = thread;
+     m_guest_ctx.parent = this;
+     thread_params->native_context = &m_guest_ctx;
+@@ -405,10 +472,45 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
+             m_windows_pending_nce_fault_address = 0;
+             m_windows_pending_nce_fault_page = 0;
+ 
+-            if (process->GetMemory().InvalidateNCE(Common::ProcessAddress{pending_fault_page},
+-                                                   Memory::YUZU_PAGESIZE)) {
++            const auto fault_telemetry = g_windows_nce_fault_telemetry;
++            g_windows_nce_fault_telemetry.pending = false;
++
++            MEMORY_BASIC_INFORMATION fault_region{};
++            MEMORY_BASIC_INFORMATION pc_region{};
++            MEMORY_BASIC_INFORMATION sp_region{};
++            const bool fault_vq = fault_telemetry.pending &&
++                VirtualQuery(reinterpret_cast<const void*>(
++                                 static_cast<std::uintptr_t>(fault_telemetry.fault_address)),
++                             &fault_region, sizeof(fault_region)) != 0;
++            const bool pc_vq = fault_telemetry.pending &&
++                VirtualQuery(reinterpret_cast<const void*>(
++                                 static_cast<std::uintptr_t>(fault_telemetry.pc)),
++                             &pc_region, sizeof(pc_region)) != 0;
++            const bool sp_vq = fault_telemetry.pending &&
++                VirtualQuery(reinterpret_cast<const void*>(
++                                 static_cast<std::uintptr_t>(fault_telemetry.sp)),
++                             &sp_region, sizeof(sp_region)) != 0;
++
++            const bool invalidated = process->GetMemory().InvalidateNCE(
++                Common::ProcessAddress{pending_fault_page}, Memory::YUZU_PAGESIZE);
++
++            if (fault_telemetry.pending && g_windows_nce_fault_log_count < WindowsNceFaultLogLimit) {
++                auto& diag_buffer = m_system.DeviceMemory().buffer;
++                LOG_ERROR(Core_ARM,
++                          "NCE_REALGAME_DIAG_FAULT seq={} core={} code=0x{:08X} access={} "
++                          "fault=0x{:016X} pc=0x{:016X} sp=0x{:016X} page=0x{:016X} "
++                          "invalidate={} fastmem_base={:p} "
++                          "fault_vq={} fault_state=0x{:X} fault_protect=0x{:X} fault_type=0x{:X} "
++                          "pc_vq={} pc_state=0x{:X} pc_protect=0x{:X} pc_type=0x{:X} "
++                          "sp_vq={} sp_state=0x{:X} sp_protect=0x{:X} sp_type=0x{:X}",
++                          g_windows_nce_fault_log_count, m_core_index,
++                          fault_telemetry.exception_code, static_cast<u64>(fault_telemetry.access_type),
++                          fault_telemetry.fault_address, fault_telemetry.pc, fault_telemetry.sp,
++                          pending_fault_page, invalidated,
++                          static_cast<void*>(diag_buffer.VirtualBasePointer()),
++                          fault_vq, fault_region.State, fault_region.Protect, fault_region.Type,
++                          pc_vq, pc_region.State, pc_region.Protect, pc_region.Type,
++                          sp_vq, sp_region.State, sp_region.Protect, sp_region.Type);
++                ++g_windows_nce_fault_log_count;
++            }
++
++            if (invalidated) {
+                 continue;
+             }
+ 
