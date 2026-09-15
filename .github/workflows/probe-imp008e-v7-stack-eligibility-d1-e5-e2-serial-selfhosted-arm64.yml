@@ -1,4 +1,4 @@
-name: Validate IMP-008E corrected production HostMemory lease D1 E5 E2
+name: Inspect IMP-008E V6 vs production lease reentry
 
 on:
   workflow_dispatch:
@@ -12,178 +12,47 @@ permissions:
   contents: read
 
 concurrency:
-  group: validate-imp008e-corrected-production-hostmemory-lease-runtime
+  group: inspect-imp008e-v6-vs-production-lease-reentry
   cancel-in-progress: false
 
 jobs:
-  corrected-production-d1-e5-e2:
+  inspect-v6-vs-production:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
-      - name: Compile and link exact corrected production source
+      - name: Compare retained V6 and corrected production source
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $retained='38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'
           $production='6e1167c953fe17bc95dda954910fb69b65153fa3'
           if((git -C eden rev-parse HEAD).Trim() -ne $retained){throw 'unexpected retained HEAD'}
-          if(-not(Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')){throw 'generic transition object missing'}
-          if(-not(Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')){throw 'E2 source missing'}
-
+          $v6='eden/build/e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp'
+          if(-not(Test-Path $v6)){throw 'retained V6 source missing'}
           git -C eden fetch --no-tags origin $production
           if($LASTEXITCODE-ne 0){throw "fetch production rc=$LASTEXITCODE"}
-          if((git -C eden rev-parse FETCH_HEAD).Trim() -ne $production){throw 'unexpected FETCH_HEAD'}
+          $prod='eden/build/imp008e_v6_prod_compare_arm_nce_windows.cpp'
+          $lines=& git -C eden show "${production}:src/core/arm/nce/arm_nce_windows.cpp"
+          if($LASTEXITCODE-ne 0){throw 'production source export failed'}
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path eden).Path 'build/imp008e_v6_prod_compare_arm_nce_windows.cpp'),(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
 
-          $dir='eden/build/imp008e_production_hostmemory_lease_compile_6e1167c9'
-          if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
-          New-Item -ItemType Directory -Force (Join-Path $dir 'common') | Out-Null
-          $resolved=(Resolve-Path $dir).Path
-          function Export-ProductionText([string]$repoPath,[string]$dst){
-            $lines=& git -C eden show "${production}:$repoPath"
-            if($LASTEXITCODE-ne 0){throw "git show failed: $repoPath"}
-            [IO.File]::WriteAllText($dst,(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
+          function Show-Matches([string]$label,[string]$path){
+            Write-Host "===== $label ====="
+            $content=Get-Content $path
+            $patterns=@('InstallGuestTebStackBounds','RestoreHostTebStackBounds','private_stack_active','private_stack_passthrough','private_stack_base','private_stack_size','private_stack_backing_offset','NCE_STACK_LEASE','CurrentNceContext::Clear','m_windows_pending_nce_fault','WindowsNceEnterGuest','m_windows_x18_runner->Dispatch','StackLimit','StackBase','AcquireDirectMappedPrivateLease','PrivateMappingLease')
+            $seen=New-Object 'System.Collections.Generic.HashSet[int]'
+            for($i=0;$i-lt$content.Count;$i++){
+              foreach($p in $patterns){
+                if($content[$i].Contains($p)){
+                  $start=[Math]::Max(0,$i-4); $end=[Math]::Min($content.Count-1,$i+6)
+                  for($j=$start;$j-le$end;$j++){
+                    if($seen.Add($j)){Write-Host ('{0,5}: {1}' -f ($j+1),$content[$j])}
+                  }
+                  break
+                }
+              }
+            }
           }
-          Export-ProductionText 'src/common/host_memory.h' (Join-Path $resolved 'common/host_memory.h')
-          Export-ProductionText 'src/common/host_memory_windows_lease.h' (Join-Path $resolved 'common/host_memory_windows_lease.h')
-          Export-ProductionText 'src/core/arm/nce/arm_nce_windows.cpp' (Join-Path $resolved 'arm_nce_windows.cpp')
-          $src=[IO.File]::ReadAllText((Join-Path $resolved 'arm_nce_windows.cpp'))
-          if($src.Contains('tib->StackLimit = reinterpret_cast<void*>(allocation_base);')){throw 'corrected source still publishes guest StackLimit early'}
-          if(-not $src.Contains('AcquireDirectMappedPrivateLease')){throw 'production lease API call missing'}
-
-          Push-Location eden/build
-          try {
-            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
-            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
-            $arm=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
-            if($arm.Count-ne 1){throw "arm compile count=$($arm.Count)"}
-            $compile=[string]$arm[0]
-            $m=[regex]::Match($compile,'-o\s+(\S*arm_nce_windows\.cpp\.obj)')
-            if(!$m.Success){throw 'arm object path missing'}
-            $oldArm=$m.Groups[1].Value.Trim("'")
-            $newArm='imp008e_production_hostmemory_lease_compile_6e1167c9/arm_nce_windows.cpp.obj'
-            $compile=$compile.Replace($oldArm,$newArm)
-            $compile=[regex]::Replace($compile,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF imp008e_production_hostmemory_lease_compile_6e1167c9\arm_nce_windows.cpp.obj.d')
-            $source=((Resolve-Path 'imp008e_production_hostmemory_lease_compile_6e1167c9/arm_nce_windows.cpp').Path -replace '\\','/')
-            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$source))
-            $overlay=((Resolve-Path 'imp008e_production_hostmemory_lease_compile_6e1167c9').Path -replace '\\','/')
-            if($compile -notmatch '\s-I'){throw 'compile include anchor missing'}
-            $compile=[regex]::Replace($compile,'\s-I',(" -I"+$overlay+' -I'),1)
-            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
-            & $env:ComSpec /D /S /C $compile
-            if($LASTEXITCODE-ne 0){throw "corrected production arm compile rc=$LASTEXITCODE"}
-          } finally { Pop-Location }
-          if(-not(Test-Path 'eden/build/imp008e_production_hostmemory_lease_compile_6e1167c9/arm_nce_windows.cpp.obj')){throw 'corrected production object missing'}
-          Write-Host "IMP008E_CORRECTED_PRODUCTION_COMPILE=PASS SOURCE=$production"
-
-      - name: D1 with corrected production source
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $dir='eden/build/imp008e_production_runtime_6e1167c9'
-          New-Item -ItemType Directory -Force $dir | Out-Null
-          $src=(Resolve-Path 'eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp').Path
-          $dst=Join-Path (Resolve-Path $dir).Path 'data_fault_skip_runtime.cpp'
-          $text=[IO.File]::ReadAllText($src)
-          $needle='if (getter_literal_matches == 0) {'
-          if(([regex]::Matches($text,[regex]::Escape($needle))).Count-lt 1){throw 'D1 stale getter condition missing'}
-          $text=$text.Replace($needle,'if (false && getter_literal_matches == 0) { // current patcher compatibility')
-          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
-          Push-Location eden/build
-          try {
-            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
-            $compileHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
-            if($compileHits.Count-ne 1){throw "probe compile count=$($compileHits.Count)"}
-            $compile=[string]$compileHits[0]
-            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
-            $newObj='imp008e_production_runtime_6e1167c9/data_fault_skip_runtime.cpp.obj'
-            $compile=$compile.Replace($oldObj,$newObj)
-            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF imp008e_production_runtime_6e1167c9\data_fault_skip_runtime.cpp.obj.d')
-            $d1Source=((Resolve-Path 'imp008e_production_runtime_6e1167c9/data_fault_skip_runtime.cpp').Path -replace '\\','/')
-            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$d1Source))
-            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
-            & $env:ComSpec /D /S /C $compile
-            if($LASTEXITCODE-ne 0){throw "D1 compile rc=$LASTEXITCODE"}
-            $linkHits=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
-            if($linkHits.Count-ne 1){throw "link count=$($linkHits.Count)"}
-            $link=[string]$linkHits[0]
-            $link=$link.Replace($oldObj,$newObj).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008d_d1_corrected_production.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008d_d1_corrected_production.a')
-            $link=$link.Replace('src/core/libcore.a','imp008e_production_hostmemory_lease_compile_6e1167c9/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
-            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
-            & $env:ComSpec /D /S /C $link
-            if($LASTEXITCODE-ne 0){throw "D1 link rc=$LASTEXITCODE"}
-          } finally { Pop-Location }
-          $eden=(Resolve-Path eden).Path; $psi=New-Object Diagnostics.ProcessStartInfo; $psi.FileName=(Resolve-Path 'eden/build/bin/imp008d_d1_corrected_production.exe').Path; $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
-          $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timeout=-not $p.WaitForExit(30000); if($timeout){$p.Kill();$p.WaitForExit()}; $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err; [IO.File]::WriteAllText((Join-Path $eden 'imp008d-d1-corrected-production.log'),$log); Write-Host $out; Write-Host $err; Write-Host "IMP008D_D1_CORRECTED_PRODUCTION_RC=$rc"
-          if($rc-ne 0 -or -not $log.Contains('IMP008D_D1_GATE=PASS') -or -not $log.Contains('IMP008B_GENERIC_STACK_TOP=PASS')){throw 'D1 corrected production gate failed'}
-          Write-Host 'IMP008D_D1_CORRECTED_PRODUCTION=PASS'
-
-      - name: E5 with same corrected production source
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          Push-Location eden/build
-          try {
-            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
-            $linkHits=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
-            if($linkHits.Count-ne 1){throw "link count=$($linkHits.Count)"}
-            $link=[string]$linkHits[0]
-            $link=$link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008b_e5_corrected_production.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008b_e5_corrected_production.a')
-            $link=$link.Replace('src/core/libcore.a','imp008e_production_hostmemory_lease_compile_6e1167c9/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
-            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
-            & $env:ComSpec /D /S /C $link
-            if($LASTEXITCODE-ne 0){throw "E5 link rc=$LASTEXITCODE"}
-          } finally { Pop-Location }
-          $eden=(Resolve-Path eden).Path; $psi=New-Object Diagnostics.ProcessStartInfo; $psi.FileName=(Resolve-Path 'eden/build/bin/imp008b_e5_corrected_production.exe').Path; $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
-          $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timeout=-not $p.WaitForExit(30000); if($timeout){$p.Kill();$p.WaitForExit()}; $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err; [IO.File]::WriteAllText((Join-Path $eden 'imp008b-e5-corrected-production.log'),$log); Write-Host $out; Write-Host $err; Write-Host "IMP008B_E5_CORRECTED_PRODUCTION_RC=$rc"
-          if($rc-ne 0 -or -not $log.Contains('IMP008B_E5_GATE=PASS') -or -not $log.Contains('IMP008B_GENERIC_STACK_TOP=PASS')){throw 'E5 corrected production gate failed'}
-          Write-Host 'IMP008B_E5_CORRECTED_PRODUCTION=PASS'
-
-      - name: E2 with same corrected production source
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          Push-Location eden/build
-          try {
-            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
-            $compileHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
-            if($compileHits.Count-ne 1){throw "probe compile count=$($compileHits.Count)"}
-            $compile=[string]$compileHits[0]
-            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
-            $newObj='imp008e_production_runtime_6e1167c9/rasterizer_cached_retry_pagetable_stack.cpp.obj'
-            $compile=$compile.Replace($oldObj,$newObj)
-            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF imp008e_production_runtime_6e1167c9\rasterizer_cached_retry_pagetable_stack.cpp.obj.d')
-            $e2Source=((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
-            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$e2Source))
-            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
-            & $env:ComSpec /D /S /C $compile
-            if($LASTEXITCODE-ne 0){throw "E2 compile rc=$LASTEXITCODE"}
-            $linkHits=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
-            if($linkHits.Count-ne 1){throw "link count=$($linkHits.Count)"}
-            $link=[string]$linkHits[0]
-            $link=$link.Replace($oldObj,$newObj).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_corrected_production.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_corrected_production.a')
-            $link=$link.Replace('src/core/libcore.a','imp008e_production_hostmemory_lease_compile_6e1167c9/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
-            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
-            & $env:ComSpec /D /S /C $link
-            if($LASTEXITCODE-ne 0){throw "E2 link rc=$LASTEXITCODE"}
-          } finally { Pop-Location }
-          $eden=(Resolve-Path eden).Path; $psi=New-Object Diagnostics.ProcessStartInfo; $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_corrected_production.exe').Path; $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
-          $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timeout=-not $p.WaitForExit(60000); if($timeout){$p.Kill();$p.WaitForExit()}; $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err; [IO.File]::WriteAllText((Join-Path $eden 'imp008e-e2-corrected-production.log'),$log); Write-Host $out; Write-Host $err; Write-Host "IMP008E_E2_CORRECTED_PRODUCTION_RC=$rc"
-          if($rc-ne 0){throw "E2 corrected production runtime rc=$rc"}
-          foreach($marker in @('IMP008E_E2_GUEST_STACK_QUERY=PASS','IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')){if(-not $log.Contains($marker)){throw "E2 marker missing: $marker"}}
-          Write-Host 'IMP008E_E2_CORRECTED_PRODUCTION=PASS'
-          Write-Host 'IMP008E_CORRECTED_PRODUCTION_D1_E5_E2_SERIAL_GATE=PASS'
-
-      - name: Upload corrected production diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: imp008e-corrected-production-hostmemory-lease-d1-e5-e2
-          path: |
-            eden/imp008d-d1-corrected-production.log
-            eden/imp008b-e5-corrected-production.log
-            eden/imp008e-e2-corrected-production.log
-            eden/imp008d-d1-first-exception.bin
-          if-no-files-found: warn
+          Show-Matches 'V6_RETAINED' $v6
+          Show-Matches 'PRODUCTION_6E1167C9' $prod
+          Write-Host 'IMP008E_V6_PRODUCTION_REENTRY_INSPECT=PASS'
