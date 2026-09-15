@@ -1,0 +1,42 @@
+name: Inspect IMP-008D D1 and IMP-008E E2 Build Targets
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp008d-d1-e2-build-targets-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-d1-e2-targets:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 8
+    steps:
+      - name: Inspect exact configured target names
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          Write-Host ('IMP008_REG_TARGET_RETAINED_HEAD=' + (git -C eden rev-parse HEAD).Trim())
+          Write-Host 'IMP008_REG_BUILD_NINJA_BEGIN'
+          Select-String -Path 'eden/build/build.ninja' -Pattern 'data_fault_skip_runtime\.cpp|rasterizer_cached_retry\.cpp' -Context 2,3 |
+            ForEach-Object { $_.ToString() }
+          Write-Host 'IMP008_REG_BUILD_NINJA_END'
+
+          Write-Host 'IMP008_REG_CMAKE_BEGIN'
+          Get-ChildItem 'eden' -Recurse -File -Filter CMakeLists.txt |
+            Select-String -Pattern 'data_fault_skip_runtime|rasterizer_cached_retry|windows-arm64-nce-fault-d1|windows-arm64-nce-rasterizer-e2' -Context 3,5 |
+            ForEach-Object { $_.ToString() } |
+            Select-Object -First 150
+          Write-Host 'IMP008_REG_CMAKE_END'
+
+          Write-Host 'IMP008_REG_TARGET_MATCHES_BEGIN'
+          & 'C:\msys64\usr\bin\ninja.exe' -C eden/build -t targets all 2>$null |
+            Select-String -Pattern 'd1|e2|data_fault|rasterizer_cached|fault_skip|cached_retry' -CaseSensitive:$false |
+            ForEach-Object { $_.Line } |
+            Select-Object -First 100
+          Write-Host 'IMP008_REG_TARGET_MATCHES_END'
