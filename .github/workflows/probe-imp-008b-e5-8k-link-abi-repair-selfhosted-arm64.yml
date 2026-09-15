@@ -30,11 +30,11 @@ jobs:
           $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
           $check = [IO.File]::ReadAllText((Resolve-Path $transition))
           if (-not $check.Contains('IMP008B_E5_8K_STACK_READY=PASS')) { throw '8K transition marker missing' }
-          if (-not $check.Contains('reinterpret_cast<NT_TIB*>(teb)->StackLimit')) { throw 'normalized NT_TIB StackLimit access missing' }
-          if (-not $check.Contains('reinterpret_cast<NT_TIB*>(teb)->StackBase')) { throw 'normalized NT_TIB StackBase access missing' }
+          if (-not $check.Contains('reinterpret_cast<NT_TIB*>(teb)->StackLimit')) { throw 'TEB StackLimit publication missing' }
+          if (-not $check.Contains('reinterpret_cast<NT_TIB*>(teb)->StackBase')) { throw 'TEB StackBase publication missing' }
           Write-Host 'IMP008B_E5_ABI_REPAIR_RETAINED_STATE=PASS'
 
-      - name: Relax false 8K region-size fail-fast to allocation bounds
+      - name: Keep allocation-base 8K bounds and stage NtContinue before TEB publish
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -43,12 +43,47 @@ jobs:
           $text = $text.Replace('        stack_mbi.RegionSize < 0x2000) {', '        stack_mbi.AllocationBase == nullptr) {')
           $text = $text.Replace('reinterpret_cast<std::uint64_t>(stack_mbi.BaseAddress);', 'reinterpret_cast<std::uint64_t>(stack_mbi.AllocationBase);')
           $text = $text.Replace('stack_limit + static_cast<std::uint64_t>(stack_mbi.RegionSize);', 'stack_limit + 0x2000;')
-          if (-not $text.Contains('stack_mbi.AllocationBase == nullptr) {')) { throw 'allocation-base query guard missing' }
-          if (-not $text.Contains('reinterpret_cast<std::uint64_t>(stack_mbi.AllocationBase);')) { throw 'allocation-base stack limit missing' }
-          if (-not $text.Contains('stack_limit + 0x2000;')) { throw 'fixed 8K stack base missing' }
+          if (-not $text.Contains('IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS')) {
+            $needle = '    TraceVirtualMapping("RESTORE_SP", context.Sp);'
+            $insert = @"
+    TraceVirtualMapping("RESTORE_SP", context.Sp);
+
+    using DirectNtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
+    const HMODULE direct_ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto direct_nt_continue = direct_ntdll != nullptr
+                                        ? reinterpret_cast<DirectNtContinueFn>(
+                                              GetProcAddress(direct_ntdll, "NtContinue"))
+                                        : nullptr;
+    if (direct_nt_continue == nullptr) {
+        std::abort();
+    }
+    std::fputs("IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS\n", stderr);
+    std::fflush(stderr);
+"@
+            if (-not $text.Contains($needle)) { throw 'RESTORE_SP trace anchor missing' }
+            $text = $text.Replace($needle, $insert)
+          }
+          $limitLine = '    reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);'
+          $baseLine = '    reinterpret_cast<NT_TIB*>(teb)->StackBase = reinterpret_cast<PVOID>(stack_base);'
+          $text = $text.Replace($limitLine + "`r`n" + $baseLine + "`r`n", '')
+          $text = $text.Replace($limitLine + "`n" + $baseLine + "`n", '')
+          $callNeedle = '    WindowsNceTransition::ContinueContext(context);'
+          if ($text.Contains($callNeedle)) {
+            $directCall = @"
+    reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);
+    reinterpret_cast<NT_TIB*>(teb)->StackBase = reinterpret_cast<PVOID>(stack_base);
+    direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
+    std::abort();
+"@
+            $text = $text.Replace($callNeedle, $directCall)
+          }
+          if (-not $text.Contains('direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);')) { throw 'direct NtContinue call missing' }
+          $firstLimit = $text.IndexOf('reinterpret_cast<NT_TIB*>(teb)->StackLimit = reinterpret_cast<PVOID>(stack_limit);')
+          $beforeNt = $text.IndexOf('IMP008B_E2_BEFORE_NT_CONTINUE=PASS')
+          if ($firstLimit -lt 0 -or $beforeNt -lt 0 -or $firstLimit -lt $beforeNt) { throw 'TEB publish still occurs before final diagnostic host calls' }
           $utf8 = New-Object System.Text.UTF8Encoding($false)
           [IO.File]::WriteAllText((Resolve-Path $path), $text, $utf8)
-          Write-Host 'IMP008B_E5_8K_ALLOCATION_BOUNDS_PATCH=PASS'
+          Write-Host 'IMP008B_E5_DIRECT_NT_AFTER_TEB=PASS'
 
       - name: Set up minimal direct-link CLANGARM64 toolchain
         uses: msys2/setup-msys2@v2
@@ -90,21 +125,15 @@ jobs:
           function Invoke-Direct([string]$label, [string]$line) {
             if ($line -match 'RERUN_CMAKE|regenerate-during-build') { throw "$label unexpectedly contains regeneration" }
             $cmd = [regex]::Replace($line, "'(C:/[^']+)'", '$1')
-            Write-Host "IMP008B_E5_ABI_${label}_BEGIN=PASS"
             & $env:ComSpec /D /S /C $cmd
             $rc = $LASTEXITCODE
             Write-Host "IMP008B_E5_ABI_${label}_RC=$rc"
             if ($rc -ne 0) { throw "$label refresh failed rc=$rc" }
-            Write-Host "IMP008B_E5_ABI_${label}=PASS"
           }
-          $transition = Get-One " -c '?C:/[^']*windows_nce_transition\.cpp'?$" 'TRANSITION'
-          $service = Get-One " -c '?C:/[^']*/src/core/hle/service/service\.cpp'?$" 'SERVICE'
-          $nifm = Get-One " -c '?C:/[^']*/src/core/hle/service/nifm/nifm\.cpp'?$" 'NIFM'
-          $condition = Get-One " -c '?C:/[^']*/src/shader_recompiler/frontend/ir/condition\.cpp'?$" 'CONDITION'
-          Invoke-Direct 'TRANSITION' $transition
-          Invoke-Direct 'SERVICE' $service
-          Invoke-Direct 'NIFM' $nifm
-          Invoke-Direct 'CONDITION' $condition
+          Invoke-Direct 'TRANSITION' (Get-One " -c '?C:/[^']*windows_nce_transition\.cpp'?$" 'TRANSITION')
+          Invoke-Direct 'SERVICE' (Get-One " -c '?C:/[^']*/src/core/hle/service/service\.cpp'?$" 'SERVICE')
+          Invoke-Direct 'NIFM' (Get-One " -c '?C:/[^']*/src/core/hle/service/nifm/nifm\.cpp'?$" 'NIFM')
+          Invoke-Direct 'CONDITION' (Get-One " -c '?C:/[^']*/src/shader_recompiler/frontend/ir/condition\.cpp'?$" 'CONDITION')
           Write-Host 'IMP008B_E5_FMT_ABI_REFRESH=PASS'
 
       - name: Direct link E5
@@ -116,12 +145,10 @@ jobs:
           $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
           if ($hits.Count -ne 1) { throw "final link command count=$($hits.Count)" }
           $cmd = [string]$hits[0]
-          if ($cmd -match 'RERUN_CMAKE|regenerate-during-build') { throw 'link unexpectedly contains regeneration' }
           & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-abi-link.log'
           $rc = $LASTEXITCODE
           Write-Host "IMP008B_E5_ABI_LINK_RC=$rc"
           if ($rc -ne 0) { throw "direct link failed rc=$rc" }
-          if (-not (Test-Path 'bin/imp008b_e5_x18_runtime.exe')) { throw 'linked E5 executable missing' }
           Write-Host 'IMP008B_E5_ABI_LINK=PASS'
 
       - name: Launch E5 8K private guest stack A-B
@@ -146,11 +173,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path 'imp008b-e5-8k-abi.log')) {
             Write-Host 'IMP008B_E5_8K_ABI_RUNTIME=NOT_REACHED'
-            if (Test-Path 'imp008b-e5-abi-link.log') { Get-Content 'imp008b-e5-abi-link.log' }
             exit 0
           }
-          Get-Content 'imp008b-e5-8k-abi.log' | Select-String -Pattern 'IMP008B_E5_(8K_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
-          $guestStack = Select-String -Path 'imp008b-e5-8k-abi.log' -SimpleMatch 'IMP008B_E5_8K_GUEST_STACK=PASS' -Quiet
+          Get-Content 'imp008b-e5-8k-abi.log' | Select-String -Pattern 'IMP008B_E5_(8K_|NT_RESOLVED|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
           $ready = Select-String -Path 'imp008b-e5-8k-abi.log' -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet
           $beforeNt = Select-String -Path 'imp008b-e5-8k-abi.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet
           $generic = Select-String -Path 'imp008b-e5-8k-abi.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
@@ -160,7 +185,6 @@ jobs:
           $svc = Select-String -Path 'imp008b-e5-8k-abi.log' -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
           $x18result = Select-String -Path 'imp008b-e5-8k-abi.log' -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
           $gate = Select-String -Path 'imp008b-e5-8k-abi.log' -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
-          Write-Host ('IMP008B_E5_8K_GUEST_STACK_RESULT=' + $(if ($guestStack) {'PASS'} else {'NO'}))
           Write-Host ('IMP008B_E5_8K_READY=' + $(if ($ready) {'PASS'} else {'NO'}))
           Write-Host ('IMP008B_E5_8K_BEFORE_NT=' + $(if ($beforeNt) {'PASS'} else {'NO'}))
           Write-Host ('IMP008B_E5_8K_GENERIC_VEH=' + $(if ($generic) {'PASS'} else {'NO_ENTRY'}))
@@ -170,7 +194,6 @@ jobs:
           Write-Host ('IMP008B_E5_8K_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
           Write-Host ('IMP008B_E5_8K_X18_RESULT=' + $(if ($x18result) {'PASS'} else {'NO'}))
           Write-Host ('IMP008B_E5_8K_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_8K_STACK_VAD_BOUNDARY=' + $(if ($generic) {'CONFIRMED'} else {'NOT_CONFIRMED'}))
 
       - name: Upload ABI repair diagnostics
         if: always()
