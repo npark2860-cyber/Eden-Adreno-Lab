@@ -1,0 +1,37 @@
+name: Inspect IMP-008B E5 Dirty X18 VEH
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp-008b-e5-dirty-x18-veh-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-dirty-x18-veh:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Print retained dirty x18 VEH branch
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $path=(Resolve-Path 'eden/src/core/arm/nce/arm_nce_windows.cpp').Path
+          $text=[IO.File]::ReadAllText($path)
+          $breakStart=$text.IndexOf('if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT')
+          $avStart=$text.IndexOf('if (NCE::WindowsExceptionContext::IsAccessViolation', $breakStart + 1)
+          if ($breakStart -lt 0 -or $avStart -le $breakStart) { throw 'x18/AV branch boundaries not found' }
+          $block=$text.Substring($breakStart,$avStart-$breakStart)
+          Write-Host 'IMP008B_E5_DIRTY_X18_BLOCK_BEGIN'
+          Write-Host $block
+          Write-Host 'IMP008B_E5_DIRTY_X18_BLOCK_END'
+          Write-Host ('IMP008B_E5_DIRTY_X18_CONTINUECONTEXT_COUNT=' + ([regex]::Matches($block,'ContinueContext\(context\)')).Count)
+          Write-Host ('IMP008B_E5_DIRTY_X18_CONTINUE_EXECUTION_COUNT=' + ([regex]::Matches($block,'EXCEPTION_CONTINUE_EXECUTION')).Count)
+          Write-Host ('IMP008B_E5_DIRTY_X18_CONTINUE_SEARCH_COUNT=' + ([regex]::Matches($block,'EXCEPTION_CONTINUE_SEARCH')).Count)
