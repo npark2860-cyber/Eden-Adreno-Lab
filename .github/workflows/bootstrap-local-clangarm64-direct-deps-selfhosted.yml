@@ -1,0 +1,47 @@
+name: Bootstrap Local CLANGARM64 Direct Build Deps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/bootstrap-local-clangarm64-direct-deps-selfhosted.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-local-deps:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+    steps:
+      - name: Install only missing CLANGARM64 direct-build packages
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pacman = 'C:\msys64\usr\bin\pacman.exe'
+          if (-not (Test-Path $pacman)) { throw "pacman missing: $pacman" }
+          $packages = @(
+            'mingw-w64-clang-aarch64-lld',
+            'mingw-w64-clang-aarch64-sccache',
+            'mingw-w64-clang-aarch64-libusb',
+            'mingw-w64-clang-aarch64-zlib',
+            'mingw-w64-clang-aarch64-enet',
+            'mingw-w64-clang-aarch64-boost',
+            'mingw-w64-clang-aarch64-fmt',
+            'mingw-w64-clang-aarch64-lz4',
+            'mingw-w64-clang-aarch64-zstd',
+            'mingw-w64-clang-aarch64-opus',
+            'mingw-w64-clang-aarch64-libiconv'
+          )
+          & $pacman --noconfirm -S --needed @packages
+          if ($LASTEXITCODE -ne 0) { throw "dependency bootstrap failed rc=$LASTEXITCODE" }
+          foreach ($p in @(
+            'C:\msys64\clangarm64\include\boost\intrusive\rbtree.hpp',
+            'C:\msys64\clangarm64\include\fmt\ranges.h',
+            'C:\msys64\clangarm64\lib\libfmt.a'
+          )) {
+            if (-not (Test-Path $p)) { throw "required dependency still missing: $p" }
+          }
+          Write-Host 'IMP008B_E5_LOCAL_DIRECT_DEPS=PASS'
