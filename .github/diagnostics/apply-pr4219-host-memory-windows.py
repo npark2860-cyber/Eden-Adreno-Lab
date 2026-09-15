@@ -13,11 +13,23 @@ def replace_once(old: str, new: str, label: str) -> None:
     text = text.replace(old, new, 1)
 
 
-# Windows HostMemory::Impl fallback allocator. Preserve all custom NCE reservation/direct-map code.
-replace_once(
-    """    ~Impl() {\n        Release();\n    }\n\n    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {\n""",
+def replace_first_with_expected_count(old: str, new: str, label: str, expected: int) -> None:
+    global text
+    count = text.count(old)
+    if count != expected:
+        raise SystemExit(f"{label}: expected {expected} matches before first replacement, found {count}")
+    text = text.replace(old, new, 1)
+
+
+impl_map_anchor = """    ~Impl() {\n        Release();\n    }\n\n    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {\n"""
+
+# The frozen file contains this sequence once in the Windows Impl and once in the POSIX Impl.
+# Replace the first occurrence only; after that the remaining occurrence uniquely identifies POSIX.
+replace_first_with_expected_count(
+    impl_map_anchor,
     """    ~Impl() {\n        Release();\n    }\n\n    void* Allocate(size_t size) {\n        auto* ptr = VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);\n        if (ptr == nullptr) {\n            LOG_CRITICAL(HW_Memory, \"Failed to allocate fallback buffer with size {:#x}, error {}\", size, GetLastError());\n        }\n        return ptr;\n    }\n\n    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {\n""",
     "windows Allocate",
+    2,
 )
 
 # POSIX portions of PR4219 host_memory.cpp.
@@ -57,9 +69,8 @@ replacements = [
 for old, new, label in replacements:
     replace_once(old, new, label)
 
-# After the Windows destructor was transformed, this plain destructor anchor is the POSIX Impl.
 replace_once(
-    """    ~Impl() {\n        Release();\n    }\n\n    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {\n""",
+    impl_map_anchor,
     """    ~Impl() {\n        Release();\n    }\n\n    void* Allocate(size_t size) {\n        auto* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);\n        if (ptr == MAP_FAILED) {\n            LOG_CRITICAL(HW_Memory, \"Failed to allocate fallback buffer with size {:#x}, {}\", size, strerror(errno));\n        }\n        return ptr;\n    }\n\n    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {\n""",
     "posix Allocate",
 )
