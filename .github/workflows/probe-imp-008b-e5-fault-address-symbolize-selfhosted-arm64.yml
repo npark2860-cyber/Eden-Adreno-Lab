@@ -1,0 +1,109 @@
+name: Probe IMP-008B E5 Fault Address Symbolize
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-fault-address-symbolize-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  symbolize-native-arm64:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Build and run native ARM64 PE address mapper
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $env:RUNNER_TEMP 'imp008b_e5_symbolize.cpp'
+          $exe = Join-Path $env:RUNNER_TEMP 'imp008b_e5_symbolize.exe'
+          $code = @'
+          #include <windows.h>
+          #include <tlhelp32.h>
+          #include <cstdint>
+          #include <cstdio>
+          #include <cstring>
+          #include <limits>
+
+          static void PrintExportNearest(HMODULE module, std::uintptr_t target) {
+              auto base = reinterpret_cast<std::uintptr_t>(module);
+              auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+              if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+              auto nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+              if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+              const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+              if (!dir.VirtualAddress || !dir.Size) return;
+              auto exp = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+              auto funcs = reinterpret_cast<const DWORD*>(base + exp->AddressOfFunctions);
+              auto names = reinterpret_cast<const DWORD*>(base + exp->AddressOfNames);
+              auto ords = reinterpret_cast<const WORD*>(base + exp->AddressOfNameOrdinals);
+              std::uintptr_t best_delta = std::numeric_limits<std::uintptr_t>::max();
+              const char* best_name = nullptr;
+              DWORD best_rva = 0;
+              for (DWORD i = 0; i < exp->NumberOfNames; ++i) {
+                  const WORD ord = ords[i];
+                  if (ord >= exp->NumberOfFunctions) continue;
+                  const DWORD rva = funcs[ord];
+                  const auto addr = base + rva;
+                  if (addr <= target && target - addr < best_delta) {
+                      best_delta = target - addr;
+                      best_name = reinterpret_cast<const char*>(base + names[i]);
+                      best_rva = rva;
+                  }
+              }
+              if (best_name) {
+                  std::printf("IMP008B_E5_FAULT_NEAREST_EXPORT=%s RVA=0x%X DELTA=0x%llX\n",
+                              best_name, best_rva, static_cast<unsigned long long>(best_delta));
+              }
+          }
+
+          int main() {
+              constexpr std::uintptr_t target = 0x00007FFE13D7C460ULL;
+              std::printf("IMP008B_E5_FAULT_TARGET=0x%llX\n", static_cast<unsigned long long>(target));
+
+              HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
+                                                     GetCurrentProcessId());
+              if (snap != INVALID_HANDLE_VALUE) {
+                  MODULEENTRY32W me{};
+                  me.dwSize = sizeof(me);
+                  if (Module32FirstW(snap, &me)) {
+                      do {
+                          const auto low = reinterpret_cast<std::uintptr_t>(me.modBaseAddr);
+                          const auto high = low + static_cast<std::uintptr_t>(me.modBaseSize);
+                          if (target >= low && target < high) {
+                              std::printf("IMP008B_E5_FAULT_MODULE=%ls BASE=0x%llX SIZE=0x%lX RVA=0x%llX\n",
+                                          me.szModule,
+                                          static_cast<unsigned long long>(low),
+                                          static_cast<unsigned long>(me.modBaseSize),
+                                          static_cast<unsigned long long>(target - low));
+                              PrintExportNearest(reinterpret_cast<HMODULE>(me.modBaseAddr), target);
+                          }
+                      } while (Module32NextW(snap, &me));
+                  }
+                  CloseHandle(snap);
+              }
+
+              HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+              std::printf("IMP008B_E5_NTDLL_BASE=%p\n", ntdll);
+              const char* names[] = {
+                  "NtContinue", "ZwContinue", "RtlRestoreContext", "RtlCaptureContext",
+                  "RtlDispatchException", "KiUserExceptionDispatcher", "KiUserApcDispatcher",
+                  "KiUserCallbackDispatcher", "RtlUserThreadStart"
+              };
+              for (const char* name : names) {
+                  FARPROC p = ntdll ? GetProcAddress(ntdll, name) : nullptr;
+                  std::printf("IMP008B_E5_EXPORT_%s=%p\n", name, p);
+              }
+              return 0;
+          }
+          '@
+          [IO.File]::WriteAllText($src, $code, (New-Object System.Text.UTF8Encoding($false)))
+          & 'C:\msys64\clangarm64\bin\clang++.exe' -std=c++20 -O0 -g0 $src -o $exe
+          if ($LASTEXITCODE -ne 0) { throw "symbolizer compile failed rc=$LASTEXITCODE" }
+          & $exe
+          if ($LASTEXITCODE -ne 0) { throw "symbolizer runtime failed rc=$LASTEXITCODE" }
