@@ -84,7 +84,8 @@ jobs:
 
           $a='    Trace("IMP008E_E2_PHYSICAL_X18_TEB_AFTER");'
           if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'final x18 anchor mismatch' }
-          $text=$text.Replace($a,"    Trace(\"IMP008E_E2_PHYSICAL_X18_TEB_AFTER\");`r`n    Trace(\"IMP008E_E2_GATE\");`r`n    ExitProcess(0);")
+          $insertion='    Trace("IMP008E_E2_PHYSICAL_X18_TEB_AFTER");' + "`r`n" + '    Trace("IMP008E_E2_GATE");' + "`r`n" + '    ExitProcess(0);'
+          $text=$text.Replace($a,$insertion)
 
           [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
 
