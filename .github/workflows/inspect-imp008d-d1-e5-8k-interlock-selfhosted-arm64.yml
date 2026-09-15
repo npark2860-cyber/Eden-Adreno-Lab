@@ -1,0 +1,31 @@
+name: Inspect IMP-008D D1 E5 8K Interlock
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp008d-d1-e5-8k-interlock-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-d1-e5-8k-interlock:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect retained transition 8K guard and D1 stack
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          Write-Host "RETAINED_HEAD=$head"
+          Write-Host 'IMP008D_D1_E5_8K_GUARD_BEGIN'
+          Get-Content 'eden/src/core/arm/nce/windows_nce_transition.cpp' | Select-String -Pattern 'IMP008B_E5_8K_STACK_QUERY' -Context 35,35
+          Write-Host 'IMP008D_D1_E5_8K_GUARD_END'
+          Write-Host 'IMP008D_D1_STACK_CONFIG_BEGIN'
+          Get-Content 'eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp' | Select-String -Pattern 'PageSize|StackPages|InitialImageSize|guest_sp' -Context 1,1
+          Write-Host 'IMP008D_D1_STACK_CONFIG_END'
