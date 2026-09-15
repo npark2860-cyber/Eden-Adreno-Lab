@@ -1,0 +1,82 @@
+name: Probe IMP-008E HostMemory Private Lease Smoke V3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-hostmemory-private-lease-smoke-v3-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-hostmemory-private-lease-smoke-v3
+  cancel-in-progress: false
+
+jobs:
+  hostmemory-private-lease-smoke-v3:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Build reversible lease smoke V3
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw 'unexpected retained head' }
+          $src='eden/build/hostmemory_private_lease_smoke_v2/hostmemory_private_lease_smoke.cpp'
+          if (-not (Test-Path $src)) { throw 'V2 generated source missing' }
+          $dir='eden/build/hostmemory_private_lease_smoke_v3'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dst=Join-Path (Resolve-Path $dir).Path 'hostmemory_private_lease_smoke.cpp'
+          $text=[IO.File]::ReadAllText((Resolve-Path $src).Path)
+          $text=$text.Replace('void* r=va2(GetCurrentProcess(),virt,LeaseSize,MEM_RESERVE|0x4000,PAGE_NOACCESS,nullptr,0);','void* r=va2(GetCurrentProcess(),virt,LeaseSize,MEM_RESERVE|MEM_COMMIT|0x4000,PAGE_READWRITE,nullptr,0);')
+          $text=$text.Replace('r=va2(GetCurrentProcess(),virt,LeaseSize,MEM_RESERVE|0x4000,PAGE_NOACCESS,nullptr,0);','r=va2(GetCurrentProcess(),virt,LeaseSize,MEM_RESERVE|MEM_COMMIT|0x4000,PAGE_READWRITE,nullptr,0);')
+          $text=$text.Replace('    if(VirtualAlloc(virt,LeaseSize,MEM_COMMIT,PAGE_READWRITE)!=virt) return Fail("IMP008E_LEASE_PRIVATE_COMMIT",15);','    Pass("IMP008E_LEASE_PRIVATE_COMMIT");')
+          $text=$text.Replace('VirtualFreeEx(GetCurrentProcess(),virt,0,MEM_RELEASE|0x2)','VirtualFreeEx(GetCurrentProcess(),virt,LeaseSize,MEM_RELEASE|0x2)')
+          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location eden/build
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if($hits.Count -ne 1){throw "compile count=$($hits.Count)"}
+            $compile=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='hostmemory_private_lease_smoke_v3/hostmemory_private_lease_smoke.cpp.obj'
+            $compile=$compile.Replace($oldObj,$newObj)
+            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF hostmemory_private_lease_smoke_v3\hostmemory_private_lease_smoke.cpp.obj.d')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/hostmemory_private_lease_smoke_v3/hostmemory_private_lease_smoke.cpp')
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if($LASTEXITCODE -ne 0){throw "compile rc=$LASTEXITCODE"}
+
+            $linkHits=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
+            if($linkHits.Count -ne 1){throw "link count=$($linkHits.Count)"}
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_hostmemory_private_lease_smoke_v3.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_hostmemory_private_lease_smoke_v3.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if($LASTEXITCODE -ne 0){throw "link rc=$LASTEXITCODE"}
+          } finally { Pop-Location }
+
+      - name: Run reversible lease smoke V3
+        shell: powershell
+        run: |
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_hostmemory_private_lease_smoke_v3.exe').Path
+          $psi.WorkingDirectory=(Resolve-Path eden).Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process
+          $p.StartInfo=$psi
+          [void]$p.Start()
+          $ot=$p.StandardOutput.ReadToEndAsync()
+          $et=$p.StandardError.ReadToEndAsync()
+          $p.WaitForExit()
+          Write-Host $ot.Result
+          Write-Host $et.Result
+          if($p.ExitCode -ne 0){throw "lease smoke v3 rc=$($p.ExitCode)"}
