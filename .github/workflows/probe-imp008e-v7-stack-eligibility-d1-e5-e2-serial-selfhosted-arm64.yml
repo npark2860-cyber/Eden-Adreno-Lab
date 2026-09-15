@@ -1,4 +1,4 @@
-name: Validate IMP-008E exact promoted source
+name: Resume IMP-008E exact promoted validation
 
 on:
   workflow_dispatch:
@@ -11,114 +11,34 @@ permissions:
   contents: read
 
 concurrency:
-  group: validate-imp008e-exact-promoted-source
+  group: resume-imp008e-exact-promoted-validation
   cancel-in-progress: false
 
 jobs:
-  exact-promoted-d1-e5-e2:
+  exact-promoted-resume:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
-      - name: Compile exact promoted NCE source
+      - name: Reuse exact core objects and rebuild clean probes
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $retained='38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'
+          if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
           $source='055b212df86dbfc18257b127ee5a0cbfda8ff861'
-          if((git -C eden rev-parse HEAD).Trim() -ne $retained){throw 'unexpected retained HEAD'}
-          if(-not(Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')){throw 'E2 source missing'}
-          git -C eden fetch --no-tags origin $source
-          if($LASTEXITCODE-ne 0){throw "fetch source rc=$LASTEXITCODE"}
-          if((git -C eden rev-parse FETCH_HEAD).Trim() -ne $source){throw 'unexpected FETCH_HEAD'}
-
-          $dir='eden/build/imp008e_exact_055b212d'
-          if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
-          New-Item -ItemType Directory -Force (Join-Path $dir 'common') | Out-Null
-          New-Item -ItemType Directory -Force (Join-Path $dir 'core/arm/nce') | Out-Null
-          $resolved=(Resolve-Path $dir).Path
-          function Export-Exact([string]$repoPath,[string]$dst){
-            $lines=& git -C eden show "${source}:$repoPath"
-            if($LASTEXITCODE-ne 0){throw "git show failed: $repoPath"}
-            [IO.File]::WriteAllText($dst,(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
-          }
-          Export-Exact 'src/common/host_memory.h' (Join-Path $resolved 'common/host_memory.h')
-          Export-Exact 'src/common/host_memory_windows_lease.h' (Join-Path $resolved 'common/host_memory_windows_lease.h')
-          Export-Exact 'src/core/arm/nce/windows_cross_thread_break.h' (Join-Path $resolved 'core/arm/nce/windows_cross_thread_break.h')
-          Export-Exact 'src/core/arm/nce/windows_nce_transition.h' (Join-Path $resolved 'core/arm/nce/windows_nce_transition.h')
-          Export-Exact 'src/core/arm/nce/arm_nce_windows.cpp' (Join-Path $resolved 'arm_nce_windows.cpp')
-          Export-Exact 'src/core/arm/nce/windows_nce_transition.cpp' (Join-Path $resolved 'windows_nce_transition.cpp')
-          Export-Exact 'src/core/arm/nce/windows_nce_entry.asm' (Join-Path $resolved 'windows_nce_entry.asm')
-
-          $armText=[IO.File]::ReadAllText((Join-Path $resolved 'arm_nce_windows.cpp'))
-          $transText=[IO.File]::ReadAllText((Join-Path $resolved 'windows_nce_transition.cpp'))
-          $asmText=[IO.File]::ReadAllText((Join-Path $resolved 'windows_nce_entry.asm'))
-          foreach($needle in @('return EXCEPTION_CONTINUE_EXECUTION;','RedirectToHost(')){if(-not $armText.Contains($needle)){throw "arm source marker missing: $needle"}}
-          foreach($needle in @('WindowsNceGuestStackBridge','WindowsNceHostStackBridge','interrupted.X[3] = host.host_sp','interrupted.X[16] = host_pc')){if(-not $transText.Contains($needle)){throw "transition source marker missing: $needle"}}
-          foreach($needle in @('WindowsNceGuestStackBridge PROC','WindowsNceHostStackBridge PROC','mov     sp, x3','ret     x16')){if(-not $asmText.Contains($needle)){throw "asm source marker missing: $needle"}}
-
-          Push-Location eden/build
-          try {
-            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
-            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
-            $overlay=((Resolve-Path 'imp008e_exact_055b212d').Path -replace '\\','/')
-
-            function Normalize-Compile([string]$cmd){
-              $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-              $cmd=[regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
-              return $cmd
-            }
-
-            $armHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
-            if($armHits.Count-ne 1){throw "arm compile count=$($armHits.Count)"}
-            $cmd=[string]$armHits[0]
-            $m=[regex]::Match($cmd,'-o\s+(\S*arm_nce_windows\.cpp\.obj)');if(!$m.Success){throw 'arm object path missing'}
-            $cmd=$cmd.Replace($m.Groups[1].Value.Trim("'"),'imp008e_exact_055b212d/arm_nce_windows.cpp.obj')
-            $cmd=[regex]::Replace($cmd,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF imp008e_exact_055b212d\arm_nce_windows.cpp.obj.d')
-            $src=((Resolve-Path 'imp008e_exact_055b212d/arm_nce_windows.cpp').Path -replace '\\','/')
-            $cmd=[regex]::Replace($cmd,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$src))
-            $cmd=[regex]::Replace($cmd,'\s-I',(" -I"+$overlay+' -I'),1)
-            $cmd=Normalize-Compile $cmd
-            & $env:ComSpec /D /S /C $cmd
-            if($LASTEXITCODE-ne 0){throw "exact arm compile rc=$LASTEXITCODE"}
-
-            $transHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/windows_nce_transition\.cpp'?$"})
-            if($transHits.Count-ne 1){throw "transition compile count=$($transHits.Count)"}
-            $cmd=[string]$transHits[0]
-            $m=[regex]::Match($cmd,'-o\s+(\S*windows_nce_transition\.cpp\.obj)');if(!$m.Success){throw 'transition object path missing'}
-            $cmd=$cmd.Replace($m.Groups[1].Value.Trim("'"),'imp008e_exact_055b212d/windows_nce_transition.cpp.obj')
-            $cmd=[regex]::Replace($cmd,'-MF\s+\S*windows_nce_transition\.cpp\.obj\.d','-MF imp008e_exact_055b212d\windows_nce_transition.cpp.obj.d')
-            $src=((Resolve-Path 'imp008e_exact_055b212d/windows_nce_transition.cpp').Path -replace '\\','/')
-            $cmd=[regex]::Replace($cmd,"-c\s+'?C:/[^']*?/src/core/arm/nce/windows_nce_transition\.cpp'?",('-c '+$src))
-            $cmd=[regex]::Replace($cmd,'\s-I',(" -I"+$overlay+' -I'),1)
-            $cmd=Normalize-Compile $cmd
-            & $env:ComSpec /D /S /C $cmd
-            if($LASTEXITCODE-ne 0){throw "exact transition compile rc=$LASTEXITCODE"}
-
-            $asmLine=Select-String -Path 'build.ninja' -Pattern 'armasm64\.exe' | Select-Object -First 1
-            if($null-eq $asmLine){throw 'armasm64 command missing'}
-            $am=[regex]::Match($asmLine.Line,'"([^"]*armasm64\.exe)"|(\S*armasm64\.exe)');if(!$am.Success){throw 'armasm64 path parse failed'}
-            $asmExe=if($am.Groups[1].Success){$am.Groups[1].Value}else{$am.Groups[2].Value}
-            & $asmExe -nologo (Resolve-Path 'imp008e_exact_055b212d/windows_nce_entry.asm').Path (Join-Path (Resolve-Path 'imp008e_exact_055b212d').Path 'windows_nce_entry.obj')
-            if($LASTEXITCODE-ne 0){throw "exact armasm64 rc=$LASTEXITCODE"}
-          } finally {Pop-Location}
-
-          foreach($p in @('eden/build/imp008e_exact_055b212d/arm_nce_windows.cpp.obj','eden/build/imp008e_exact_055b212d/windows_nce_transition.cpp.obj','eden/build/imp008e_exact_055b212d/windows_nce_entry.obj')){if(-not(Test-Path $p)){throw "exact object missing: $p"}}
-          Write-Host "IMP008E_EXACT_CORE_COMPILE=PASS SOURCE=$source"
-
-      - name: Build exact-source D1 E5 E2 binaries
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
+          git -C eden cat-file -e "$source`:src/core/arm/nce/windows_nce_entry.asm"
+          if($LASTEXITCODE-ne 0){git -C eden fetch --no-tags origin $source; if($LASTEXITCODE-ne 0){throw 'source fetch failed'}}
+          $coreDir='eden/build/imp008e_exact_055b212d'
           $runtime='eden/build/imp008e_exact_runtime_055b212d'
-          if(Test-Path $runtime){Remove-Item -Recurse -Force $runtime}
-          New-Item -ItemType Directory -Force $runtime | Out-Null
-          $d1src=(Resolve-Path 'eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp').Path
-          $d1dst=Join-Path (Resolve-Path $runtime).Path 'data_fault_skip_runtime.cpp'
-          $text=[IO.File]::ReadAllText($d1src)
-          $needle='if (getter_literal_matches == 0) {'
-          if(([regex]::Matches($text,[regex]::Escape($needle))).Count-lt 1){throw 'D1 stale getter condition missing'}
-          $text=$text.Replace($needle,'if (false && getter_literal_matches == 0) { // current patcher compatibility')
-          [IO.File]::WriteAllText($d1dst,$text,[Text.UTF8Encoding]::new($false))
+          foreach($p in @(
+            "$coreDir/arm_nce_windows.cpp.obj",
+            "$coreDir/windows_nce_transition.cpp.obj",
+            "$coreDir/windows_nce_entry.obj",
+            "$coreDir/arm_nce_windows.cpp",
+            "$coreDir/windows_nce_transition.cpp",
+            "$coreDir/windows_nce_entry.asm",
+            "$runtime/data_fault_skip_runtime.cpp.obj",
+            "$runtime/rasterizer_cached_retry_pagetable_stack.cpp.obj"
+          )){if(-not(Test-Path $p)){throw "exact retained build input missing: $p"}}
 
           Push-Location eden/build
           try {
@@ -126,41 +46,36 @@ jobs:
             if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
             $probeHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
             if($probeHits.Count-ne 1){throw "probe compile count=$($probeHits.Count)"}
-            $probeCompile=[string]$probeHits[0]
             $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
-            function Normalize([string]$cmd){
-              $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-              $cmd=[regex]::Replace($cmd,"'(C:/[^']+)'",'$1'); return $cmd
-            }
-            function Compile-Probe([string]$source,[string]$newObj,[string]$dep){
-              $c=$probeCompile.Replace($oldObj,$newObj)
-              $c=[regex]::Replace($c,'-MF\s+\S+\.obj\.d',('-MF '+$dep))
-              $src=((Resolve-Path $source).Path -replace '\\','/')
-              $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$src))
-              $c=Normalize $c
-              & $env:ComSpec /D /S /C $c
-              if($LASTEXITCODE-ne 0){throw "probe compile rc=$LASTEXITCODE source=$source"}
-            }
-            Compile-Probe 'imp008e_exact_runtime_055b212d/data_fault_skip_runtime.cpp' 'imp008e_exact_runtime_055b212d/data_fault_skip_runtime.cpp.obj' 'imp008e_exact_runtime_055b212d\data_fault_skip_runtime.cpp.obj.d'
-            Compile-Probe 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp' 'imp008e_exact_runtime_055b212d/rasterizer_cached_retry_pagetable_stack.cpp.obj' 'imp008e_exact_runtime_055b212d\rasterizer_cached_retry_pagetable_stack.cpp.obj.d'
+            $freshE5='imp008e_exact_runtime_055b212d/x18_runtime_invariant_fresh.cpp.obj'
+            $c=[string]$probeHits[0]
+            $c=$c.Replace($oldObj,$freshE5)
+            $c=[regex]::Replace($c,'-MF\s+\S+\.obj\.d','-MF imp008e_exact_runtime_055b212d\x18_runtime_invariant_fresh.cpp.obj.d')
+            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $c
+            if($LASTEXITCODE-ne 0){throw "fresh E5 compile rc=$LASTEXITCODE"}
 
             $links=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
             if($links.Count-ne 1){throw "link count=$($links.Count)"}
-            $baseLink=[string]$links[0]
+            $base=[string]$links[0]
             $core='imp008e_exact_055b212d/arm_nce_windows.cpp.obj imp008e_exact_055b212d/windows_nce_transition.cpp.obj imp008e_exact_055b212d/windows_nce_entry.obj src/core/libcore.a'
-            function Link-Variant([string]$probeObj,[string]$exe,[string]$libName){
-              $l=$baseLink.Replace($oldObj,$probeObj).Replace('bin\imp008b_e5_x18_runtime.exe',('bin\'+$exe)).Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a',('src\yuzu_cmd\'+$libName))
+            function Normalize([string]$cmd){
+              return $cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            }
+            function Link-Exact([string]$probeObj,[string]$exe,[string]$lib){
+              $l=$base.Replace($oldObj,$probeObj).Replace('bin\imp008b_e5_x18_runtime.exe',('bin\'+$exe)).Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a',('src\yuzu_cmd\'+$lib))
               $l=$l.Replace('src/core/libcore.a',$core)
               $l=Normalize $l
               & $env:ComSpec /D /S /C $l
-              if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE exe=$exe"}
+              if($LASTEXITCODE-ne 0){throw "exact link rc=$LASTEXITCODE exe=$exe"}
             }
-            Link-Variant 'imp008e_exact_runtime_055b212d/data_fault_skip_runtime.cpp.obj' 'imp008d_d1_exact_055b.exe' 'libimp008d_d1_exact_055b.a'
-            Link-Variant $oldObj 'imp008b_e5_exact_055b.exe' 'libimp008b_e5_exact_055b.a'
-            Link-Variant 'imp008e_exact_runtime_055b212d/rasterizer_cached_retry_pagetable_stack.cpp.obj' 'imp008e_e2_exact_055b.exe' 'libimp008e_e2_exact_055b.a'
+            Link-Exact 'imp008e_exact_runtime_055b212d/data_fault_skip_runtime.cpp.obj' 'imp008d_d1_exact_055b.exe' 'libimp008d_d1_exact_055b.a'
+            Link-Exact $freshE5 'imp008b_e5_exact_055b.exe' 'libimp008b_e5_exact_055b.a'
+            Link-Exact 'imp008e_exact_runtime_055b212d/rasterizer_cached_retry_pagetable_stack.cpp.obj' 'imp008e_e2_exact_055b.exe' 'libimp008e_e2_exact_055b.a'
           } finally {Pop-Location}
-          foreach($p in @('eden/build/bin/imp008d_d1_exact_055b.exe','eden/build/bin/imp008b_e5_exact_055b.exe','eden/build/bin/imp008e_e2_exact_055b.exe')){if(-not(Test-Path $p)){throw "exact runtime missing: $p"}}
-          Write-Host 'IMP008E_EXACT_RUNTIME_BUILD=PASS'
+          foreach($p in @('eden/build/bin/imp008d_d1_exact_055b.exe','eden/build/bin/imp008b_e5_exact_055b.exe','eden/build/bin/imp008e_e2_exact_055b.exe')){if(-not(Test-Path $p)){throw "exact binary missing: $p"}}
+          Write-Host 'IMP008E_EXACT_CLEAN_PROBE_LINK=PASS'
 
       - name: Validate exact-source D1 E5 E2 serial
         shell: powershell
@@ -172,7 +87,7 @@ jobs:
             $psi.FileName=(Resolve-Path $exe).Path; $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
             $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timeout=-not $p.WaitForExit($timeoutMs); if($timeout){$p.Kill();$p.WaitForExit()}
             $log=$ot.Result+$et.Result; $rc=if($timeout){124}else{$p.ExitCode}
-            [IO.File]::WriteAllText((Join-Path $eden ("imp008e-exact-"+$label+".log")),$log)
+            [IO.File]::WriteAllText((Join-Path $eden ("imp008e-exact-final-"+$label+".log")),$log)
             Write-Host "IMP008E_EXACT_${label}_RC=$rc"
             if($rc-ne 0){Write-Host $log; throw "$label rc=$rc"}
             foreach($m in $markers){if(-not $log.Contains($m)){Write-Host $log; throw "$label missing $m"}}
