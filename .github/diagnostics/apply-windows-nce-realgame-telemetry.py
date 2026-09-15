@@ -1,0 +1,47 @@
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+
+
+def replace_once(label: str, old: str, new: str) -> None:
+    global text
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected exactly one source match, found {count}")
+    text = text.replace(old, new, 1)
+
+
+replace_once(
+    "telemetry-globals",
+    """std::once_flag g_windows_veh_once;\nPVOID g_windows_veh_handle{};\n\nstruct WindowsTebStackBounds {\n""",
+    """std::once_flag g_windows_veh_once;\nPVOID g_windows_veh_handle{};\n\nstruct WindowsNceFaultTelemetry {\n    bool pending{};\n    DWORD exception_code{};\n    ULONG_PTR access_type{};\n    u64 fault_address{};\n    u64 pc{};\n    u64 sp{};\n};\n\nthread_local WindowsNceFaultTelemetry g_windows_nce_fault_telemetry{};\nthread_local u32 g_windows_nce_fault_log_count{};\nthread_local u32 g_windows_nce_stack_log_count{};\nthread_local bool g_windows_nce_fastmem_logged{};\nconstexpr u32 WindowsNceFaultLogLimit = 16;\nconstexpr u32 WindowsNceStackLogLimit = 8;\n\nstruct WindowsTebStackBounds {\n""",
+)
+
+replace_once(
+    "veh-fault-capture",
+    """    if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {\n        const auto fault_address = reinterpret_cast<u64>(\n            NCE::WindowsExceptionContext::GetFaultAddress(*exception->ExceptionRecord));\n        nce->m_windows_pending_nce_fault = true;\n""",
+    """    if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {\n        const auto fault_address = reinterpret_cast<u64>(\n            NCE::WindowsExceptionContext::GetFaultAddress(*exception->ExceptionRecord));\n        auto& telemetry = g_windows_nce_fault_telemetry;\n        telemetry.pending = true;\n        telemetry.exception_code = exception->ExceptionRecord->ExceptionCode;\n        telemetry.access_type = exception->ExceptionRecord->NumberParameters > 0\n                                    ? exception->ExceptionRecord->ExceptionInformation[0]\n                                    : ~ULONG_PTR{0};\n        telemetry.fault_address = fault_address;\n        telemetry.pc = context.Pc;\n        telemetry.sp = context.Sp;\n        nce->m_windows_pending_nce_fault = true;\n""",
+)
+
+replace_once(
+    "fastmem-entry",
+    """    auto* const thread_params = &thread->GetNativeExecutionParameters();\n    auto* const process = thread->GetOwnerProcess();\n\n    m_running_thread = thread;\n""",
+    """    auto* const thread_params = &thread->GetNativeExecutionParameters();\n    auto* const process = thread->GetOwnerProcess();\n\n    if (!g_windows_nce_fastmem_logged) {\n        auto& diag_buffer = m_system.DeviceMemory().buffer;\n        LOG_INFO(Core_ARM,\n                 \"NCE_REALGAME_DIAG_FASTMEM core={} virtual_base=0x{:016X} \"\n                 \"backing_base=0x{:016X} ready={}\",\n                 m_core_index,\n                 static_cast<u64>(reinterpret_cast<std::uintptr_t>(diag_buffer.VirtualBasePointer())),\n                 static_cast<u64>(reinterpret_cast<std::uintptr_t>(diag_buffer.BackingBasePointer())),\n                 diag_buffer.VirtualBasePointer() != nullptr);\n        g_windows_nce_fastmem_logged = true;\n    }\n\n    m_running_thread = thread;\n""",
+)
+
+replace_once(
+    "stack-result",
+    """        if (!EnsureWindowsGuestStackLease(m_system, process, m_guest_ctx.sp,\n                                          private_stack_lease)) {\n            NCE::CurrentNceContext::Clear();\n            hr = HaltReason::PrefetchAbort;\n            break;\n        }\n\n        WindowsTebStackBounds teb_stack_bounds{};\n""",
+    """        if (!EnsureWindowsGuestStackLease(m_system, process, m_guest_ctx.sp,\n                                          private_stack_lease)) {\n            auto& diag_buffer = m_system.DeviceMemory().buffer;\n            LOG_ERROR(Core_ARM,\n                      \"NCE_REALGAME_DIAG_STACK result=ensure_failed core={} guest_sp=0x{:016X} \"\n                      \"fastmem_base=0x{:016X}\",\n                      m_core_index, m_guest_ctx.sp,\n                      static_cast<u64>(reinterpret_cast<std::uintptr_t>(\n                          diag_buffer.VirtualBasePointer())));\n            NCE::CurrentNceContext::Clear();\n            hr = HaltReason::PrefetchAbort;\n            break;\n        }\n\n        if (g_windows_nce_stack_log_count < WindowsNceStackLogLimit) {\n            MEMORY_BASIC_INFORMATION stack_region{};\n            const bool stack_vq = m_guest_ctx.sp != 0 &&\n                VirtualQuery(reinterpret_cast<const void*>(m_guest_ctx.sp - 1), &stack_region,\n                             sizeof(stack_region)) != 0;\n            LOG_INFO(Core_ARM,\n                     \"NCE_REALGAME_DIAG_STACK result=ready core={} guest_sp=0x{:016X} \"\n                     \"lease_active={} vq={} state=0x{:X} protect=0x{:X} type=0x{:X}\",\n                     m_core_index, m_guest_ctx.sp, private_stack_lease.has_value(), stack_vq,\n                     stack_region.State, stack_region.Protect, stack_region.Type);\n            ++g_windows_nce_stack_log_count;\n        }\n\n        WindowsTebStackBounds teb_stack_bounds{};\n""",
+)
+
+replace_once(
+    "fault-host-telemetry",
+    """            if (process->GetMemory().InvalidateNCE(Common::ProcessAddress{pending_fault_page},\n                                                   Memory::YUZU_PAGESIZE)) {\n                continue;\n            }\n""",
+    """            const auto fault_telemetry = g_windows_nce_fault_telemetry;\n            g_windows_nce_fault_telemetry.pending = false;\n\n            MEMORY_BASIC_INFORMATION fault_region{};\n            MEMORY_BASIC_INFORMATION pc_region{};\n            MEMORY_BASIC_INFORMATION sp_region{};\n            const bool fault_vq = fault_telemetry.pending &&\n                VirtualQuery(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(\n                                 fault_telemetry.fault_address)),\n                             &fault_region, sizeof(fault_region)) != 0;\n            const bool pc_vq = fault_telemetry.pending &&\n                VirtualQuery(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(\n                                 fault_telemetry.pc)),\n                             &pc_region, sizeof(pc_region)) != 0;\n            const bool sp_vq = fault_telemetry.pending &&\n                VirtualQuery(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(\n                                 fault_telemetry.sp)),\n                             &sp_region, sizeof(sp_region)) != 0;\n\n            const bool invalidated = process->GetMemory().InvalidateNCE(\n                Common::ProcessAddress{pending_fault_page}, Memory::YUZU_PAGESIZE);\n\n            if (fault_telemetry.pending &&\n                g_windows_nce_fault_log_count < WindowsNceFaultLogLimit) {\n                auto& diag_buffer = m_system.DeviceMemory().buffer;\n                LOG_ERROR(Core_ARM,\n                          \"NCE_REALGAME_DIAG_FAULT seq={} core={} code=0x{:08X} access={} \"\n                          \"fault=0x{:016X} pc=0x{:016X} sp=0x{:016X} page=0x{:016X} \"\n                          \"invalidate={} fastmem_base=0x{:016X} \"\n                          \"fault_vq={} fault_state=0x{:X} fault_protect=0x{:X} fault_type=0x{:X} \"\n                          \"pc_vq={} pc_state=0x{:X} pc_protect=0x{:X} pc_type=0x{:X} \"\n                          \"sp_vq={} sp_state=0x{:X} sp_protect=0x{:X} sp_type=0x{:X}\",\n                          g_windows_nce_fault_log_count, m_core_index,\n                          fault_telemetry.exception_code,\n                          static_cast<u64>(fault_telemetry.access_type),\n                          fault_telemetry.fault_address, fault_telemetry.pc, fault_telemetry.sp,\n                          pending_fault_page, invalidated,\n                          static_cast<u64>(reinterpret_cast<std::uintptr_t>(\n                              diag_buffer.VirtualBasePointer())),\n                          fault_vq, fault_region.State, fault_region.Protect, fault_region.Type,\n                          pc_vq, pc_region.State, pc_region.Protect, pc_region.Type,\n                          sp_vq, sp_region.State, sp_region.Protect, sp_region.Type);\n                ++g_windows_nce_fault_log_count;\n            }\n\n            if (invalidated) {\n                continue;\n            }\n""",
+)
+
+path.write_text(text, encoding="utf-8", newline="\n")
+print("REALGAME_DIAG_TRANSFORM=PASS")

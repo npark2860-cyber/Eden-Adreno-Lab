@@ -20,7 +20,7 @@ env:
   SOURCE_SHA: 055b212df86dbfc18257b127ee5a0cbfda8ff861
   CI_REF: afead830f3a444427f9fdfd841218f932465c03a
   TEST_NAME: realgame-diag-055b212d
-  PATCH_PATH: .github/diagnostics/windows-nce-realgame-055b212d.patch
+  SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-telemetry.py
 
 jobs:
   build-package:
@@ -56,7 +56,7 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Verify Git-object provenance and apply telemetry patch
+      - name: Verify Git-object provenance and apply telemetry transform
         shell: bash
         run: |
           set -euo pipefail
@@ -70,15 +70,17 @@ jobs:
           test "$(git -C "$SOURCE" rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no)"
 
-          git -C "$CONTROL" show "$GITHUB_SHA:$PATCH_PATH" > "$PROV/windows-nce-realgame-055b212d.patch.git-object"
+          git -C "$CONTROL" show "$GITHUB_SHA:$SCRIPT_PATH" > "$PROV/apply-windows-nce-realgame-telemetry.py.git-object"
           git -C "$SOURCE" show "$SOURCE_SHA:src/core/arm/nce/arm_nce_windows.cpp" > "$PROV/arm_nce_windows.cpp.base.git-object"
-          git -C "$SOURCE" apply --check "$PROV/windows-nce-realgame-055b212d.patch.git-object"
-          git -C "$SOURCE" apply "$PROV/windows-nce-realgame-055b212d.patch.git-object"
+          python "$PROV/apply-windows-nce-realgame-telemetry.py.git-object" "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           git -C "$SOURCE" diff --check
+          grep -Fq 'NCE_REALGAME_DIAG_FASTMEM' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'NCE_REALGAME_DIAG_STACK' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'NCE_REALGAME_DIAG_FAULT' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           git -C "$SOURCE" diff -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/arm_nce_windows.cpp.telemetry.diff"
 
-          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus diagnostic patch Git object\nISOLATION_DIR=build/validation/%s/%s\nPATCH_PATH=%s\n' \
-            "$SOURCE_SHA" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' "$GITHUB_SHA" "$TEST_NAME" "$PATCH_PATH" > "$PROV/BUILD_INFO.txt"
+          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus telemetry-transform Git object\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\n' \
+            "$SOURCE_SHA" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' "$GITHUB_SHA" "$TEST_NAME" "$SCRIPT_PATH" > "$PROV/BUILD_INFO.txt"
           echo 'REALGAME_DIAG_GIT_OBJECT_GUARD=PASS'
 
       - name: Checkout fixed Eden CI workflow
@@ -157,7 +159,7 @@ jobs:
           New-Item -ItemType Directory -Force $upload | Out-Null
           Copy-Item $files[0].FullName $upload -Force
           Copy-Item (Join-Path $prov 'BUILD_INFO.txt') $upload -Force
-          Copy-Item (Join-Path $prov 'windows-nce-realgame-055b212d.patch.git-object') $upload -Force
+          Copy-Item (Join-Path $prov 'apply-windows-nce-realgame-telemetry.py.git-object') $upload -Force
           Copy-Item (Join-Path $prov 'arm_nce_windows.cpp.telemetry.diff') $upload -Force
           $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
           "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
