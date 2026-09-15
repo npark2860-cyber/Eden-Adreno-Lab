@@ -1,4 +1,4 @@
-name: Probe IMP-008E host bridge RET semantics
+name: Probe IMP-008E in-bridge host SP switch
 
 on:
   push:
@@ -10,68 +10,88 @@ permissions:
   contents: read
 
 concurrency:
-  group: imp008e-host-bridge-ret
+  group: imp008e-in-bridge-host-sp-switch
   cancel-in-progress: false
 
 jobs:
-  host-bridge-ret:
+  host-sp-switch:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
-      - name: Build RET host bridge variant
+      - name: Build in-bridge host SP switch variant
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
-          $build='eden/build'
-          $dir="$build/imp008e_guest_stack_bridge_e2"
-          foreach($p in @("$dir/arm_nce_windows.cpp.obj","$dir/windows_nce_transition.cpp.obj","$dir/windows_nce_entry.asm","$dir/rasterizer_cached_retry_pagetable_stack.cpp.obj")){if(-not(Test-Path $p)){throw "missing symmetric retained file: $p"}}
-          $src="$dir/windows_nce_entry_ret_host.asm"
+          $build='eden/build'; $dir="$build/imp008e_guest_stack_bridge_e2"
+          foreach($p in @("$dir/arm_nce_windows.cpp.obj","$dir/windows_nce_transition.cpp","$dir/windows_nce_entry.asm","$dir/rasterizer_cached_retry_pagetable_stack.cpp.obj","$dir/core/arm/nce/windows_cross_thread_break.h")){if(-not(Test-Path $p)){throw "missing symmetric retained file: $p"}}
+
+          $tp="$dir/windows_nce_transition_spbridge.cpp"
+          $t=[IO.File]::ReadAllText((Resolve-Path "$dir/windows_nce_transition.cpp").Path).Replace("`r`n","`n")
+          $oldSp="    interrupted.Sp = host.host_sp;`n    interrupted.Pc = reinterpret_cast<std::uint64_t>(&WindowsNceHostStackBridge);"
+          $newSp="    // Keep the guest SP through Windows exception/context resume. The bridge publishes`n    // host TEB bounds first, then switches SP itself without re-entering the dispatcher.`n    interrupted.Pc = reinterpret_cast<std::uint64_t>(&WindowsNceHostStackBridge);"
+          if(([regex]::Matches($t,[regex]::Escape($oldSp))).Count-ne 1){throw 'RedirectToHost SP anchor mismatch'}
+          $t=$t.Replace($oldSp,$newSp)
+          $oldX2="    interrupted.X[2] = static_cast<std::uint64_t>(nce->m_windows_break->HostStackLow());`n    interrupted.X[16] = host_pc;"
+          $newX2="    interrupted.X[2] = static_cast<std::uint64_t>(nce->m_windows_break->HostStackLow());`n    interrupted.X[3] = host.host_sp;`n    interrupted.X[16] = host_pc;"
+          if(([regex]::Matches($t,[regex]::Escape($oldX2))).Count-ne 1){throw 'RedirectToHost X2 anchor mismatch'}
+          $t=$t.Replace($oldX2,$newX2)
+          [IO.File]::WriteAllText($tp,$t,[Text.UTF8Encoding]::new($false))
+
+          $ap="$dir/windows_nce_entry_spbridge.asm"
           $a=[IO.File]::ReadAllText((Resolve-Path "$dir/windows_nce_entry.asm").Path).Replace("`r`n","`n")
-          $old="WindowsNceHostStackBridge PROC`n        str     x1, [x18, #8]`n        str     x2, [x18, #16]`n        br      x16`n        ENDP"
-          $new="WindowsNceHostStackBridge PROC`n        str     x1, [x18, #8]`n        str     x2, [x18, #16]`n        ret     x16`n        ENDP"
-          if(([regex]::Matches($a,[regex]::Escape($old))).Count-ne 1){throw 'host bridge BR anchor mismatch'}
-          $a=$a.Replace($old,$new)
-          [IO.File]::WriteAllText($src,$a,[Text.UTF8Encoding]::new($false))
+          $oldAsm="WindowsNceHostStackBridge PROC`n        str     x1, [x18, #8]`n        str     x2, [x18, #16]`n        br      x16`n        ENDP"
+          $newAsm="WindowsNceHostStackBridge PROC`n        str     x1, [x18, #8]`n        str     x2, [x18, #16]`n        mov     sp, x3`n        ret     x16`n        ENDP"
+          if(([regex]::Matches($a,[regex]::Escape($oldAsm))).Count-ne 1){throw 'host bridge asm anchor mismatch'}
+          $a=$a.Replace($oldAsm,$newAsm)
+          [IO.File]::WriteAllText($ap,$a,[Text.UTF8Encoding]::new($false))
 
           Push-Location $build
           try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            $transHits=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/windows_nce_transition\.cpp'?$"})
+            if($transHits.Count-ne 1){throw "transition compile count=$($transHits.Count)"}
+            $cmd=[string]$transHits[0]
+            $m=[regex]::Match($cmd,'-o\s+(\S*windows_nce_transition\.cpp\.obj)');if(!$m.Success){throw 'transition object path missing'}
+            $newObj='imp008e_guest_stack_bridge_e2/windows_nce_transition_spbridge.cpp.obj'
+            $cmd=$cmd.Replace($m.Groups[1].Value.Trim("'"),$newObj)
+            $cmd=[regex]::Replace($cmd,'-MF\s+\S*windows_nce_transition\.cpp\.obj\.d','-MF imp008e_guest_stack_bridge_e2\windows_nce_transition_spbridge.cpp.obj.d')
+            $source=((Resolve-Path 'imp008e_guest_stack_bridge_e2/windows_nce_transition_spbridge.cpp').Path -replace '\\','/')
+            $cmd=[regex]::Replace($cmd,"-c\s+'?C:/[^']*?/src/core/arm/nce/windows_nce_transition\.cpp'?",('-c '+$source))
+            $overlay=((Resolve-Path 'imp008e_guest_stack_bridge_e2').Path -replace '\\','/')
+            $cmd=[regex]::Replace($cmd,'\s-I',(" -I"+$overlay+' -I'),1)
+            $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $cmd=[regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $cmd
+            if($LASTEXITCODE-ne 0){throw "transition compile rc=$LASTEXITCODE"}
+
             $asmLine=Select-String -Path 'build.ninja' -Pattern 'armasm64\.exe' | Select-Object -First 1
-            if($null-eq $asmLine){throw 'armasm64 command missing'}
-            $am=[regex]::Match($asmLine.Line,'"([^"]*armasm64\.exe)"|(\S*armasm64\.exe)')
-            if(!$am.Success){throw 'armasm64 path parse failed'}
+            $am=[regex]::Match($asmLine.Line,'"([^"]*armasm64\.exe)"|(\S*armasm64\.exe)');if(!$am.Success){throw 'armasm64 path parse failed'}
             $asmExe=if($am.Groups[1].Success){$am.Groups[1].Value}else{$am.Groups[2].Value}
-            $asmObj=(Join-Path (Resolve-Path 'imp008e_guest_stack_bridge_e2').Path 'windows_nce_entry_ret_host.obj')
-            & $asmExe -nologo (Resolve-Path 'imp008e_guest_stack_bridge_e2/windows_nce_entry_ret_host.asm').Path $asmObj
+            & $asmExe -nologo (Resolve-Path 'imp008e_guest_stack_bridge_e2/windows_nce_entry_spbridge.asm').Path (Join-Path (Resolve-Path 'imp008e_guest_stack_bridge_e2').Path 'windows_nce_entry_spbridge.obj')
             if($LASTEXITCODE-ne 0){throw "armasm64 rc=$LASTEXITCODE"}
 
-            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
-            $links=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
-            if($links.Count-ne 1){throw "link count=$($links.Count)"}
+            $links=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'});if($links.Count-ne 1){throw "link count=$($links.Count)"}
             $link=[string]$links[0]
-            $oldProbe='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
-            $probe='imp008e_guest_stack_bridge_e2/rasterizer_cached_retry_pagetable_stack.cpp.obj'
-            $link=$link.Replace($oldProbe,$probe).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_symmetric_ret_host_e2.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_symmetric_ret_host_e2.a')
-            $link=$link.Replace('src/core/libcore.a','imp008e_guest_stack_bridge_e2/arm_nce_windows.cpp.obj imp008e_guest_stack_bridge_e2/windows_nce_transition.cpp.obj imp008e_guest_stack_bridge_e2/windows_nce_entry_ret_host.obj src/core/libcore.a')
+            $oldProbe='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj';$probe='imp008e_guest_stack_bridge_e2/rasterizer_cached_retry_pagetable_stack.cpp.obj'
+            $link=$link.Replace($oldProbe,$probe).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_spbridge_e2.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_spbridge_e2.a')
+            $link=$link.Replace('src/core/libcore.a','imp008e_guest_stack_bridge_e2/arm_nce_windows.cpp.obj imp008e_guest_stack_bridge_e2/windows_nce_transition_spbridge.cpp.obj imp008e_guest_stack_bridge_e2/windows_nce_entry_spbridge.obj src/core/libcore.a')
             $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
             & $env:ComSpec /D /S /C $link
             if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE"}
           } finally {Pop-Location}
-          Write-Host 'IMP008E_HOST_BRIDGE_RET_BUILD=PASS'
+          Write-Host 'IMP008E_SPBRIDGE_BUILD=PASS'
 
-      - name: Run RET host bridge repeatedly
+      - name: Run in-bridge host SP switch repeatedly
         shell: powershell
         run: |
-          $ErrorActionPreference='Stop'
-          $exe='eden/build/bin/imp008e_symmetric_ret_host_e2.exe'
-          $eden=(Resolve-Path eden).Path
+          $ErrorActionPreference='Stop';$exe='eden/build/bin/imp008e_spbridge_e2.exe';$eden=(Resolve-Path eden).Path;$inverted=0
           for($i=1;$i-le 8;$i++){
-            $psi=New-Object Diagnostics.ProcessStartInfo; $psi.FileName=(Resolve-Path $exe).Path; $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
-            $p=New-Object Diagnostics.Process;$p.StartInfo=$psi;[void]$p.Start();$ot=$p.StandardOutput.ReadToEndAsync();$et=$p.StandardError.ReadToEndAsync();$timeout=-not $p.WaitForExit(30000);if($timeout){$p.Kill();$p.WaitForExit()}
-            $log=$ot.Result+$et.Result;$rc=if($timeout){124}else{$p.ExitCode}
-            Write-Host "IMP008E_RET_RUN_${i}_RC=$rc"
-            foreach($line in ($log -split "`r?`n")){if($line -match 'IMP008E_E2_GUEST_STACK_QUERY=|IMP008E_E2_DATA_AV|IMP008E_E2_REEXECUTED|IMP008E_E2_CONTEXT_COHERENT|IMP008E_E2_PHYSICAL_X18_TEB_AFTER|IMP008E_E2_GATE=|IMP008B_E2_RESTORE_ENTER=|IMP008B_E2_NT_CONTINUE_RETURN='){Write-Host "IMP008E_RET_RUN_${i} $line"}}
-            if($rc-ne 0){throw "RET host bridge run $i rc=$rc"}
+            $psi=New-Object Diagnostics.ProcessStartInfo;$psi.FileName=(Resolve-Path $exe).Path;$psi.WorkingDirectory=$eden;$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
+            $p=New-Object Diagnostics.Process;$p.StartInfo=$psi;[void]$p.Start();$ot=$p.StandardOutput.ReadToEndAsync();$et=$p.StandardError.ReadToEndAsync();$timeout=-not $p.WaitForExit(30000);if($timeout){$p.Kill();$p.WaitForExit()};$log=$ot.Result+$et.Result;$rc=if($timeout){124}else{$p.ExitCode}
+            Write-Host "IMP008E_SPBRIDGE_RUN_${i}_RC=$rc"
+            foreach($line in ($log -split "`r?`n")){if($line -match 'IMP008E_E2_GUEST_STACK_QUERY=|IMP008E_E2_DATA_AV|IMP008E_E2_REEXECUTED|IMP008E_E2_CONTEXT_COHERENT|IMP008E_E2_PHYSICAL_X18_TEB_AFTER|IMP008E_E2_GATE=|IMP008B_E2_RESTORE_ENTER=|IMP008B_E2_NT_CONTINUE_RETURN='){Write-Host "IMP008E_SPBRIDGE_RUN_${i} $line"}}
+            if($rc-ne 0){throw "SP bridge run $i rc=$rc"}
             foreach($m in @('IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS')){if(-not $log.Contains($m)){throw "run $i missing $m"}}
           }
-          Write-Host 'IMP008E_HOST_BRIDGE_RET_REPEAT_GATE=PASS'
+          Write-Host 'IMP008E_SPBRIDGE_REPEAT_GATE=PASS'
