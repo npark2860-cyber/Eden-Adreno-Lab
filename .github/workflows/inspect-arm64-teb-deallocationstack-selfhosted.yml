@@ -1,0 +1,45 @@
+name: Inspect ARM64 TEB DeallocationStack
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-arm64-teb-deallocationstack-selfhosted.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-teb-deallocationstack:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect headers and compile field access
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host 'IMP008B_TEB_HEADER_HITS_BEGIN'
+          Get-ChildItem 'C:\msys64\clangarm64\include' -Recurse -File -Include *.h -ErrorAction SilentlyContinue |
+            Select-String -Pattern 'DeallocationStack' |
+            Select-Object -First 30 |
+            ForEach-Object { '{0}:{1}:{2}' -f $_.Path,$_.LineNumber,$_.Line.Trim() }
+          Write-Host 'IMP008B_TEB_HEADER_HITS_END'
+          $src = @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <winternl.h>
+          #include <cstddef>
+          #include <cstdio>
+          int main() {
+              auto* teb = NtCurrentTeb();
+              std::printf("TEB=%p DEALLOC=%p\n", teb, teb->DeallocationStack);
+              std::printf("OFF=%zu\n", offsetof(TEB, DeallocationStack));
+              return 0;
+          }
+          '@
+          [IO.File]::WriteAllText('teb_dealloc_probe.cpp',$src,[Text.UTF8Encoding]::new($false))
+          & 'C:\msys64\clangarm64\bin\clang++.exe' -std=c++20 teb_dealloc_probe.cpp -o teb_dealloc_probe.exe
+          Write-Host "IMP008B_TEB_DEALLOC_COMPILE_RC=$LASTEXITCODE"
+          if ($LASTEXITCODE -eq 0) { .\teb_dealloc_probe.exe }
