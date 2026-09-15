@@ -1,4 +1,4 @@
-name: Probe IMP-008E production RunThread TEB seam E2
+name: Inspect IMP-008E V6 production exact diff
 
 on:
   workflow_dispatch:
@@ -11,105 +11,40 @@ permissions:
   contents: read
 
 concurrency:
-  group: probe-imp008e-production-runthread-teb-seam-e2
+  group: inspect-imp008e-v6-production-exact-diff
   cancel-in-progress: false
 
 jobs:
-  runthread-teb-seam-e2:
+  inspect-v6-production-diff:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Build and run no-RunThread-TEB E2 candidate
+      - name: Diff retained V6 PASS source against corrected production
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $retained='38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'
           $production='6e1167c953fe17bc95dda954910fb69b65153fa3'
           if((git -C eden rev-parse HEAD).Trim() -ne $retained){throw 'unexpected retained HEAD'}
-          if(-not(Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')){throw 'generic transition object missing'}
-          if(-not(Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')){throw 'E2 source missing'}
+          $v6='eden/build/e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp'
+          if(-not(Test-Path $v6)){throw 'retained V6 source missing'}
           git -C eden fetch --no-tags origin $production
           if($LASTEXITCODE-ne 0){throw "fetch production rc=$LASTEXITCODE"}
+          $prod='eden/build/imp008e_v6_exact_diff_production.cpp'
+          $lines=& git -C eden show "${production}:src/core/arm/nce/arm_nce_windows.cpp"
+          if($LASTEXITCODE-ne 0){throw 'production export failed'}
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path eden).Path 'build/imp008e_v6_exact_diff_production.cpp'),(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
 
-          $dir='eden/build/imp008e_prod_no_runthread_teb_e2'
-          if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
-          New-Item -ItemType Directory -Force (Join-Path $dir 'common') | Out-Null
-          $resolved=(Resolve-Path $dir).Path
-          function Export-Prod([string]$repoPath,[string]$dst){
-            $lines=& git -C eden show "${production}:$repoPath"
-            if($LASTEXITCODE-ne 0){throw "git show failed: $repoPath"}
-            [IO.File]::WriteAllText($dst,(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
-          }
-          Export-Prod 'src/common/host_memory.h' (Join-Path $resolved 'common/host_memory.h')
-          Export-Prod 'src/common/host_memory_windows_lease.h' (Join-Path $resolved 'common/host_memory_windows_lease.h')
-          Export-Prod 'src/core/arm/nce/arm_nce_windows.cpp' (Join-Path $resolved 'arm_nce_windows.cpp')
+          Write-Host '===== IMP008E_V6_PRODUCTION_FULL_DIFF_BEGIN ====='
+          $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+          & git --no-pager diff --no-index --unified=3 -- $v6 $prod
+          $diffRc=$LASTEXITCODE
+          $ErrorActionPreference=$old
+          if($diffRc-ne 0 -and $diffRc-ne 1){throw "git diff rc=$diffRc"}
+          Write-Host '===== IMP008E_V6_PRODUCTION_FULL_DIFF_END ====='
 
-          $armPath=Join-Path $resolved 'arm_nce_windows.cpp'
-          $text=[IO.File]::ReadAllText($armPath).Replace("`r`n","`n")
-          $install=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBXaW5kb3dzVGViU3RhY2tCb3VuZHMgdGViX3N0YWNrX2JvdW5kc3t9OwogICAgICAgIGlmICghSW5zdGFsbEd1ZXN0VGViU3RhY2tCb3VuZHMobV9ndWVzdF9jdHguc3AsIHRlYl9zdGFja19ib3VuZHMpKSB7CiAgICAgICAgICAgIE5DRTo6Q3VycmVudE5jZUNvbnRleHQ6OkNsZWFyKCk7CiAgICAgICAgICAgIGhyID0gSGFsdFJlYXNvbjo6UHJlZmV0Y2hBYm9ydDsKICAgICAgICAgICAgYnJlYWs7CiAgICAgICAgfQoK'))
-          $restore='        RestoreHostTebStackBounds(teb_stack_bounds);' + "`n"
-          if(([regex]::Matches($text,[regex]::Escape($install))).Count-ne 1){throw 'RunThread TEB install anchor mismatch'}
-          if(([regex]::Matches($text,[regex]::Escape($restore))).Count-ne 1){throw 'RunThread TEB restore anchor mismatch'}
-          $text=$text.Replace($install,'').Replace($restore,'')
-          $text=$text.Replace('[[nodiscard]] bool InstallGuestTebStackBounds','[[maybe_unused, nodiscard]] bool InstallGuestTebStackBounds')
-          $text=$text.Replace('void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept','[[maybe_unused]] void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept')
-          [IO.File]::WriteAllText($armPath,$text,[Text.UTF8Encoding]::new($false))
-          Write-Host 'IMP008E_RUNTHREAD_TEB_SEAM_REMOVED=PASS'
-
-          Push-Location eden/build
-          try {
-            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
-            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
-            $arm=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
-            if($arm.Count-ne 1){throw "arm compile count=$($arm.Count)"}
-            $c=[string]$arm[0]
-            $m=[regex]::Match($c,'-o\s+(\S*arm_nce_windows\.cpp\.obj)')
-            if(!$m.Success){throw 'arm object path missing'}
-            $oldArm=$m.Groups[1].Value.Trim("'")
-            $newArm='imp008e_prod_no_runthread_teb_e2/arm_nce_windows.cpp.obj'
-            $c=$c.Replace($oldArm,$newArm)
-            $c=[regex]::Replace($c,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF imp008e_prod_no_runthread_teb_e2\arm_nce_windows.cpp.obj.d')
-            $armSource=((Resolve-Path 'imp008e_prod_no_runthread_teb_e2/arm_nce_windows.cpp').Path -replace '\\','/')
-            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$armSource))
-            $overlay=((Resolve-Path 'imp008e_prod_no_runthread_teb_e2').Path -replace '\\','/')
-            $c=[regex]::Replace($c,'\s-I',(" -I"+$overlay+' -I'),1)
-            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
-            & $env:ComSpec /D /S /C $c
-            if($LASTEXITCODE-ne 0){throw "arm compile rc=$LASTEXITCODE"}
-
-            $probe=@($commands|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
-            if($probe.Count-ne 1){throw "probe compile count=$($probe.Count)"}
-            $pc=[string]$probe[0]
-            $oldProbe='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
-            $newProbe='imp008e_prod_no_runthread_teb_e2/rasterizer_cached_retry_pagetable_stack.cpp.obj'
-            $pc=$pc.Replace($oldProbe,$newProbe)
-            $pc=[regex]::Replace($pc,'-MF\s+\S+\.obj\.d','-MF imp008e_prod_no_runthread_teb_e2\rasterizer_cached_retry_pagetable_stack.cpp.obj.d')
-            $e2Source=((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
-            $pc=[regex]::Replace($pc,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$e2Source))
-            $pc=$pc.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
-            $pc=[regex]::Replace($pc,"'(C:/[^']+)'",'$1')
-            & $env:ComSpec /D /S /C $pc
-            if($LASTEXITCODE-ne 0){throw "probe compile rc=$LASTEXITCODE"}
-
-            $links=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
-            if($links.Count-ne 1){throw "link count=$($links.Count)"}
-            $l=[string]$links[0]
-            $l=$l.Replace($oldProbe,$newProbe).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_prod_no_runthread_teb_e2.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_prod_no_runthread_teb_e2.a')
-            $l=$l.Replace('src/core/libcore.a','imp008e_prod_no_runthread_teb_e2/arm_nce_windows.cpp.obj generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
-            $l=$l.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
-            & $env:ComSpec /D /S /C $l
-            if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE"}
-          } finally { Pop-Location }
-
-          $eden=(Resolve-Path eden).Path
-          $psi=New-Object Diagnostics.ProcessStartInfo
-          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_prod_no_runthread_teb_e2.exe').Path
-          $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
-          $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync(); $timeout=-not $p.WaitForExit(60000); if($timeout){$p.Kill();$p.WaitForExit()}
-          $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err
-          [IO.File]::WriteAllText((Join-Path $eden 'imp008e-prod-no-runthread-teb-e2.log'),$log)
-          Write-Host $out; Write-Host $err; Write-Host "IMP008E_NO_RUNTHREAD_TEB_E2_RC=$rc"
-          if($rc-ne 0){throw "E2 runtime rc=$rc"}
-          foreach($marker in @('IMP008E_E2_GUEST_STACK_QUERY=PASS','IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')){if(-not $log.Contains($marker)){throw "missing $marker"}}
-          Write-Host 'IMP008E_NO_RUNTHREAD_TEB_E2_GATE=PASS'
+          Write-Host '===== IMP008E_V6_KEY_LINES ====='
+          Select-String -Path $v6 -Pattern 'private_stack_|VirtualAlloc2|MapViewOfFile3|VirtualFreeEx|WindowsNceEnterGuest|WindowsNceEnterGuestContext|CurrentNceContext::Clear|m_windows_pending_nce_fault|WindowsX18FallbackTrap::TryRedirect|ContinueContext|EXCEPTION_CONTINUE_EXECUTION|StackBase|StackLimit' | ForEach-Object { Write-Host ("{0}:{1}: {2}" -f $_.Path,$_.LineNumber,$_.Line.Trim()) }
+          Write-Host '===== IMP008E_PRODUCTION_KEY_LINES ====='
+          Select-String -Path $prod -Pattern 'private_stack_|AcquireDirectMappedPrivateLease|PrivateMappingLease|WindowsNceEnterGuest|WindowsNceEnterGuestContext|CurrentNceContext::Clear|m_windows_pending_nce_fault|WindowsX18FallbackTrap::TryRedirect|ContinueContext|EXCEPTION_CONTINUE_EXECUTION|StackBase|StackLimit' | ForEach-Object { Write-Host ("{0}:{1}: {2}" -f $_.Path,$_.LineNumber,$_.Line.Trim()) }
+          Write-Host 'IMP008E_V6_PRODUCTION_EXACT_DIFF=PASS'
