@@ -24,6 +24,7 @@ env:
   TEST_NAME: realgame-diag-pr4219-055b212d
   SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-telemetry.py
   HOST_MEMORY_SCRIPT_PATH: .github/diagnostics/apply-pr4219-host-memory-windows.py
+  HOST_MEMORY_TRANSFORM_REV: "2"
 
 jobs:
   build-package:
@@ -107,8 +108,8 @@ jobs:
           grep -Fq 'NCE_REALGAME_DIAG_FAULT' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           git -C "$SOURCE" diff -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/arm_nce_windows.cpp.telemetry.diff"
 
-          printf 'SOURCE_SHA=%s\nPR4219_SHA=%s\nPR4219_PARENT=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nUPSTREAM_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus exact PR4219 Git-object diff with HostMemory NCE-preserving transform plus telemetry-transform Git object\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\nHOST_MEMORY_SCRIPT_PATH=%s\n' \
-            "$SOURCE_SHA" "$PR4219_SHA" "$PR4219_PARENT" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' 'eden-emulator/mirror' "$GITHUB_SHA" "$TEST_NAME" "$SCRIPT_PATH" "$HOST_MEMORY_SCRIPT_PATH" > "$PROV/BUILD_INFO.txt"
+          printf 'SOURCE_SHA=%s\nPR4219_SHA=%s\nPR4219_PARENT=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nUPSTREAM_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus exact PR4219 Git-object diff with HostMemory NCE-preserving transform plus telemetry-transform Git object\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\nHOST_MEMORY_SCRIPT_PATH=%s\nHOST_MEMORY_TRANSFORM_REV=%s\n' \
+            "$SOURCE_SHA" "$PR4219_SHA" "$PR4219_PARENT" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' 'eden-emulator/mirror' "$GITHUB_SHA" "$TEST_NAME" "$SCRIPT_PATH" "$HOST_MEMORY_SCRIPT_PATH" "$HOST_MEMORY_TRANSFORM_REV" > "$PROV/BUILD_INFO.txt"
           echo 'PR4219_REALGAME_DIAG_GIT_OBJECT_GUARD=PASS'
 
       - name: Checkout fixed Eden CI workflow
