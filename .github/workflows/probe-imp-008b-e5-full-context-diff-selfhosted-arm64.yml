@@ -46,87 +46,39 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $path = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $diagPath = 'eden/src/core/arm/nce/windows_nce_fullctx_diag.inc'
           $resolved = (Resolve-Path $path).Path
+          $diagResolved = Join-Path (Get-Location) $diagPath
+          $diagB64 = 'Y29uc3RleHByIGNvbnN0IGNoYXIqIEltcDAwOGJFNUZ1bGxDb250ZXh0RHVtcE1hcmtlciA9ICJJTVAwMDhCX0U1X0ZVTExfQ09OVEVYVF9EVU1QX1YxIjsKCnZvaWQgRHVtcEltcDAwOGJFNUZ1bGxBcm02NENvbnRleHQoY29uc3QgQVJNNjRfTlRfQ09OVEVYVCYgY29udGV4dCkgbm9leGNlcHQgewogICAgc3RhdGljIHVuc2lnbmVkIGludCBzZXF1ZW5jZSA9IDA7CiAgICBjb25zdCB1bnNpZ25lZCBpbnQgc2VxID0gKytzZXF1ZW5jZTsKICAgIGNvbnN0IGF1dG8qIGNvbnN0IHRpYiA9IHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3QgTlRfVElCKj4oTnRDdXJyZW50VGViKCkpOwogICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwKICAgICAgICAgICAgICAgICAiSU1QMDA4Ql9FNV9GVUxMQ1RYX0JFR0lOIFNFUT0ldSBTSVpFPSVsbHUgRkxBR1M9MHglMDhsWCBDUFNSPTB4JTA4bFggIgogICAgICAgICAgICAgICAgICJTUD0weCVsbFggUEM9MHglbGxYIFRFQl9MSU1JVD0lcCBURUJfQkFTRT0lcCBNQVJLRVI9JXNcbiIsCiAgICAgICAgICAgICAgICAgc2VxLCBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KHNpemVvZihjb250ZXh0KSksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4oY29udGV4dC5Db250ZXh0RmxhZ3MpLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KGNvbnRleHQuQ3BzciksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihjb250ZXh0LlNwKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGNvbnRleHQuUGMpLCB0aWItPlN0YWNrTGltaXQsIHRpYi0+U3RhY2tCYXNlLAogICAgICAgICAgICAgICAgIEltcDAwOGJFNUZ1bGxDb250ZXh0RHVtcE1hcmtlcik7CiAgICBmb3IgKHN0ZDo6c2l6ZV90IGkgPSAwOyBpIDwgMzE7ICsraSkgewogICAgICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsICJJTVAwMDhCX0U1X0ZVTExDVFhfUkVHIFNFUT0ldSBYJTAybGx1PTB4JTAxNmxsWFxuIiwgc2VxLAogICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGkpLAogICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGNvbnRleHQuWFtpXSkpOwogICAgfQogICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwKICAgICAgICAgICAgICAgICAiSU1QMDA4Ql9FNV9GVUxMQ1RYX0ZQX0xSIFNFUT0ldSBGUD0weCUwMTZsbFggTFI9MHglMDE2bGxYXG4iLCBzZXEsCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihjb250ZXh0LlhbMjldKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGNvbnRleHQuWFszMF0pKTsKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgIklNUDAwOEJfRTVfRlVMTENUWF9GUFNUQVRFIFNFUT0ldSBGUENSPTB4JTA4bFggRlBTUj0weCUwOGxYXG4iLCBzZXEsCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4oY29udGV4dC5GcGNyKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihjb250ZXh0LkZwc3IpKTsKICAgIGZvciAoc3RkOjpzaXplX3QgaSA9IDA7IGkgPCAzMjsgKytpKSB7CiAgICAgICAgc3RkOjp1aW50NjRfdCBsYW5lc1syXXt9OwogICAgICAgIHN0ZDo6bWVtY3B5KGxhbmVzLCAmY29udGV4dC5WW2ldLCBzaXplb2YobGFuZXMpKTsKICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLAogICAgICAgICAgICAgICAgICAgICAiSU1QMDA4Ql9FNV9GVUxMQ1RYX1ZSRUcgU0VRPSV1IFYlMDJsbHVfTE89MHglMDE2bGxYIFYlMDJsbHVfSEk9MHglMDE2bGxYXG4iLAogICAgICAgICAgICAgICAgICAgICBzZXEsIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oaSksCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4obGFuZXNbMF0pLAogICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGkpLAogICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGxhbmVzWzFdKSk7CiAgICB9CiAgICBjb25zdCBhdXRvKiBjb25zdCByYXcgPSByZWludGVycHJldF9jYXN0PGNvbnN0IHVuc2lnbmVkIGNoYXIqPigmY29udGV4dCk7CiAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiSU1QMDA4Ql9FNV9GVUxMQ1RYX1JBVyBTRVE9JXUgSEVYPSIsIHNlcSk7CiAgICBmb3IgKHN0ZDo6c2l6ZV90IGkgPSAwOyBpIDwgc2l6ZW9mKGNvbnRleHQpOyArK2kpIHsKICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiJTAyWCIsIHN0YXRpY19jYXN0PHVuc2lnbmVkIGludD4ocmF3W2ldKSk7CiAgICB9CiAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiXG5JTVAwMDhCX0U1X0ZVTExDVFhfRU5EIFNFUT0ldVxuIiwgc2VxKTsKICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7Cn0K'
+          [IO.File]::WriteAllBytes($diagResolved,[Convert]::FromBase64String($diagB64))
           $text = [IO.File]::ReadAllText($resolved)
-          if (-not $text.Contains('IMP008B_E5_FULL_CONTEXT_DUMP_V1')) {
-            $helper = @'
 
-constexpr const char* Imp008bE5FullContextDumpMarker = "IMP008B_E5_FULL_CONTEXT_DUMP_V1";
-
-void DumpImp008bE5FullArm64Context(const ARM64_NT_CONTEXT& context) noexcept {
-    static unsigned int sequence = 0;
-    const unsigned int seq = ++sequence;
-    const auto* const tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
-    std::fprintf(stderr,
-                 "IMP008B_E5_FULLCTX_BEGIN SEQ=%u SIZE=%llu FLAGS=0x%08lX CPSR=0x%08lX "
-                 "SP=0x%llX PC=0x%llX TEB_LIMIT=%p TEB_BASE=%p MARKER=%s\n",
-                 seq, static_cast<unsigned long long>(sizeof(context)),
-                 static_cast<unsigned long>(context.ContextFlags),
-                 static_cast<unsigned long>(context.Cpsr),
-                 static_cast<unsigned long long>(context.Sp),
-                 static_cast<unsigned long long>(context.Pc), tib->StackLimit, tib->StackBase,
-                 Imp008bE5FullContextDumpMarker);
-    for (std::size_t i = 0; i < 31; ++i) {
-        std::fprintf(stderr, "IMP008B_E5_FULLCTX_REG SEQ=%u X%02llu=0x%016llX\n", seq,
-                     static_cast<unsigned long long>(i),
-                     static_cast<unsigned long long>(context.X[i]));
-    }
-    std::fprintf(stderr,
-                 "IMP008B_E5_FULLCTX_FP_LR SEQ=%u FP=0x%016llX LR=0x%016llX\n", seq,
-                 static_cast<unsigned long long>(context.X[29]),
-                 static_cast<unsigned long long>(context.X[30]));
-    std::fprintf(stderr,
-                 "IMP008B_E5_FULLCTX_FPSTATE SEQ=%u FPCR=0x%08lX FPSR=0x%08lX\n", seq,
-                 static_cast<unsigned long>(context.Fpcr),
-                 static_cast<unsigned long>(context.Fpsr));
-    for (std::size_t i = 0; i < 32; ++i) {
-        std::uint64_t lanes[2]{};
-        std::memcpy(lanes, &context.V[i], sizeof(lanes));
-        std::fprintf(stderr,
-                     "IMP008B_E5_FULLCTX_VREG SEQ=%u V%02llu_LO=0x%016llX V%02llu_HI=0x%016llX\n",
-                     seq, static_cast<unsigned long long>(i),
-                     static_cast<unsigned long long>(lanes[0]),
-                     static_cast<unsigned long long>(i),
-                     static_cast<unsigned long long>(lanes[1]));
-    }
-    const auto* const raw = reinterpret_cast<const unsigned char*>(&context);
-    std::fprintf(stderr, "IMP008B_E5_FULLCTX_RAW SEQ=%u HEX=", seq);
-    for (std::size_t i = 0; i < sizeof(context); ++i) {
-        std::fprintf(stderr, "%02X", static_cast<unsigned int>(raw[i]));
-    }
-    std::fprintf(stderr, "\nIMP008B_E5_FULLCTX_END SEQ=%u\n", seq);
-    std::fflush(stderr);
-}
-'@
-            $nsPattern = '(?m)^namespace \{\r?$'
+          if (-not $text.Contains('#include "windows_nce_fullctx_diag.inc"')) {
+            $nsPattern = '(?m)^namespace \{\r?\n'
             $nsMatches = [regex]::Matches($text,$nsPattern)
             if ($nsMatches.Count -ne 1) { throw "anonymous namespace anchor count=$($nsMatches.Count)" }
-            $text = [regex]::Replace($text,$nsPattern,{ param($m) $m.Value + "`n" + $helper },1)
+            $text = [regex]::Replace($text,$nsPattern,"namespace {`n#include `"windows_nce_fullctx_diag.inc`"`n",1)
+          }
 
+          if (-not $text.Contains('DumpImp008bE5FullArm64Context(context);')) {
             $statusPattern = '(?m)^    const LONG nt_continue_status =\r?\n        direct_nt_continue\(reinterpret_cast<PCONTEXT>\(&context\), FALSE\);'
             $statusMatches = [regex]::Matches($text,$statusPattern)
             if ($statusMatches.Count -eq 1) {
-              $replacement = @'
-    DumpImp008bE5FullArm64Context(context);
-    const LONG nt_continue_status =
-        direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
-'@
+              $replacement = "    DumpImp008bE5FullArm64Context(context);`n    const LONG nt_continue_status =`n        direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);"
               $text = [regex]::Replace($text,$statusPattern,$replacement,1)
             } else {
               $directPattern = '(?m)^    direct_nt_continue\(reinterpret_cast<PCONTEXT>\(&context\), FALSE\);'
               $directMatches = [regex]::Matches($text,$directPattern)
               if ($directMatches.Count -ne 1) { throw "NtContinue call anchor status=$($statusMatches.Count) direct=$($directMatches.Count)" }
-              $replacement = @'
-    DumpImp008bE5FullArm64Context(context);
-    direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
-'@
+              $replacement = "    DumpImp008bE5FullArm64Context(context);`n    direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);"
               $text = [regex]::Replace($text,$directPattern,$replacement,1)
             }
-            $utf8 = New-Object System.Text.UTF8Encoding($false)
-            [IO.File]::WriteAllText($resolved,$text,$utf8)
           }
+
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText($resolved,$text,$utf8)
           $check = [IO.File]::ReadAllText($resolved)
-          if (-not $check.Contains('IMP008B_E5_FULL_CONTEXT_DUMP_V1')) { throw 'full context helper marker missing' }
+          if (-not $check.Contains('#include "windows_nce_fullctx_diag.inc"')) { throw 'full context include missing' }
           if (-not $check.Contains('DumpImp008bE5FullArm64Context(context);')) { throw 'full context call missing' }
           Write-Host 'IMP008B_E5_FULLCTX_PATCH=PASS'
 
@@ -198,7 +150,8 @@ void DumpImp008bE5FullArm64Context(const ARM64_NT_CONTEXT& context) noexcept {
           [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-fullctx.log'),$out+$err)
           if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
           [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-fullctx.rc'),[string]$rc)
-          Write-Host $out; Write-Host $err
+          Write-Host $out
+          Write-Host $err
           Write-Host ('IMP008B_E5_FULLCTX_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
 
       - name: Diff restore context 1 vs 2
@@ -214,14 +167,6 @@ void DumpImp008bE5FullArm64Context(const ARM64_NT_CONTEXT& context) noexcept {
           $report = New-Object System.Collections.Generic.List[string]
           $report.Add('IMP008B_E5_FULLCTX_DIFF_BEGIN')
 
-          function Add-Kv([string]$name,[string]$v1,[string]$v2) {
-            if ($v1 -ne $v2) {
-              $line = "DIFF $name #1=$v1 #2=$v2"
-              $script:report.Add($line)
-              Write-Host ('IMP008B_E5_FULLCTX_' + $line)
-            }
-          }
-
           $b1 = $begins | Where-Object { $_ -match 'SEQ=1\b' } | Select-Object -First 1
           $b2 = $begins | Where-Object { $_ -match 'SEQ=2\b' } | Select-Object -First 1
           if ($null -eq $b1 -or $null -eq $b2) {
@@ -231,7 +176,11 @@ void DumpImp008bE5FullArm64Context(const ARM64_NT_CONTEXT& context) noexcept {
             foreach ($key in @('SIZE','FLAGS','CPSR','SP','PC','TEB_LIMIT','TEB_BASE')) {
               $m1=[regex]::Match($b1,"$key=([^ ]+)")
               $m2=[regex]::Match($b2,"$key=([^ ]+)")
-              Add-Kv $key $m1.Groups[1].Value $m2.Groups[1].Value
+              if ($m1.Groups[1].Value -ne $m2.Groups[1].Value) {
+                $line = "DIFF $key #1=$($m1.Groups[1].Value) #2=$($m2.Groups[1].Value)"
+                $report.Add($line)
+                Write-Host ('IMP008B_E5_FULLCTX_' + $line)
+              }
             }
 
             for ($i=0; $i -lt 31; $i++) {
@@ -239,7 +188,13 @@ void DumpImp008bE5FullArm64Context(const ARM64_NT_CONTEXT& context) noexcept {
               $l1=$lines | Where-Object { $_ -match "^IMP008B_E5_FULLCTX_REG SEQ=1 $reg=" } | Select-Object -First 1
               $l2=$lines | Where-Object { $_ -match "^IMP008B_E5_FULLCTX_REG SEQ=2 $reg=" } | Select-Object -First 1
               if ($l1 -and $l2) {
-                Add-Kv $reg (($l1 -split '=',2)[1]) (($l2 -split '=',2)[1])
+                $v1=($l1 -split '=',2)[1]
+                $v2=($l2 -split '=',2)[1]
+                if ($v1 -ne $v2) {
+                  $line="DIFF $reg #1=$v1 #2=$v2"
+                  $report.Add($line)
+                  Write-Host ('IMP008B_E5_FULLCTX_' + $line)
+                }
               }
             }
 
@@ -248,7 +203,11 @@ void DumpImp008bE5FullArm64Context(const ARM64_NT_CONTEXT& context) noexcept {
             foreach ($key in @('FPCR','FPSR')) {
               $m1=[regex]::Match($fp1,"$key=([^ ]+)")
               $m2=[regex]::Match($fp2,"$key=([^ ]+)")
-              Add-Kv $key $m1.Groups[1].Value $m2.Groups[1].Value
+              if ($m1.Groups[1].Value -ne $m2.Groups[1].Value) {
+                $line="DIFF $key #1=$($m1.Groups[1].Value) #2=$($m2.Groups[1].Value)"
+                $report.Add($line)
+                Write-Host ('IMP008B_E5_FULLCTX_' + $line)
+              }
             }
 
             for ($i=0; $i -lt 32; $i++) {
@@ -258,7 +217,11 @@ void DumpImp008bE5FullArm64Context(const ARM64_NT_CONTEXT& context) noexcept {
               if ($l1 -and $l2) {
                 $v1=($l1 -replace '^IMP008B_E5_FULLCTX_VREG SEQ=1 ','')
                 $v2=($l2 -replace '^IMP008B_E5_FULLCTX_VREG SEQ=2 ','')
-                Add-Kv $vr $v1 $v2
+                if ($v1 -ne $v2) {
+                  $line="DIFF $vr #1=$v1 #2=$v2"
+                  $report.Add($line)
+                  Write-Host ('IMP008B_E5_FULLCTX_' + $line)
+                }
               }
             }
 
@@ -270,14 +233,17 @@ void DumpImp008bE5FullArm64Context(const ARM64_NT_CONTEXT& context) noexcept {
               $rawDiff=New-Object System.Collections.Generic.List[string]
               $bytes=[Math]::Min([int]($h1.Length/2),[int]($h2.Length/2))
               for ($i=0; $i -lt $bytes; $i++) {
-                $a=$h1.Substring($i*2,2); $b=$h2.Substring($i*2,2)
+                $a=$h1.Substring($i*2,2)
+                $b=$h2.Substring($i*2,2)
                 if ($a -ne $b) { $rawDiff.Add(('0x{0:X3}:{1}>{2}' -f $i,$a,$b)) }
               }
-              $rawLine='RAW_BYTE_DIFF_COUNT=' + $rawDiff.Count
-              $report.Add($rawLine); Write-Host ('IMP008B_E5_FULLCTX_' + $rawLine)
+              $line='RAW_BYTE_DIFF_COUNT=' + $rawDiff.Count
+              $report.Add($line)
+              Write-Host ('IMP008B_E5_FULLCTX_' + $line)
               if ($rawDiff.Count -gt 0) {
-                $rawOffsets='RAW_BYTE_DIFFS=' + ($rawDiff -join ',')
-                $report.Add($rawOffsets); Write-Host ('IMP008B_E5_FULLCTX_' + $rawOffsets)
+                $line='RAW_BYTE_DIFFS=' + ($rawDiff -join ',')
+                $report.Add($line)
+                Write-Host ('IMP008B_E5_FULLCTX_' + $line)
               }
             }
           }
