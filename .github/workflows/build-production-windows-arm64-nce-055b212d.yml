@@ -2,6 +2,11 @@ name: Build frozen IMP-008E production 055b212d
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - build/imp008e-production-055b212d
+    paths:
+      - .github/workflows/build-production-windows-arm64-nce-055b212d.yml
 
 permissions:
   contents: read
