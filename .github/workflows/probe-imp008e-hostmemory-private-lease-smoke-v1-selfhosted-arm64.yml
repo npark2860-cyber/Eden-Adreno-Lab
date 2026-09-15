@@ -1,0 +1,124 @@
+name: Probe IMP-008E HostMemory Private Lease Smoke V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-hostmemory-private-lease-smoke-v1-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-hostmemory-private-lease-smoke-v1
+  cancel-in-progress: false
+
+jobs:
+  hostmemory-private-lease-smoke:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Build reversible lease smoke
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw 'unexpected retained head' }
+          $dir='eden/build/hostmemory_private_lease_smoke_v1'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $src=Join-Path (Resolve-Path $dir).Path 'hostmemory_private_lease_smoke.cpp'
+          $code=@(
+            '#include <windows.h>',
+            '#include <array>',
+            '#include <cstdint>',
+            '#include <cstdio>',
+            '#include <cstring>',
+            '#include "common/host_memory.h"',
+            '',
+            'static int Fail(const char* tag, int rc) { std::fprintf(stderr, "%s=FAIL ERR=%lu\n", tag, GetLastError()); std::fflush(stderr); return rc; }',
+            'static void Pass(const char* tag) { std::fprintf(stderr, "%s=PASS\n", tag); std::fflush(stderr); }',
+            '',
+            'int main() {',
+            '    constexpr size_t BackingSize = 0x20000;',
+            '    constexpr size_t VirtualSize = 0x40000;',
+            '    constexpr size_t VirtualOffset = 0x10000;',
+            '    constexpr size_t HostOffset = 0x00000;',
+            '    constexpr size_t LeaseSize = 0x10000;',
+            '    constexpr std::uint64_t Initial = 0x1122334455667788ULL;',
+            '    constexpr std::uint64_t Modified = 0x8877665544332211ULL;',
+            '    Common::HostMemory memory{BackingSize, VirtualSize};',
+            '    memory.Map(VirtualOffset, HostOffset, LeaseSize, Common::MemoryPermission::ReadWrite, false);',
+            '    auto* const virt = memory.VirtualBasePointer() + VirtualOffset;',
+            '    auto* const backing = memory.BackingBasePointer() + HostOffset;',
+            '    MEMORY_BASIC_INFORMATION mbi{};',
+            '    if (VirtualQuery(virt, &mbi, sizeof(mbi)) == 0 || mbi.Type != MEM_MAPPED) return Fail("IMP008E_LEASE_PRE_MAPPED", 10);',
+            '    Pass("IMP008E_LEASE_PRE_MAPPED");',
+            '    std::memcpy(virt + 0x120, &Initial, sizeof(Initial));',
+            '    std::uint64_t check{}; std::memcpy(&check, backing + 0x120, sizeof(check));',
+            '    if (check != Initial) return Fail("IMP008E_LEASE_INITIAL_BACKING_ALIAS", 11);',
+            '    Pass("IMP008E_LEASE_INITIAL_BACKING_ALIAS");',
+            '    std::array<unsigned char, LeaseSize> snapshot{};',
+            '    std::memcpy(snapshot.data(), virt, LeaseSize);',
+            '    memory.Unmap(VirtualOffset, LeaseSize, false);',
+            '    mbi = {}; if (VirtualQuery(virt, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_RESERVE || mbi.Type != 0) return Fail("IMP008E_LEASE_PLACEHOLDER_AFTER_UNMAP", 12);',
+            '    Pass("IMP008E_LEASE_PLACEHOLDER_AFTER_UNMAP");',
+            '    using PfnVirtualAlloc2 = PVOID(WINAPI*)(HANDLE,PVOID,SIZE_T,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG);',
+            '    auto* kb=GetModuleHandleW(L"KernelBase.dll"); auto* va2=reinterpret_cast<PfnVirtualAlloc2>(GetProcAddress(kb,"VirtualAlloc2"));',
+            '    if (!va2) return Fail("IMP008E_LEASE_RESOLVE_VIRTUALALLOC2", 13);',
+            '    void* r=va2(GetCurrentProcess(),virt,LeaseSize,MEM_RESERVE|0x4000,PAGE_NOACCESS,nullptr,0);',
+            '    if (r != virt) return Fail("IMP008E_LEASE_PRIVATE_RESERVE", 14);',
+            '    if (VirtualAlloc(virt,LeaseSize,MEM_COMMIT,PAGE_READWRITE) != virt) return Fail("IMP008E_LEASE_PRIVATE_COMMIT", 15);',
+            '    std::memcpy(virt,snapshot.data(),LeaseSize);',
+            '    mbi = {}; if (VirtualQuery(virt, &mbi, sizeof(mbi)) == 0 || mbi.Type != MEM_PRIVATE) return Fail("IMP008E_LEASE_PRIVATE_TYPE", 16);',
+            '    Pass("IMP008E_LEASE_PRIVATE_TYPE");',
+            '    check=0; std::memcpy(&check,virt+0x120,sizeof(check)); if(check!=Initial) return Fail("IMP008E_LEASE_COPY_IN",17); Pass("IMP008E_LEASE_COPY_IN");',
+            '    std::memcpy(virt+0x120,&Modified,sizeof(Modified));',
+            '    std::memcpy(backing,virt,LeaseSize);',
+            '    check=0; std::memcpy(&check,backing+0x120,sizeof(check)); if(check!=Modified) return Fail("IMP008E_LEASE_COPY_BACK",18); Pass("IMP008E_LEASE_COPY_BACK");',
+            '    if (!VirtualFreeEx(GetCurrentProcess(),virt,0,MEM_RELEASE|0x2)) return Fail("IMP008E_LEASE_PRIVATE_TO_PLACEHOLDER",19);',
+            '    mbi = {}; if (VirtualQuery(virt,&mbi,sizeof(mbi))==0 || mbi.State!=MEM_RESERVE || mbi.Type!=0) return Fail("IMP008E_LEASE_PLACEHOLDER_RESTORED",20); Pass("IMP008E_LEASE_PLACEHOLDER_RESTORED");',
+            '    memory.Map(VirtualOffset,HostOffset,LeaseSize,Common::MemoryPermission::ReadWrite,false);',
+            '    mbi = {}; if (VirtualQuery(virt,&mbi,sizeof(mbi))==0 || mbi.Type!=MEM_MAPPED) return Fail("IMP008E_LEASE_REMAPPED_TYPE",21); Pass("IMP008E_LEASE_REMAPPED_TYPE");',
+            '    check=0; std::memcpy(&check,virt+0x120,sizeof(check)); if(check!=Modified) return Fail("IMP008E_LEASE_REMAPPED_VALUE",22); Pass("IMP008E_LEASE_REMAPPED_VALUE");',
+            '    memory.Unmap(VirtualOffset,LeaseSize,false);',
+            '    Pass("IMP008E_HOSTMEMORY_PRIVATE_LEASE_GATE");',
+            '    return 0;',
+            '}'
+          ) -join "`r`n"
+          [IO.File]::WriteAllText($src,$code,[Text.UTF8Encoding]::new($false))
+
+          Push-Location eden/build
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($hits.Count -ne 1) { throw "compile count=$($hits.Count)" }
+            $compile=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='hostmemory_private_lease_smoke_v1/hostmemory_private_lease_smoke.cpp.obj'
+            $compile=$compile.Replace($oldObj,$newObj)
+            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF hostmemory_private_lease_smoke_v1\hostmemory_private_lease_smoke.cpp.obj.d')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/hostmemory_private_lease_smoke_v1/hostmemory_private_lease_smoke.cpp')
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "compile rc=$LASTEXITCODE" }
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_hostmemory_private_lease_smoke_v1.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_hostmemory_private_lease_smoke_v1.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if ($LASTEXITCODE -ne 0) { throw "link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+      - name: Run reversible lease smoke
+        shell: powershell
+        run: |
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_hostmemory_private_lease_smoke_v1.exe').Path
+          $psi.WorkingDirectory=(Resolve-Path eden).Path
+          $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start()
+          $out=$p.StandardOutput.ReadToEndAsync(); $err=$p.StandardError.ReadToEndAsync(); $p.WaitForExit()
+          Write-Host $out.Result; Write-Host $err.Result; if($p.ExitCode -ne 0){ throw "lease smoke rc=$($p.ExitCode)" }
