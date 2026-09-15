@@ -28,72 +28,34 @@ jobs:
           if(-not(Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')){throw 'E2 source missing'}
           $v4src='eden/build/e2_runthread_private_stack_lease_v4/arm_nce_windows.cpp'
           if(-not(Test-Path $v4src)){throw 'v4 generated RunThread source missing'}
-
           $dir='eden/build/e2_runthread_private_stack_lease_sticky_v5'
           New-Item -ItemType Directory -Force $dir | Out-Null
           $armSrc=Join-Path (Resolve-Path $dir).Path 'arm_nce_windows.cpp'
           $text=[IO.File]::ReadAllText((Resolve-Path $v4src).Path).Replace("`r`n","`n")
 
-          $decl=@'
-        bool private_stack_active = false;
-        bool private_stack_passthrough = false;
-        u64 private_stack_base = 0;
-        size_t private_stack_size = 0;
-        size_t private_stack_backing_offset = 0;
-
-'@
+          $decl=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBib29sIHByaXZhdGVfc3RhY2tfYWN0aXZlID0gZmFsc2U7CiAgICAgICAgYm9vbCBwcml2YXRlX3N0YWNrX3Bhc3N0aHJvdWdoID0gZmFsc2U7CiAgICAgICAgdTY0IHByaXZhdGVfc3RhY2tfYmFzZSA9IDA7CiAgICAgICAgc2l6ZV90IHByaXZhdGVfc3RhY2tfc2l6ZSA9IDA7CiAgICAgICAgc2l6ZV90IHByaXZhdGVfc3RhY2tfYmFja2luZ19vZmZzZXQgPSAwOwoK'))
           if(([regex]::Matches($text,[regex]::Escape($decl))).Count-ne 1){throw 'v4 lease declaration anchor mismatch'}
           $text=$text.Replace($decl,'')
 
-          $loopAnchor="    const auto& post_handlers = process->GetPostHandlers();`n`n    for (;;) {"
-          $loopState=@'
-    const auto& post_handlers = process->GetPostHandlers();
-
-    // Diagnostic V5: lease lifetime is the entire RunThread fault/retry epoch, not one loop iteration.
-    bool private_stack_active = false;
-    bool private_stack_passthrough = false;
-    u64 private_stack_base = 0;
-    size_t private_stack_size = 0;
-    size_t private_stack_backing_offset = 0;
-
-    for (;;) {
-'@
+          $loopAnchor=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIGNvbnN0IGF1dG8mIHBvc3RfaGFuZGxlcnMgPSBwcm9jZXNzLT5HZXRQb3N0SGFuZGxlcnMoKTsKCiAgICBmb3IgKDs7KSB7'))
+          $loopState=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIGNvbnN0IGF1dG8mIHBvc3RfaGFuZGxlcnMgPSBwcm9jZXNzLT5HZXRQb3N0SGFuZGxlcnMoKTsKCiAgICAvLyBEaWFnbm9zdGljIFY1OiBsZWFzZSBsaWZldGltZSBpcyB0aGUgZW50aXJlIFJ1blRocmVhZCBmYXVsdC9yZXRyeSBlcG9jaCwgbm90IG9uZSBsb29wIGl0ZXJhdGlvbi4KICAgIGJvb2wgcHJpdmF0ZV9zdGFja19hY3RpdmUgPSBmYWxzZTsKICAgIGJvb2wgcHJpdmF0ZV9zdGFja19wYXNzdGhyb3VnaCA9IGZhbHNlOwogICAgdTY0IHByaXZhdGVfc3RhY2tfYmFzZSA9IDA7CiAgICBzaXplX3QgcHJpdmF0ZV9zdGFja19zaXplID0gMDsKICAgIHNpemVfdCBwcml2YXRlX3N0YWNrX2JhY2tpbmdfb2Zmc2V0ID0gMDsKCiAgICBmb3IgKDs7KSB7'))
           if(([regex]::Matches($text,[regex]::Escape($loopAnchor))).Count-ne 1){throw 'RunThread loop anchor mismatch'}
-          $text=$text.Replace($loopAnchor,$loopState.TrimEnd("`r","`n"))
+          $text=$text.Replace($loopAnchor,$loopState)
 
-          $privateAnchor='        if (private_stack_mbi.Type == MEM_PRIVATE) {'
-          $privateReuse=@'
-        if (private_stack_active && private_stack_mbi.Type == MEM_PRIVATE) {
-            const u64 private_stack_end =
-                private_stack_base + static_cast<u64>(private_stack_size);
-            if (m_guest_ctx.sp <= private_stack_base || m_guest_ctx.sp >= private_stack_end ||
-                reinterpret_cast<u64>(private_stack_mbi.AllocationBase) != private_stack_base) {
-                NCE::CurrentNceContext::Clear();
-                hr = HaltReason::PrefetchAbort;
-                break;
-            }
-            std::fprintf(stderr,
-                         "IMP008E_NCE_STACK_LEASE_REUSE=PASS BASE=0x%llX SIZE=0x%llX TYPE=0x%lX\n",
-                         static_cast<unsigned long long>(private_stack_base),
-                         static_cast<unsigned long long>(private_stack_size),
-                         static_cast<unsigned long>(private_stack_mbi.Type));
-            std::fflush(stderr);
-        } else if (private_stack_mbi.Type == MEM_PRIVATE) {
-'@
+          $privateAnchor=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBpZiAocHJpdmF0ZV9zdGFja19tYmkuVHlwZSA9PSBNRU1fUFJJVkFURSkgew=='))
+          $privateReuse=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBpZiAocHJpdmF0ZV9zdGFja19hY3RpdmUgJiYgcHJpdmF0ZV9zdGFja19tYmkuVHlwZSA9PSBNRU1fUFJJVkFURSkgewogICAgICAgICAgICBjb25zdCB1NjQgcHJpdmF0ZV9zdGFja19lbmQgPQogICAgICAgICAgICAgICAgcHJpdmF0ZV9zdGFja19iYXNlICsgc3RhdGljX2Nhc3Q8dTY0Pihwcml2YXRlX3N0YWNrX3NpemUpOwogICAgICAgICAgICBpZiAobV9ndWVzdF9jdHguc3AgPD0gcHJpdmF0ZV9zdGFja19iYXNlIHx8IG1fZ3Vlc3RfY3R4LnNwID49IHByaXZhdGVfc3RhY2tfZW5kIHx8CiAgICAgICAgICAgICAgICByZWludGVycHJldF9jYXN0PHU2ND4ocHJpdmF0ZV9zdGFja19tYmkuQWxsb2NhdGlvbkJhc2UpICE9IHByaXZhdGVfc3RhY2tfYmFzZSkgewogICAgICAgICAgICAgICAgTkNFOjpDdXJyZW50TmNlQ29udGV4dDo6Q2xlYXIoKTsKICAgICAgICAgICAgICAgIGhyID0gSGFsdFJlYXNvbjo6UHJlZmV0Y2hBYm9ydDsKICAgICAgICAgICAgICAgIGJyZWFrOwogICAgICAgICAgICB9CiAgICAgICAgICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgICAgICAgICAiSU1QMDA4RV9OQ0VfU1RBQ0tfTEVBU0VfUkVVU0U9UEFTUyBCQVNFPTB4JWxsWCBTSVpFPTB4JWxsWCBUWVBFPTB4JWxYXG4iLAogICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihwcml2YXRlX3N0YWNrX2Jhc2UpLAogICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihwcml2YXRlX3N0YWNrX3NpemUpLAogICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4ocHJpdmF0ZV9zdGFja19tYmkuVHlwZSkpOwogICAgICAgICAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgICAgIH0gZWxzZSBpZiAocHJpdmF0ZV9zdGFja19tYmkuVHlwZSA9PSBNRU1fUFJJVkFURSkgew=='))
           if(([regex]::Matches($text,[regex]::Escape($privateAnchor))).Count-ne 1){throw 'MEM_PRIVATE lease anchor mismatch'}
-          $text=$text.Replace($privateAnchor,$privateReuse.TrimEnd("`r","`n"))
+          $text=$text.Replace($privateAnchor,$privateReuse)
 
           $cleanupAnchor='        if (private_stack_active) {'
           if(([regex]::Matches($text,[regex]::Escape($cleanupAnchor))).Count-ne 1){throw 'lease cleanup anchor mismatch'}
           $text=$text.Replace($cleanupAnchor,'        if (private_stack_active && !m_windows_pending_nce_fault) {')
-
           [IO.File]::WriteAllText($armSrc,$text,[Text.UTF8Encoding]::new($false))
 
           Push-Location eden/build
           try {
             $cmds=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
             if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
-
             $arm=@($cmds|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
             if($arm.Count-ne 1){throw "arm compile count=$($arm.Count)"}
             $c=[string]$arm[0]
@@ -104,7 +66,7 @@ jobs:
             $c=$c.Replace($oldArm,$newArm)
             $c=[regex]::Replace($c,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF e2_runthread_private_stack_lease_sticky_v5\arm_nce_windows.cpp.obj.d')
             $armSource=((Resolve-Path 'e2_runthread_private_stack_lease_sticky_v5/arm_nce_windows.cpp').Path -replace '\\','/')
-            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",'-c '+$armSource)
+            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$armSource))
             $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
             $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
             & $env:ComSpec /D /S /C $c
@@ -118,7 +80,7 @@ jobs:
             $c=$c.Replace($oldMain,$newMain)
             $c=[regex]::Replace($c,'-MF\s+\S+\.obj\.d','-MF e2_runthread_private_stack_lease_sticky_v5\rasterizer_cached_retry.cpp.obj.d')
             $e2Source=((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
-            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c '+$e2Source)
+            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",('-c '+$e2Source))
             $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
             $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
             & $env:ComSpec /D /S /C $c
