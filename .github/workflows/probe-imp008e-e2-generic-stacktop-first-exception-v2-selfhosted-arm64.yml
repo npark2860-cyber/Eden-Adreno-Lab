@@ -1,0 +1,151 @@
+name: Probe IMP-008E E2 Generic StackTop First Exception V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-generic-stacktop-first-exception-v2-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-generic-stacktop-first-exception-v2
+  cancel-in-progress: false
+
+jobs:
+  e2-first-exception-v2:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Build diagnostic E2 probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'generic transition object missing' }
+
+          $src = (Resolve-Path 'eden/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp').Path
+          $dst = (Join-Path (Resolve-Path 'eden').Path 'build/generic_stacktop_ab/rasterizer_cached_retry_first_exception_v2.cpp')
+          $text = [IO.File]::ReadAllText($src)
+          $anchor = @'
+              const auto& record = *exception->ExceptionRecord;
+              if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
+          '@
+          $insert = @'
+              const auto& record = *exception->ExceptionRecord;
+              static std::atomic<u32> first_any_exception_seen{};
+              u32 first_any_expected = 0;
+              if (first_any_exception_seen.compare_exchange_strong(first_any_expected, 1,
+                                                                    std::memory_order_acq_rel)) {
+                  const auto pc = static_cast<u64>(exception->ContextRecord->Pc);
+                  const auto sp = static_cast<u64>(exception->ContextRecord->Sp);
+                  MEMORY_BASIC_INFORMATION pc_mbi{};
+                  MEMORY_BASIC_INFORMATION sp_mbi{};
+                  VirtualQuery(reinterpret_cast<const void*>(pc), &pc_mbi, sizeof(pc_mbi));
+                  VirtualQuery(reinterpret_cast<const void*>(sp), &sp_mbi, sizeof(sp_mbi));
+                  auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+                  std::fprintf(stderr,
+                               "IMP008E_E2_FIRST_ANY_EXCEPTION CODE=0x%08lX PARAMS=%lu ADDR=%p PC=0x%llX SP=0x%llX TEB_LIMIT=%p TEB_BASE=%p PC_BASE=%p PC_ALLOC=%p PC_PROTECT=0x%lX SP_BASE=%p SP_ALLOC=%p SP_PROTECT=0x%lX NTDLL=%p UCRT=%p\n",
+                               static_cast<unsigned long>(record.ExceptionCode),
+                               static_cast<unsigned long>(record.NumberParameters),
+                               record.ExceptionAddress,
+                               static_cast<unsigned long long>(pc),
+                               static_cast<unsigned long long>(sp),
+                               tib->StackLimit, tib->StackBase,
+                               pc_mbi.BaseAddress, pc_mbi.AllocationBase,
+                               static_cast<unsigned long>(pc_mbi.Protect),
+                               sp_mbi.BaseAddress, sp_mbi.AllocationBase,
+                               static_cast<unsigned long>(sp_mbi.Protect),
+                               GetModuleHandleW(L"ntdll.dll"), GetModuleHandleW(L"ucrtbase.dll"));
+                  std::fflush(stderr);
+              }
+              if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
+          '@
+          $idx = $text.IndexOf($anchor)
+          if ($idx -lt 0) { throw 'E2 observation handler anchor missing' }
+          $text = $text.Remove($idx, $anchor.Length).Insert($idx, $insert)
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText($dst, $text, $utf8)
+
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            $hits = @($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($hits.Count -ne 1) { throw "E5 compile command count=$($hits.Count)" }
+            $compile = [string]$hits[0]
+            $oldObj = 'src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj = 'generic_stacktop_ab/rasterizer_cached_retry_first_exception_v2.cpp.obj'
+            $compile = $compile.Replace($oldObj, $newObj)
+            $compile = [regex]::Replace($compile, '-MF\s+\S+\.obj\.d', '-MF generic_stacktop_ab\rasterizer_cached_retry_first_exception_v2.cpp.obj.d')
+            $compile = [regex]::Replace($compile, "-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?", '-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/generic_stacktop_ab/rasterizer_cached_retry_first_exception_v2.cpp')
+            $compile = $compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
+            $compile = $compile.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
+            $compile = $compile.Replace('C:\msys64\clangarm64\bin\sccache.exe ', '')
+            $compile = $compile.Replace('C:/msys64/clangarm64/bin/sccache.exe ', '')
+            $compile = [regex]::Replace($compile, "'(C:/[^']+)'", '$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "diagnostic E2 compile rc=$LASTEXITCODE" }
+
+            $linkHits = @($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link command count=$($linkHits.Count)" }
+            $link = [string]$linkHits[0]
+            $link = $link.Replace($oldObj, $newObj)
+            $link = $link.Replace('bin\imp008b_e5_x18_runtime.exe', 'bin\imp008e_e2_first_exception_v2.exe')
+            $link = $link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a', 'src\yuzu_cmd\libimp008e_e2_first_exception_v2.a')
+            $link = $link.Replace('src/core/libcore.a', 'generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link = $link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
+            $link = $link.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008e-e2-first-exception-v2-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "diagnostic E2 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_FIRST_EXCEPTION_V2_BUILD=PASS'
+
+      - name: Run diagnostic E2 exactly once
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008e_e2_first_exception_v2.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(300000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          if ($timeout) { $rc = 124 } else { $rc = $p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-first-exception-v2.out.log'), $out)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-first-exception-v2.err.log'), $err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-first-exception-v2.log'), $out + $err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-first-exception-v2.rc'), [string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008E_E2_FIRST_EXCEPTION_V2_RC={0} (0x{1:X8})' -f $rc, ($rc -band 0xffffffffL))
+
+      - name: Classify first exception
+        shell: powershell
+        run: |
+          $log = Get-Content 'eden/imp008e-e2-first-exception-v2.log' -Raw
+          Get-Content 'eden/imp008e-e2-first-exception-v2.log' | Select-String -Pattern 'IMP008E_E2_FIRST_ANY_EXCEPTION|IMP008B_GENERIC_STACK_TOP|IMP008E_E2_DATA_AV|IMP008E_E2_GATE'
+          if ($log.Contains('IMP008E_E2_FIRST_ANY_EXCEPTION')) { Write-Host 'IMP008E_E2_FIRST_EXCEPTION_CAPTURE=PASS' } else { Write-Host 'IMP008E_E2_FIRST_EXCEPTION_CAPTURE=ABSENT' }
+
+      - name: Upload first exception diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-first-exception-v2
+          path: |
+            eden/imp008e-e2-first-exception-v2-link.log
+            eden/imp008e-e2-first-exception-v2.log
+            eden/imp008e-e2-first-exception-v2.out.log
+            eden/imp008e-e2-first-exception-v2.err.log
+            eden/imp008e-e2-first-exception-v2.rc
+          if-no-files-found: warn
