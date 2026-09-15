@@ -4,7 +4,10 @@
         AREA    |.text|, CODE, READONLY
         EXPORT  WindowsNceEnterGuest
         EXPORT  WindowsNceEnterGuestContext
+        EXPORT  WindowsNceGuestStackBridge
+        EXPORT  WindowsNceHostStackBridge
         EXTERN  WindowsNceRestoreGuestContext
+        EXTERN  WindowsNceContinueGuestContext
 
 ; These offsets are locked by static_asserts in windows_nce_transition.cpp.
 GuestContextSp          EQU 0x0F8
@@ -125,6 +128,21 @@ WindowsNceEnterGuestContext PROC
 
         ; RtlRestoreContext is non-returning for this path.
         brk     #1000
+        ENDP
+
+; First code executed after NtContinue has installed the guest SP. x1/x2 are bridge-only scratch
+; carrying the full guest stack bounds; x18 remains the Windows TEB pointer.
+WindowsNceGuestStackBridge PROC
+        str     x1, [x18, #8]
+        str     x2, [x18, #16]
+        b       WindowsNceContinueGuestContext
+        ENDP
+
+WindowsNceHostStackBridge PROC
+        str     x1, [x18, #8]
+        str     x2, [x18, #16]
+        mov     sp, x3
+        ret     x16
         ENDP
 
         END
