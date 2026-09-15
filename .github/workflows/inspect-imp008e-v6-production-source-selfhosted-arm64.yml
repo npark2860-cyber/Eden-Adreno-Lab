@@ -26,6 +26,5 @@ jobs:
           $src='eden/build/generic_stacktop_ab/windows_nce_transition.cpp'
           if(-not(Test-Path $src)){throw 'retained generic transition PASS source missing'}
           Write-Host 'IMP008E_GENERIC_TRANSITION_SOURCE_BEGIN'
-          Get-FileHash $src -Algorithm SHA256 | Format-List
           Get-Content $src
           Write-Host 'IMP008E_GENERIC_TRANSITION_SOURCE_END'
