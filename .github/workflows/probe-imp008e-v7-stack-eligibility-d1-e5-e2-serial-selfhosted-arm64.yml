@@ -1,4 +1,4 @@
-name: Compare IMP-008E guest and symmetric bridge binaries
+name: Inspect IMP-008E symmetric bridge fail-fast
 
 on:
   push:
@@ -10,42 +10,51 @@ permissions:
   contents: read
 
 concurrency:
-  group: imp008e-bridge-binary-ab
+  group: imp008e-symmetric-failfast-inspect
   cancel-in-progress: false
 
 jobs:
-  bridge-binary-ab:
+  inspect-failfast:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 8
     steps:
-      - name: Run retained guest-only and symmetric binaries
+      - name: Compare bridge symbols and inspect fail-fast
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
-          $eden=(Resolve-Path eden).Path
-          $cases=@(
-            @{Name='GUEST'; Exe='eden/build/bin/imp008e_guest_stack_bridge_e2.exe'},
-            @{Name='SYMMETRIC'; Exe='eden/build/bin/imp008e_symmetric_stack_bridge_e2.exe'}
+          $guest=(Resolve-Path 'eden/build/bin/imp008e_guest_stack_bridge_e2.exe').Path
+          $sym=(Resolve-Path 'eden/build/bin/imp008e_symmetric_stack_bridge_e2.exe').Path
+          $llvm='C:\msys64\clangarm64\bin'
+          foreach($exe in @($guest,$sym)){if(-not(Test-Path $exe)){throw "missing $exe"}}
+          foreach($tool in @('llvm-nm.exe','llvm-objdump.exe','llvm-readobj.exe')){if(-not(Test-Path (Join-Path $llvm $tool)){throw "missing $tool"}}
+
+          foreach($case in @(@('GUEST',$guest),@('SYMMETRIC',$sym))){
+            $name=$case[0]; $exe=$case[1]
+            Write-Host "===== IMP008E_${name}_SYMBOLS ====="
+            & (Join-Path $llvm 'llvm-nm.exe') -n $exe | Select-String 'WindowsNceGuestStackBridge|WindowsNceHostStackBridge|WindowsNceContinueGuestContext|WindowsNceRestoreGuestContext'
+            Write-Host "===== IMP008E_${name}_GUEST_BRIDGE_DISASM ====="
+            & (Join-Path $llvm 'llvm-objdump.exe') -d --disassemble-symbols=WindowsNceGuestStackBridge $exe
+            Write-Host "===== IMP008E_${name}_CONTINUE_DISASM ====="
+            & (Join-Path $llvm 'llvm-objdump.exe') -d --disassemble-symbols=WindowsNceContinueGuestContext $exe
+            Write-Host "===== IMP008E_${name}_LOAD_CONFIG ====="
+            & (Join-Path $llvm 'llvm-readobj.exe') --coff-load-config $exe | Select-String 'Guard|EHCont|SecurityCookie|SEHandler'
+          }
+
+          $candidates=@(
+            'C:\Program Files (x86)\Windows Kits\10\Debuggers\arm64\cdb.exe',
+            'C:\Program Files\Windows Kits\10\Debuggers\arm64\cdb.exe'
           )
-          foreach($c in $cases){if(-not(Test-Path $c.Exe)){throw "missing $($c.Exe)"}}
-          function Run-One([string]$name,[string]$exe,[int]$iter){
-            $psi=New-Object Diagnostics.ProcessStartInfo
-            $psi.FileName=(Resolve-Path $exe).Path
-            $psi.WorkingDirectory=$eden
-            $psi.UseShellExecute=$false
-            $psi.RedirectStandardOutput=$true
-            $psi.RedirectStandardError=$true
-            $p=New-Object Diagnostics.Process; $p.StartInfo=$psi; [void]$p.Start()
-            $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
-            $timeout=-not $p.WaitForExit(30000); if($timeout){$p.Kill();$p.WaitForExit()}
-            $out=$ot.Result+$et.Result; $rc=if($timeout){124}else{$p.ExitCode}
-            Write-Host "IMP008E_AB_${name}_${iter}_RC=$rc"
-            foreach($line in ($out -split "`r?`n")){
-              if($line -match 'IMP008E_E2_GUEST_STACK_QUERY=|IMP008E_E2_PRE_RUN |IMP008E_E2_DATA_AV|IMP008E_E2_GATE=|IMP008B_E2_RESTORE_ENTER=|IMP008B_E2_BEFORE_NT_CONTINUE=') { Write-Host "IMP008E_AB_${name}_${iter} $line" }
-            }
+          $cdb=$candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if($null-eq $cdb){
+            $found=Get-ChildItem 'C:\Program Files*\Windows Kits\10\Debuggers' -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.FullName -match '\\arm64\\'} | Select-Object -First 1
+            if($null-ne $found){$cdb=$found.FullName}
           }
-          for($i=1;$i-le 4;$i++){
-            foreach($c in $cases){Run-One $c.Name $c.Exe $i}
+          if($null-eq $cdb){
+            Write-Host 'IMP008E_CDB_AVAILABLE=NO'
+          } else {
+            Write-Host "IMP008E_CDB_AVAILABLE=YES PATH=$cdb"
+            & $cdb -o -g -G -c 'sxe 0xc0000409;g;.exr -1;r;kb;q' $sym
+            Write-Host "IMP008E_CDB_RC=$LASTEXITCODE"
           }
-          Write-Host 'IMP008E_BRIDGE_BINARY_AB_COMPLETE=PASS'
+          Write-Host 'IMP008E_SYMMETRIC_FAILFAST_INSPECT=PASS'
