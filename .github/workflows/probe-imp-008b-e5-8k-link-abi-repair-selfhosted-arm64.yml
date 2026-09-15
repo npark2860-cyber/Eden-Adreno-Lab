@@ -1,4 +1,4 @@
-name: Probe IMP-008B E5 Generic VEH CRT-Free A-B
+name: Probe IMP-008B E5 X18 VEH CRT-Free A-B
 
 on:
   workflow_dispatch:
@@ -12,11 +12,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: probe-imp-008b-e5-generic-veh-crt-free
+  group: probe-imp-008b-e5-x18-veh-crt-free
   cancel-in-progress: false
 
 jobs:
-  e5-generic-veh-crt-free:
+  e5-x18-veh-crt-free:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 35
     steps:
@@ -33,32 +33,46 @@ jobs:
           $t = [IO.File]::ReadAllText((Resolve-Path $transition))
           $a = [IO.File]::ReadAllText((Resolve-Path $armnce))
           if (-not $t.Contains('IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS')) { throw 'late TEB/direct NtContinue staging missing' }
-          if (-not $a.Contains('IMP008B_E5_X18_VEH_ENTER=PASS')) { throw 'x18 VEH observer marker missing' }
-          if (-not $a.Contains('IMP008B_E5_GENERIC_VEH_STATE') -and -not $a.Contains('IMP008B_E5_GENERIC_CRT_FREE_AB')) { throw 'generic VEH diagnostic block missing' }
-          Remove-Item 'eden/imp008b-e5-crtfree.log','eden/imp008b-e5-crtfree.out.log','eden/imp008b-e5-crtfree.err.log','eden/imp008b-e5-crtfree.rc' -Force -ErrorAction SilentlyContinue
-          Write-Host 'IMP008B_E5_GENERIC_CRT_RETAINED_STATE=PASS'
+          if (-not $a.Contains('IMP008B_E5_GENERIC_CRT_FREE_AB')) { throw 'generic VEH CRT-free A-B state missing' }
+          if (-not $a.Contains('IMP008B_E5_X18_VEH_ENTER=PASS') -and -not $a.Contains('IMP008B_E5_X18_CRT_FREE_AB')) { throw 'x18 VEH diagnostic block missing' }
+          Remove-Item 'eden/imp008b-e5-x18crtfree.log','eden/imp008b-e5-x18crtfree.out.log','eden/imp008b-e5-x18crtfree.err.log','eden/imp008b-e5-x18crtfree.rc' -Force -ErrorAction SilentlyContinue
+          Write-Host 'IMP008B_E5_X18_CRT_RETAINED_STATE=PASS'
 
-      - name: Remove only generic VEH CRT logging
+      - name: Remove only x18 VEH CRT logging
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $path = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
           $text = [IO.File]::ReadAllText((Resolve-Path $path))
-          if ($text.Contains('IMP008B_E5_GENERIC_CRT_FREE_AB')) {
-            Write-Host 'IMP008B_E5_GENERIC_CRT_FREE_ALREADY=PASS'
+          if ($text.Contains('IMP008B_E5_X18_CRT_FREE_AB')) {
+            Write-Host 'IMP008B_E5_X18_CRT_FREE_ALREADY=PASS'
             exit 0
           }
-          $pattern = '(?s)    u64 imp008b_e5_generic_phys_x18\{\};.*?    auto\* const guest = NCE::WindowsExceptionContext::CurrentGuestContext\(\);'
-          $matches = [regex]::Matches($text, $pattern)
-          if ($matches.Count -ne 1) { throw "generic diagnostic block count=$($matches.Count)" }
-          $replacement = "    // IMP008B_E5_GENERIC_CRT_FREE_AB: no CRT calls before guest/x18 dispatch on guest stack.`n    auto* const guest = NCE::WindowsExceptionContext::CurrentGuestContext();"
-          $text = [regex]::Replace($text, $pattern, $replacement, 1)
-          if ($text.Contains('IMP008B_E5_GENERIC_VEH_STATE')) { throw 'generic fprintf block still present' }
-          if (-not $text.Contains('IMP008B_E5_X18_VEH_ENTER=PASS')) { throw 'x18 VEH diagnostics unexpectedly changed' }
-          if (-not $text.Contains('IMP008B_E5_GENERIC_CRT_FREE_AB')) { throw 'generic CRT-free marker missing' }
+
+          $enterPattern = '(?s)        u64 imp008b_e5_phys_x18_enter\{\};.*?        params->lock\.store\(SpinLockLocked, std::memory_order_release\);'
+          $enterMatches = [regex]::Matches($text, $enterPattern)
+          if ($enterMatches.Count -ne 1) { throw "x18 enter diagnostic block count=$($enterMatches.Count)" }
+          $enterReplacement = "        // IMP008B_E5_X18_CRT_FREE_AB: no CRT calls on the guest stack inside x18 VEH.`n        params->lock.store(SpinLockLocked, std::memory_order_release);"
+          $text = [regex]::Replace($text, $enterPattern, $enterReplacement, 1)
+
+          $tryPattern = '(?s)(        const bool imp008b_e5_redirected = NCE::WindowsX18FallbackTrap::TryRedirect\(\s*exception, \*guest, process->GetPostHandlers\(\)\);\r?\n)        std::fprintf\(stderr, "IMP008B_E5_X18_TRYREDIRECT=%s\\n",.*?        std::fflush\(stderr\);\r?\n'
+          $tryMatches = [regex]::Matches($text, $tryPattern)
+          if ($tryMatches.Count -ne 1) { throw "x18 TryRedirect diagnostic block count=$($tryMatches.Count)" }
+          $text = [regex]::Replace($text, $tryPattern, '$1', 1)
+
+          $returnPattern = '(?s)            u64 imp008b_e5_phys_x18_return\{\};.*?            std::fflush\(stderr\);\r?\n'
+          $returnMatches = [regex]::Matches($text, $returnPattern)
+          if ($returnMatches.Count -ne 1) { throw "x18 return diagnostic block count=$($returnMatches.Count)" }
+          $text = [regex]::Replace($text, $returnPattern, '', 1)
+
+          if (-not $text.Contains('IMP008B_E5_X18_CRT_FREE_AB')) { throw 'x18 CRT-free marker missing' }
+          if ($text.Contains('IMP008B_E5_X18_VEH_ENTER=PASS') -or $text.Contains('IMP008B_E5_X18_TRYREDIRECT=') -or $text.Contains('IMP008B_E5_X18_REDIRECT_STATE') -or $text.Contains('IMP008B_E5_X18_VEH_RETURN=PASS')) { throw 'x18 CRT diagnostics still present' }
+          if (-not $text.Contains('WindowsX18FallbackTrap::TryRedirect(')) { throw 'TryRedirect logic lost' }
+          if (-not $text.Contains('return EXCEPTION_CONTINUE_EXECUTION;')) { throw 'continue-execution return lost' }
+          if (-not $text.Contains('params->lock.store(SpinLockLocked, std::memory_order_release);')) { throw 'x18 lock handoff lost' }
           $utf8 = New-Object System.Text.UTF8Encoding($false)
           [IO.File]::WriteAllText((Resolve-Path $path), $text, $utf8)
-          Write-Host 'IMP008B_E5_GENERIC_CRT_FREE_PATCH=PASS'
+          Write-Host 'IMP008B_E5_X18_CRT_FREE_PATCH=PASS'
 
       - name: Set up minimal direct-link CLANGARM64 toolchain
         uses: msys2/setup-msys2@v2
@@ -79,19 +93,19 @@ jobs:
           set -euo pipefail
           before_build=$(sha256sum build/build.ninja | awk '{print $1}')
           before_rules=$(sha256sum build/CMakeFiles/rules.ninja | awk '{print $1}')
-          ninja -C build -t commands imp008b_e5_x18_runtime > imp008b-e5-crtfree-commands.txt
+          ninja -C build -t commands imp008b_e5_x18_runtime > imp008b-e5-x18crtfree-commands.txt
           after_build=$(sha256sum build/build.ninja | awk '{print $1}')
           after_rules=$(sha256sum build/CMakeFiles/rules.ninja | awk '{print $1}')
           test "$before_build" = "$after_build"
           test "$before_rules" = "$after_rules"
-          echo 'IMP008B_E5_GENERIC_CRT_GRAPH_UNCHANGED=PASS'
+          echo 'IMP008B_E5_X18_CRT_GRAPH_UNCHANGED=PASS'
 
       - name: Direct compile changed and ABI-refresh objects
         shell: powershell
         working-directory: eden/build
         run: |
           $ErrorActionPreference = 'Stop'
-          $lines = @(Get-Content '../imp008b-e5-crtfree-commands.txt')
+          $lines = @(Get-Content '../imp008b-e5-x18crtfree-commands.txt')
           function Get-One([string]$pattern, [string]$label) {
             $hits = @($lines | Where-Object { $_ -match $pattern })
             if ($hits.Count -ne 1) { throw "$label command count=$($hits.Count)" }
@@ -102,7 +116,7 @@ jobs:
             $cmd = [regex]::Replace($line, "'(C:/[^']+)'", '$1')
             & $env:ComSpec /D /S /C $cmd
             $rc = $LASTEXITCODE
-            Write-Host "IMP008B_E5_GENERIC_CRT_${label}_RC=$rc"
+            Write-Host "IMP008B_E5_X18_CRT_${label}_RC=$rc"
             if ($rc -ne 0) { throw "$label compile failed rc=$rc" }
           }
           Invoke-Direct 'ARMNCE' (Get-One " -c '?C:/[^']*/src/core/arm/nce/arm_nce_windows\.cpp'?$" 'ARMNCE')
@@ -110,77 +124,73 @@ jobs:
           Invoke-Direct 'SERVICE' (Get-One " -c '?C:/[^']*/src/core/hle/service/service\.cpp'?$" 'SERVICE')
           Invoke-Direct 'NIFM' (Get-One " -c '?C:/[^']*/src/core/hle/service/nifm/nifm\.cpp'?$" 'NIFM')
           Invoke-Direct 'CONDITION' (Get-One " -c '?C:/[^']*/src/shader_recompiler/frontend/ir/condition\.cpp'?$" 'CONDITION')
-          Write-Host 'IMP008B_E5_GENERIC_CRT_COMPILE=PASS'
+          Write-Host 'IMP008B_E5_X18_CRT_COMPILE=PASS'
 
       - name: Direct link E5
         shell: powershell
         working-directory: eden/build
         run: |
           $ErrorActionPreference = 'Stop'
-          $lines = @(Get-Content '../imp008b-e5-crtfree-commands.txt')
+          $lines = @(Get-Content '../imp008b-e5-x18crtfree-commands.txt')
           $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
           if ($hits.Count -ne 1) { throw "final link command count=$($hits.Count)" }
           $cmd = [string]$hits[0]
-          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-crtfree-link.log'
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-x18crtfree-link.log'
           $rc = $LASTEXITCODE
-          Write-Host "IMP008B_E5_GENERIC_CRT_LINK_RC=$rc"
+          Write-Host "IMP008B_E5_X18_CRT_LINK_RC=$rc"
           if ($rc -ne 0) { throw "direct link failed rc=$rc" }
-          Write-Host 'IMP008B_E5_GENERIC_CRT_LINK=PASS'
+          Write-Host 'IMP008B_E5_X18_CRT_LINK=PASS'
 
-      - name: Launch E5 generic CRT-free A-B
+      - name: Launch E5 x18 CRT-free A-B
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -uo pipefail
           set +e
-          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-crtfree.out.log 2> imp008b-e5-crtfree.err.log
+          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-x18crtfree.out.log 2> imp008b-e5-x18crtfree.err.log
           rc=$?
           set -e
-          printf '%s\n' "$rc" > imp008b-e5-crtfree.rc
-          cat imp008b-e5-crtfree.out.log imp008b-e5-crtfree.err.log > imp008b-e5-crtfree.log 2>/dev/null || true
-          cat imp008b-e5-crtfree.log || true
-          echo "IMP008B_E5_GENERIC_CRT_RUNTIME_RC=$rc"
+          printf '%s\n' "$rc" > imp008b-e5-x18crtfree.rc
+          cat imp008b-e5-x18crtfree.out.log imp008b-e5-x18crtfree.err.log > imp008b-e5-x18crtfree.log 2>/dev/null || true
+          cat imp008b-e5-x18crtfree.log || true
+          echo "IMP008B_E5_X18_CRT_RUNTIME_RC=$rc"
 
-      - name: Classify generic CRT-free boundary
+      - name: Classify x18 CRT-free boundary
         if: always()
         shell: powershell
         working-directory: eden
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path 'imp008b-e5-crtfree.log')) {
-            Write-Host 'IMP008B_E5_GENERIC_CRT_RUNTIME=NOT_REACHED'
+          if (-not (Test-Path 'imp008b-e5-x18crtfree.log')) {
+            Write-Host 'IMP008B_E5_X18_CRT_RUNTIME=NOT_REACHED'
             exit 0
           }
-          Get-Content 'imp008b-e5-crtfree.log' | Select-String -Pattern 'IMP008B_E5_(8K_|NT_RESOLVED|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
-          $ready = Select-String -Path 'imp008b-e5-crtfree.log' -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet
-          $beforeNt = Select-String -Path 'imp008b-e5-crtfree.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet
-          $x18 = Select-String -Path 'imp008b-e5-crtfree.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
-          $tryRedirect = Select-String -Path 'imp008b-e5-crtfree.log' -SimpleMatch 'IMP008B_E5_X18_TRYREDIRECT=PASS' -Quiet
-          $secondRestore = Select-String -Path 'imp008b-e5-crtfree.log' -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
-          $returned = Select-String -Path 'imp008b-e5-crtfree.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
-          $svc = Select-String -Path 'imp008b-e5-crtfree.log' -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
-          $x18result = Select-String -Path 'imp008b-e5-crtfree.log' -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
-          $gate = Select-String -Path 'imp008b-e5-crtfree.log' -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
-          Write-Host ('IMP008B_E5_GENERIC_CRT_READY=' + $(if ($ready) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_GENERIC_CRT_BEFORE_NT=' + $(if ($beforeNt) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_GENERIC_CRT_X18_VEH=' + $(if ($x18) {'PASS'} else {'NO_ENTRY'}))
-          Write-Host ('IMP008B_E5_GENERIC_CRT_TRYREDIRECT=' + $(if ($tryRedirect) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_GENERIC_CRT_SECOND_RESTORE=' + $(if ($secondRestore) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_GENERIC_CRT_RUNTHREAD_RETURNED=' + $(if ($returned) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_GENERIC_CRT_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_GENERIC_CRT_X18_RESULT=' + $(if ($x18result) {'PASS'} else {'NO'}))
-          Write-Host ('IMP008B_E5_GENERIC_CRT_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
+          Get-Content 'imp008b-e5-x18crtfree.log' | Select-String -Pattern 'IMP008B_E5_(8K_|NT_RESOLVED|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
+          $ready = Select-String -Path 'imp008b-e5-x18crtfree.log' -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet
+          $beforeNt = Select-String -Path 'imp008b-e5-x18crtfree.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet
+          $secondRestore = Select-String -Path 'imp008b-e5-x18crtfree.log' -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
+          $returned = Select-String -Path 'imp008b-e5-x18crtfree.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          $svc = Select-String -Path 'imp008b-e5-x18crtfree.log' -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
+          $x18result = Select-String -Path 'imp008b-e5-x18crtfree.log' -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
+          $gate = Select-String -Path 'imp008b-e5-x18crtfree.log' -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
+          Write-Host ('IMP008B_E5_X18_CRT_READY=' + $(if ($ready) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_X18_CRT_BEFORE_NT=' + $(if ($beforeNt) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_X18_CRT_SECOND_RESTORE=' + $(if ($secondRestore) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_X18_CRT_RUNTHREAD_RETURNED=' + $(if ($returned) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_X18_CRT_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_X18_CRT_X18_RESULT=' + $(if ($x18result) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_X18_CRT_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
 
-      - name: Upload generic CRT-free diagnostics
+      - name: Upload x18 CRT-free diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e5-generic-veh-crt-free
+          name: e5-x18-veh-crt-free
           path: |
-            eden/imp008b-e5-crtfree-commands.txt
-            eden/imp008b-e5-crtfree-link.log
-            eden/imp008b-e5-crtfree.log
-            eden/imp008b-e5-crtfree.out.log
-            eden/imp008b-e5-crtfree.err.log
-            eden/imp008b-e5-crtfree.rc
+            eden/imp008b-e5-x18crtfree-commands.txt
+            eden/imp008b-e5-x18crtfree-link.log
+            eden/imp008b-e5-x18crtfree.log
+            eden/imp008b-e5-x18crtfree.out.log
+            eden/imp008b-e5-x18crtfree.err.log
+            eden/imp008b-e5-x18crtfree.rc
           if-no-files-found: warn
