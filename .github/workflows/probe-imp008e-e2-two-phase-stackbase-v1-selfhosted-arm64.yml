@@ -58,7 +58,7 @@ jobs:
           $text=$text.Replace($a,"    context.r[18] = X18Sentinel;`r`n    const u64 host_stack_base = reinterpret_cast<u64>(reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);`r`n    context.r[4] = host_stack_base;")
           $a='    context.pc = guest_pc;'
           if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'context pc anchor mismatch' }
-          $text=$text.Replace($a,"    context.pc = guest_entry_pc;`r`n    std::fprintf(stderr, \"IMP008E_E2_TWO_PHASE_STACKBASE ENTRY=0x%llX FAULT_PC=0x%llX HOST_BASE=0x%llX\\n\", static_cast<unsigned long long>(guest_entry_pc), static_cast<unsigned long long>(guest_pc), static_cast<unsigned long long>(host_stack_base));`r`n    std::fflush(stderr);")
+          $text=$text.Replace($a,'    context.pc = guest_entry_pc;')
 
           [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
 
@@ -121,7 +121,7 @@ jobs:
         shell: powershell
         run: |
           $log=Get-Content 'eden/imp008e-e2-two-phase-stackbase-v1.log' -Raw
-          Get-Content 'eden/imp008e-e2-two-phase-stackbase-v1.log' | Select-String -Pattern 'IMP008B_GENERIC_STACK_TOP|IMP008E_E2_TWO_PHASE_STACKBASE|IMP008E_E2_(PRE_RUNTHREAD|DATA_AV|RUNTHREAD_RETURNED|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|REEXECUTED_VALUE_EXACT|CONTEXT_COHERENT|GATE|FAIL)'
+          Get-Content 'eden/imp008e-e2-two-phase-stackbase-v1.log' | Select-String -Pattern 'IMP008B_GENERIC_STACK_TOP|IMP008E_E2_(PRE_RUNTHREAD|DATA_AV|RUNTHREAD_RETURNED|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|REEXECUTED_VALUE_EXACT|CONTEXT_COHERENT|GATE|FAIL)'
           if ($log.Contains('IMP008E_E2_GATE=PASS')) {
             Write-Host 'IMP008E_E2_TWO_PHASE_STACKBASE_V1=PASS'
           } elseif ($log.Contains('IMP008E_E2_DATA_AV CODE=')) {
