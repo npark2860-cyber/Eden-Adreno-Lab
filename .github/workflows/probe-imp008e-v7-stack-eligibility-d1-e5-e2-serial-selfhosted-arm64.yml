@@ -1,4 +1,4 @@
-name: Probe IMP-008E final runtime ordering matrix
+name: Inspect IMP-008E E2 pass fail address delta
 
 on:
   workflow_dispatch:
@@ -11,62 +11,49 @@ permissions:
   contents: read
 
 concurrency:
-  group: probe-imp008e-final-runtime-ordering-matrix
+  group: inspect-imp008e-e2-pass-fail-address-delta
   cancel-in-progress: false
 
 jobs:
-  final-runtime-ordering-matrix:
+  inspect-e2-address-delta:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Run fixed-volume ordering matrix
+      - name: Print retained E2 pass fail transition lines
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
-          $d1='eden/build/bin/imp008d_d1_final_production.exe'
-          $e5='eden/build/bin/imp008b_e5_final_production.exe'
-          $e2='eden/build/bin/imp008e_e2_final_production.exe'
-          foreach($p in @($d1,$e5,$e2)){if(-not(Test-Path $p)){throw "missing retained exe: $p"}}
-
-          function Run-Probe([string]$label,[string]$exe,[int]$timeoutMs,[string[]]$markers){
-            $eden=(Resolve-Path eden).Path
-            $psi=New-Object Diagnostics.ProcessStartInfo
-            $psi.FileName=(Resolve-Path $exe).Path
-            $psi.WorkingDirectory=$eden
-            $psi.UseShellExecute=$false
-            $psi.RedirectStandardOutput=$true
-            $psi.RedirectStandardError=$true
-            $p=New-Object Diagnostics.Process
-            $p.StartInfo=$psi
-            [void]$p.Start()
-            $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
-            $timeout=-not $p.WaitForExit($timeoutMs)
-            if($timeout){$p.Kill();$p.WaitForExit()}
-            $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err
-            [IO.File]::WriteAllText((Join-Path $eden ("imp008e-order-"+$label+".log")),$log)
-            Write-Host "IMP008E_ORDER_${label}_RC=$rc"
-            $all=$true
-            foreach($m in $markers){$has=$log.Contains($m); Write-Host "IMP008E_ORDER_${label}_MARKER $m=$has"; if(-not $has){$all=$false}}
-            Write-Host "IMP008E_ORDER_${label}_GATE=$all"
-            return [pscustomobject]@{Rc=$rc; Gate=$all}
+          $logs=@(
+            'eden/imp008e-order-E2_BASELINE_1.log',
+            'eden/imp008e-order-E2_BASELINE_2.log',
+            'eden/imp008e-order-E2_AFTER_E5.log',
+            'eden/imp008e-order-E2_AFTER_D1_E5.log',
+            'eden/imp008e-final-rerun.log',
+            'eden/imp008e-ab-rerun.log'
+          )
+          $patterns=@(
+            'IMP008E_E2_GUEST_STACK_QUERY=',
+            'IMP008E_E2_INITIAL_PROTECTION',
+            'IMP008E_E2_CACHED_PROTECTION',
+            'IMP008E_E2_PRE_RUN ',
+            'IMP008B_E2_RESTORE_CONTEXT ',
+            'IMP008B_E2_RESTORE_PC_ADDR=',
+            'IMP008B_E2_RESTORE_SP_ADDR=',
+            'IMP008B_GENERIC_STACK_TOP=',
+            'IMP008B_E2_BEFORE_NT_CONTINUE=',
+            'IMP008E_E2_DATA_AV',
+            'IMP008E_E2_REEXECUTED',
+            'IMP008E_E2_CONTEXT_COHERENT',
+            'IMP008E_E2_PHYSICAL_X18_TEB_AFTER',
+            'IMP008E_E2_GATE='
+          )
+          foreach($path in $logs){
+            if(-not(Test-Path $path)){Write-Host "IMP008E_LOG_MISSING=$path"; continue}
+            Write-Host "===== IMP008E_LOG_BEGIN $path ====="
+            foreach($line in [IO.File]::ReadAllLines((Resolve-Path $path).Path)){
+              foreach($p in $patterns){if($line.Contains($p)){Write-Host $line; break}}
+            }
+            Write-Host "===== IMP008E_LOG_END $path ====="
           }
-
-          $d1Markers=@('IMP008D_D1_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
-          $e5Markers=@('IMP008B_E5_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
-          $e2Markers=@('IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
-
-          $r1=Run-Probe 'E2_BASELINE_1' $e2 60000 $e2Markers
-          $r2=Run-Probe 'E2_BASELINE_2' $e2 60000 $e2Markers
-          $r3=Run-Probe 'D1_BEFORE_E2' $d1 30000 $d1Markers
-          $r4=Run-Probe 'E2_AFTER_D1' $e2 60000 $e2Markers
-          $r5=Run-Probe 'E5_BEFORE_E2' $e5 30000 $e5Markers
-          $r6=Run-Probe 'E2_AFTER_E5' $e2 60000 $e2Markers
-          $r7=Run-Probe 'D1_BEFORE_SERIAL' $d1 30000 $d1Markers
-          $r8=Run-Probe 'E5_BEFORE_SERIAL' $e5 30000 $e5Markers
-          $r9=Run-Probe 'E2_AFTER_D1_E5' $e2 60000 $e2Markers
-          $r10=Run-Probe 'E2_POST_SERIAL' $e2 60000 $e2Markers
-
-          $results=@($r1,$r2,$r3,$r4,$r5,$r6,$r7,$r8,$r9,$r10)
-          for($i=0;$i-lt $results.Count;$i++){Write-Host "IMP008E_ORDER_RESULT_$($i+1) RC=$($results[$i].Rc) GATE=$($results[$i].Gate)"}
-          Write-Host 'IMP008E_FINAL_RUNTIME_ORDERING_MATRIX=PASS'
+          Write-Host 'IMP008E_E2_PASS_FAIL_ADDRESS_DELTA_INSPECT=PASS'
