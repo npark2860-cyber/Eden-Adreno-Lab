@@ -1,4 +1,4 @@
-name: Inspect IMP-008E V6 vs production lease reentry
+name: Inspect IMP-008E V6 breakpoint continuation
 
 on:
   workflow_dispatch:
@@ -12,47 +12,24 @@ permissions:
   contents: read
 
 concurrency:
-  group: inspect-imp008e-v6-vs-production-lease-reentry
+  group: inspect-imp008e-v6-breakpoint-continuation
   cancel-in-progress: false
 
 jobs:
-  inspect-v6-vs-production:
+  inspect-v6-breakpoint:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 5
     steps:
-      - name: Compare retained V6 and corrected production source
+      - name: Print exact V6 VEH continuation ranges
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $retained='38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'
-          $production='6e1167c953fe17bc95dda954910fb69b65153fa3'
-          if((git -C eden rev-parse HEAD).Trim() -ne $retained){throw 'unexpected retained HEAD'}
+          if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
           $v6='eden/build/e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp'
           if(-not(Test-Path $v6)){throw 'retained V6 source missing'}
-          git -C eden fetch --no-tags origin $production
-          if($LASTEXITCODE-ne 0){throw "fetch production rc=$LASTEXITCODE"}
-          $prod='eden/build/imp008e_v6_prod_compare_arm_nce_windows.cpp'
-          $lines=& git -C eden show "${production}:src/core/arm/nce/arm_nce_windows.cpp"
-          if($LASTEXITCODE-ne 0){throw 'production source export failed'}
-          [IO.File]::WriteAllText((Join-Path (Resolve-Path eden).Path 'build/imp008e_v6_prod_compare_arm_nce_windows.cpp'),(($lines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
-
-          function Show-Matches([string]$label,[string]$path){
-            Write-Host "===== $label ====="
-            $content=Get-Content $path
-            $patterns=@('InstallGuestTebStackBounds','RestoreHostTebStackBounds','private_stack_active','private_stack_passthrough','private_stack_base','private_stack_size','private_stack_backing_offset','NCE_STACK_LEASE','CurrentNceContext::Clear','m_windows_pending_nce_fault','WindowsNceEnterGuest','m_windows_x18_runner->Dispatch','StackLimit','StackBase','AcquireDirectMappedPrivateLease','PrivateMappingLease')
-            $seen=New-Object 'System.Collections.Generic.HashSet[int]'
-            for($i=0;$i-lt$content.Count;$i++){
-              foreach($p in $patterns){
-                if($content[$i].Contains($p)){
-                  $start=[Math]::Max(0,$i-4); $end=[Math]::Min($content.Count-1,$i+6)
-                  for($j=$start;$j-le$end;$j++){
-                    if($seen.Add($j)){Write-Host ('{0,5}: {1}' -f ($j+1),$content[$j])}
-                  }
-                  break
-                }
-              }
-            }
-          }
-          Show-Matches 'V6_RETAINED' $v6
-          Show-Matches 'PRODUCTION_6E1167C9' $prod
-          Write-Host 'IMP008E_V6_PRODUCTION_REENTRY_INSPECT=PASS'
+          $c=Get-Content $v6
+          Write-Host '===== V6_BREAKPOINT_145_198 ====='
+          for($i=144;$i-lt [Math]::Min(198,$c.Count);$i++){Write-Host ('{0,5}: {1}' -f ($i+1),$c[$i])}
+          Write-Host '===== V6_AV_197_220 ====='
+          for($i=196;$i-lt [Math]::Min(220,$c.Count);$i++){Write-Host ('{0,5}: {1}' -f ($i+1),$c[$i])}
+          Write-Host 'IMP008E_V6_BREAKPOINT_CONTINUATION_INSPECT=PASS'
