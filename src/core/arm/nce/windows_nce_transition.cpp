@@ -7,11 +7,16 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/arm_nce_asm_definitions.h"
 #include "core/arm/nce/current_nce_context.h"
+#include "core/arm/nce/windows_cross_thread_break.h"
 #include "core/arm/nce/windows_exception_context.h"
 
 namespace Core::NCE {
+
+extern "C" void WindowsNceGuestStackBridge() noexcept;
+extern "C" void WindowsNceHostStackBridge() noexcept;
 
 namespace {
 constexpr std::uint32_t NzcvMask = 0xF0000000U;
@@ -59,6 +64,14 @@ static_assert(offsetof(HostContext, host_sp) == HostContextSpTpidrEl0);
                  static_cast<unsigned long>(status));
     std::fflush(stderr);
     std::abort();
+}
+
+extern "C" [[noreturn]] void WindowsNceContinueGuestContext(
+    ARM64_NT_CONTEXT* context) noexcept {
+    if (context == nullptr) {
+        std::abort();
+    }
+    WindowsNceTransition::ContinueContext(*context);
 }
 
 extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) noexcept {
@@ -109,7 +122,40 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     // share the same Windows context-resume primitive.
     std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\n", stderr);
     std::fflush(stderr);
-    WindowsNceTransition::ContinueContext(context);
+
+    MEMORY_BASIC_INFORMATION stack_mbi{};
+    if (VirtualQuery(reinterpret_cast<const void*>(guest->sp - 1), &stack_mbi,
+                     sizeof(stack_mbi)) == 0 ||
+        stack_mbi.AllocationBase == nullptr) {
+        std::abort();
+    }
+    const auto allocation_base =
+        reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase);
+    std::uintptr_t allocation_end = allocation_base;
+    for (std::uintptr_t cursor = allocation_base;;) {
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||
+            region.AllocationBase != stack_mbi.AllocationBase) {
+            break;
+        }
+        const auto region_end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) +
+                                static_cast<std::uintptr_t>(region.RegionSize);
+        if (region_end <= cursor) {
+            break;
+        }
+        allocation_end = region_end;
+        cursor = region_end;
+    }
+    if (guest->sp <= allocation_base || guest->sp >= allocation_end) {
+        std::abort();
+    }
+
+    ARM64_NT_CONTEXT bridge_context = context;
+    bridge_context.Pc = reinterpret_cast<std::uint64_t>(&WindowsNceGuestStackBridge);
+    bridge_context.X0 = reinterpret_cast<std::uint64_t>(&context);
+    bridge_context.X[1] = static_cast<std::uint64_t>(allocation_end);
+    bridge_context.X[2] = static_cast<std::uint64_t>(allocation_base);
+    WindowsNceTransition::ContinueContext(bridge_context);
 }
 
 void WindowsNceTransition::RedirectToHost(ARM64_NT_CONTEXT& interrupted, GuestContext& guest,
@@ -127,9 +173,21 @@ void WindowsNceTransition::RedirectToHost(ARM64_NT_CONTEXT& interrupted, GuestCo
     std::memcpy(&interrupted.V[8], host.host_saved_vregs.data(),
                 sizeof(host.host_saved_vregs));
 
-    interrupted.Sp = host.host_sp;
-    interrupted.Pc = host.host_saved_regs[11];
+    auto* const nce = guest.parent;
+    if (nce == nullptr || nce->m_windows_break == nullptr ||
+        !nce->m_windows_break->IsBound()) {
+        std::abort();
+    }
+
+    const auto host_pc = host.host_saved_regs[11];
+    // Keep the guest SP through Windows exception/context resume. The bridge publishes
+    // host TEB bounds first, then switches SP itself without re-entering the dispatcher.
+    interrupted.Pc = reinterpret_cast<std::uint64_t>(&WindowsNceHostStackBridge);
     interrupted.X0 = return_value;
+    interrupted.X[1] = static_cast<std::uint64_t>(nce->m_windows_break->HostStackHigh());
+    interrupted.X[2] = static_cast<std::uint64_t>(nce->m_windows_break->HostStackLow());
+    interrupted.X[3] = host.host_sp;
+    interrupted.X[16] = host_pc;
     interrupted.ContextFlags =
         CONTEXT_ARM64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT;
 }
