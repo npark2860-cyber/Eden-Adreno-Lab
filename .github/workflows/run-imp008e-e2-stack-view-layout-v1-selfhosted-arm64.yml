@@ -1,0 +1,47 @@
+name: Run IMP-008E E2 Stack View Layout V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/run-imp008e-e2-stack-view-layout-v1-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: run-imp008e-e2-stack-view-layout-v1
+  cancel-in-progress: false
+
+jobs:
+  run-stack-view-layout:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 3
+    steps:
+      - name: Run existing layout binary once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw 'unexpected retained head' }
+          $exe=(Resolve-Path 'eden/build/bin/imp008e_e2_stack_view_layout_v1.exe').Path
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=$exe
+          $psi.WorkingDirectory=(Resolve-Path 'eden').Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'start failed' }
+          $outTask=$p.StandardOutput.ReadToEndAsync(); $errTask=$p.StandardError.ReadToEndAsync()
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); $p.WaitForExit() }
+          $out=$outTask.Result; $err=$errTask.Result
+          Write-Host $out
+          Write-Host $err
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path 'eden').Path 'imp008e-e2-stack-view-layout-v1-safe.log'),$out+$err)
+
+      - name: Show stack-view layout
+        shell: powershell
+        run: |
+          Get-Content 'eden/imp008e-e2-stack-view-layout-v1-safe.log' | Select-String -Pattern 'IMP008E_E2_STACK_VIEW'
