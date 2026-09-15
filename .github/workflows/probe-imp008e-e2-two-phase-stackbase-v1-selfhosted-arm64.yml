@@ -35,59 +35,30 @@ jobs:
           $dst=Join-Path (Resolve-Path $dir).Path 'rasterizer_cached_retry_two_phase.cpp'
           $text=[IO.File]::ReadAllText($src)
 
-          $oldOffsets=@'
-constexpr std::size_t GuestLoadOffset = 0x300;
-constexpr std::size_t GuestSvcOffset = 0x304;
-constexpr std::size_t GuestAfterSvcOffset = 0x308;
-'@
-          $newOffsets=@'
-constexpr std::size_t GuestStackBaseHandoffOffset = 0x300;
-constexpr std::size_t GuestLoadOffset = 0x304;
-constexpr std::size_t GuestSvcOffset = 0x308;
-constexpr std::size_t GuestAfterSvcOffset = 0x30C;
-'@
-          if (([regex]::Matches($text,[regex]::Escape($oldOffsets))).Count -ne 1) { throw 'guest offset anchor mismatch' }
-          $text=$text.Replace($oldOffsets,$newOffsets)
+          $a='constexpr std::size_t GuestLoadOffset = 0x300;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'GuestLoadOffset anchor mismatch' }
+          $text=$text.Replace($a,"constexpr std::size_t GuestStackBaseHandoffOffset = 0x300;`r`nconstexpr std::size_t GuestLoadOffset = 0x304;")
+          $text=$text.Replace('constexpr std::size_t GuestSvcOffset = 0x304;','constexpr std::size_t GuestSvcOffset = 0x308;')
+          $text=$text.Replace('constexpr std::size_t GuestAfterSvcOffset = 0x308;','constexpr std::size_t GuestAfterSvcOffset = 0x30C;')
 
-          $oldOpcode='constexpr u32 GuestLdrX3X2 = 0xF9400043U; // ldr x3, [x2]'
-          $newOpcode=@'
-constexpr u32 GuestStoreHostStackBase = 0xF9000644U; // str x4, [x18, #8] => NT_TIB.StackBase
-constexpr u32 GuestLdrX3X2 = 0xF9400043U; // ldr x3, [x2]
-'@
-          if (([regex]::Matches($text,[regex]::Escape($oldOpcode))).Count -ne 1) { throw 'guest opcode anchor mismatch' }
-          $text=$text.Replace($oldOpcode,$newOpcode.TrimEnd("`r","`n"))
+          $a='constexpr u32 GuestLdrX3X2 = 0xF9400043U; // ldr x3, [x2]'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'guest opcode anchor mismatch' }
+          $text=$text.Replace($a,"constexpr u32 GuestStoreHostStackBase = 0xF9000644U; // str x4, [x18, #8] => NT_TIB.StackBase`r`nconstexpr u32 GuestLdrX3X2 = 0xF9400043U; // ldr x3, [x2]")
 
-          $oldWrites='    WriteU32(bytes, GuestLoadOffset, GuestLdrX3X2);'
-          $newWrites="    WriteU32(bytes, GuestStackBaseHandoffOffset, GuestStoreHostStackBase);`r`n    WriteU32(bytes, GuestLoadOffset, GuestLdrX3X2);"
-          if (([regex]::Matches($text,[regex]::Escape($oldWrites))).Count -ne 1) { throw 'guest write anchor mismatch' }
-          $text=$text.Replace($oldWrites,$newWrites)
+          $a='    WriteU32(bytes, GuestLoadOffset, GuestLdrX3X2);'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'guest write anchor mismatch' }
+          $text=$text.Replace($a,"    WriteU32(bytes, GuestStackBaseHandoffOffset, GuestStoreHostStackBase);`r`n    WriteU32(bytes, GuestLoadOffset, GuestLdrX3X2);")
 
-          $oldPc='    const u64 guest_pc = load_base + GuestLoadOffset;'
-          $newPc="    const u64 guest_entry_pc = load_base + GuestStackBaseHandoffOffset;`r`n    const u64 guest_pc = load_base + GuestLoadOffset;"
-          if (([regex]::Matches($text,[regex]::Escape($oldPc))).Count -ne 1) { throw 'guest pc anchor mismatch' }
-          $text=$text.Replace($oldPc,$newPc)
+          $a='    const u64 guest_pc = load_base + GuestLoadOffset;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'guest pc anchor mismatch' }
+          $text=$text.Replace($a,"    const u64 guest_entry_pc = load_base + GuestStackBaseHandoffOffset;`r`n    const u64 guest_pc = load_base + GuestLoadOffset;")
 
-          $oldContext=@'
-    context.r[18] = X18Sentinel;
-    context.sp = guest_sp;
-    context.pc = guest_pc;
-'@
-          $newContext=@'
-    context.r[18] = X18Sentinel;
-    const u64 host_stack_base =
-        reinterpret_cast<u64>(reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);
-    context.r[4] = host_stack_base;
-    context.sp = guest_sp;
-    context.pc = guest_entry_pc;
-    std::fprintf(stderr,
-                 "IMP008E_E2_TWO_PHASE_STACKBASE ENTRY=0x%llX FAULT_PC=0x%llX HOST_BASE=0x%llX\n",
-                 static_cast<unsigned long long>(guest_entry_pc),
-                 static_cast<unsigned long long>(guest_pc),
-                 static_cast<unsigned long long>(host_stack_base));
-    std::fflush(stderr);
-'@
-          if (([regex]::Matches($text,[regex]::Escape($oldContext))).Count -ne 1) { throw 'context anchor mismatch' }
-          $text=$text.Replace($oldContext,$newContext)
+          $a='    context.r[18] = X18Sentinel;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'x18 context anchor mismatch' }
+          $text=$text.Replace($a,"    context.r[18] = X18Sentinel;`r`n    const u64 host_stack_base = reinterpret_cast<u64>(reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);`r`n    context.r[4] = host_stack_base;")
+          $a='    context.pc = guest_pc;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'context pc anchor mismatch' }
+          $text=$text.Replace($a,"    context.pc = guest_entry_pc;`r`n    std::fprintf(stderr, \"IMP008E_E2_TWO_PHASE_STACKBASE ENTRY=0x%llX FAULT_PC=0x%llX HOST_BASE=0x%llX\\n\", static_cast<unsigned long long>(guest_entry_pc), static_cast<unsigned long long>(guest_pc), static_cast<unsigned long long>(host_stack_base));`r`n    std::fflush(stderr);")
 
           [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
 
