@@ -1,0 +1,173 @@
+name: Probe IMP-008E E2 Two Phase StackBase V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-two-phase-stackbase-v1-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-two-phase-stackbase-v1
+  cancel-in-progress: false
+
+jobs:
+  e2-two-phase-stackbase-v1:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Build E2 two-phase StackBase probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'generic transition object missing' }
+
+          $src=(Resolve-Path 'eden/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp').Path
+          $dir='eden/build/e2_two_phase_stackbase_v1'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dst=Join-Path (Resolve-Path $dir).Path 'rasterizer_cached_retry_two_phase.cpp'
+          $text=[IO.File]::ReadAllText($src)
+
+          $oldOffsets=@'
+constexpr std::size_t GuestLoadOffset = 0x300;
+constexpr std::size_t GuestSvcOffset = 0x304;
+constexpr std::size_t GuestAfterSvcOffset = 0x308;
+'@
+          $newOffsets=@'
+constexpr std::size_t GuestStackBaseHandoffOffset = 0x300;
+constexpr std::size_t GuestLoadOffset = 0x304;
+constexpr std::size_t GuestSvcOffset = 0x308;
+constexpr std::size_t GuestAfterSvcOffset = 0x30C;
+'@
+          if (([regex]::Matches($text,[regex]::Escape($oldOffsets))).Count -ne 1) { throw 'guest offset anchor mismatch' }
+          $text=$text.Replace($oldOffsets,$newOffsets)
+
+          $oldOpcode='constexpr u32 GuestLdrX3X2 = 0xF9400043U; // ldr x3, [x2]'
+          $newOpcode=@'
+constexpr u32 GuestStoreHostStackBase = 0xF9000644U; // str x4, [x18, #8] => NT_TIB.StackBase
+constexpr u32 GuestLdrX3X2 = 0xF9400043U; // ldr x3, [x2]
+'@
+          if (([regex]::Matches($text,[regex]::Escape($oldOpcode))).Count -ne 1) { throw 'guest opcode anchor mismatch' }
+          $text=$text.Replace($oldOpcode,$newOpcode.TrimEnd("`r","`n"))
+
+          $oldWrites='    WriteU32(bytes, GuestLoadOffset, GuestLdrX3X2);'
+          $newWrites="    WriteU32(bytes, GuestStackBaseHandoffOffset, GuestStoreHostStackBase);`r`n    WriteU32(bytes, GuestLoadOffset, GuestLdrX3X2);"
+          if (([regex]::Matches($text,[regex]::Escape($oldWrites))).Count -ne 1) { throw 'guest write anchor mismatch' }
+          $text=$text.Replace($oldWrites,$newWrites)
+
+          $oldPc='    const u64 guest_pc = load_base + GuestLoadOffset;'
+          $newPc="    const u64 guest_entry_pc = load_base + GuestStackBaseHandoffOffset;`r`n    const u64 guest_pc = load_base + GuestLoadOffset;"
+          if (([regex]::Matches($text,[regex]::Escape($oldPc))).Count -ne 1) { throw 'guest pc anchor mismatch' }
+          $text=$text.Replace($oldPc,$newPc)
+
+          $oldContext=@'
+    context.r[18] = X18Sentinel;
+    context.sp = guest_sp;
+    context.pc = guest_pc;
+'@
+          $newContext=@'
+    context.r[18] = X18Sentinel;
+    const u64 host_stack_base =
+        reinterpret_cast<u64>(reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);
+    context.r[4] = host_stack_base;
+    context.sp = guest_sp;
+    context.pc = guest_entry_pc;
+    std::fprintf(stderr,
+                 "IMP008E_E2_TWO_PHASE_STACKBASE ENTRY=0x%llX FAULT_PC=0x%llX HOST_BASE=0x%llX\n",
+                 static_cast<unsigned long long>(guest_entry_pc),
+                 static_cast<unsigned long long>(guest_pc),
+                 static_cast<unsigned long long>(host_stack_base));
+    std::fflush(stderr);
+'@
+          if (([regex]::Matches($text,[regex]::Escape($oldContext))).Count -ne 1) { throw 'context anchor mismatch' }
+          $text=$text.Replace($oldContext,$newContext)
+
+          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja rc=$LASTEXITCODE" }
+            $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($hits.Count -ne 1) { throw "E5 compile count=$($hits.Count)" }
+            $compile=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='e2_two_phase_stackbase_v1/rasterizer_cached_retry_two_phase.cpp.obj'
+            $compile=$compile.Replace($oldObj,$newObj)
+            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF e2_two_phase_stackbase_v1\rasterizer_cached_retry_two_phase.cpp.obj.d')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/e2_two_phase_stackbase_v1/rasterizer_cached_retry_two_phase.cpp')
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "two-phase compile rc=$LASTEXITCODE" }
+
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj)
+            $link=$link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_two_phase_stackbase_v1.exe')
+            $link=$link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_two_phase_stackbase_v1.a')
+            $link=$link.Replace('src/core/libcore.a','generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008e-e2-two-phase-stackbase-v1-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "two-phase link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_TWO_PHASE_STACKBASE_BUILD=PASS'
+
+      - name: Run E2 two-phase StackBase exactly once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $edenPath=(Resolve-Path 'eden').Path
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_two_phase_stackbase_v1.exe').Path
+          $psi.WorkingDirectory=$edenPath
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(300000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-two-phase-stackbase-v1.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-two-phase-stackbase-v1.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-two-phase-stackbase-v1.log'),$out+$err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-two-phase-stackbase-v1.rc'),[string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008E_E2_TWO_PHASE_STACKBASE_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify two-phase StackBase result
+        shell: powershell
+        run: |
+          $log=Get-Content 'eden/imp008e-e2-two-phase-stackbase-v1.log' -Raw
+          Get-Content 'eden/imp008e-e2-two-phase-stackbase-v1.log' | Select-String -Pattern 'IMP008B_GENERIC_STACK_TOP|IMP008E_E2_TWO_PHASE_STACKBASE|IMP008E_E2_(PRE_RUNTHREAD|DATA_AV|RUNTHREAD_RETURNED|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|REEXECUTED_VALUE_EXACT|CONTEXT_COHERENT|GATE|FAIL)'
+          if ($log.Contains('IMP008E_E2_GATE=PASS')) {
+            Write-Host 'IMP008E_E2_TWO_PHASE_STACKBASE_V1=PASS'
+          } elseif ($log.Contains('IMP008E_E2_DATA_AV CODE=')) {
+            Write-Host 'IMP008E_E2_TWO_PHASE_STACKBASE_V1=DATA_AV_DELIVERED'
+          } else {
+            Write-Host 'IMP008E_E2_TWO_PHASE_STACKBASE_V1=NO_DATA_AV'
+          }
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-two-phase-stackbase-v1
+          path: |
+            eden/imp008e-e2-two-phase-stackbase-v1-link.log
+            eden/imp008e-e2-two-phase-stackbase-v1.log
+            eden/imp008e-e2-two-phase-stackbase-v1.out.log
+            eden/imp008e-e2-two-phase-stackbase-v1.err.log
+            eden/imp008e-e2-two-phase-stackbase-v1.rc
+          if-no-files-found: warn
