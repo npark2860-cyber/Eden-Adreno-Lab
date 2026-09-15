@@ -1,0 +1,145 @@
+name: Probe IMP-008B ARM64 Placeholder Code Private Stack
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-arm64-placeholder-code-private-stack.yml
+
+permissions:
+  contents: read
+
+jobs:
+  placeholder-code-private-stack:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Build native ARM64 probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <winternl.h>
+          #include <cstdint>
+          #include <cstdio>
+
+          #ifndef MEM_RESERVE_PLACEHOLDER
+          #define MEM_RESERVE_PLACEHOLDER 0x00040000
+          #endif
+          #ifndef MEM_REPLACE_PLACEHOLDER
+          #define MEM_REPLACE_PLACEHOLDER 0x00004000
+          #endif
+          #ifndef MEM_PRESERVE_PLACEHOLDER
+          #define MEM_PRESERVE_PLACEHOLDER 0x00000002
+          #endif
+
+          using NtContinueFn = LONG (NTAPI*)(PCONTEXT, BOOLEAN);
+          using VirtualAlloc2Fn = PVOID (WINAPI*)(HANDLE,PVOID,SIZE_T,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG);
+          using MapViewOfFile3Fn = PVOID (WINAPI*)(HANDLE,HANDLE,PVOID,ULONG64,SIZE_T,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG);
+          using ExitProcessFn = VOID (WINAPI*)(UINT);
+          static ExitProcessFn g_exit{};
+
+          static LONG CALLBACK Veh(PEXCEPTION_POINTERS ep) noexcept {
+              if (!ep || !ep->ExceptionRecord || !ep->ContextRecord || !g_exit)
+                  return EXCEPTION_CONTINUE_SEARCH;
+              std::printf("IMP008B_PHCODE_VEH=PASS CODE=0x%08lX PC=0x%llX SP=0x%llX\n",
+                          static_cast<unsigned long>(ep->ExceptionRecord->ExceptionCode),
+                          static_cast<unsigned long long>(ep->ContextRecord->Pc),
+                          static_cast<unsigned long long>(ep->ContextRecord->Sp));
+              std::fflush(stdout);
+              ep->ContextRecord->Pc = reinterpret_cast<DWORD64>(g_exit);
+              ep->ContextRecord->X0 = 42;
+              return EXCEPTION_CONTINUE_EXECUTION;
+          }
+
+          static void Dump(const char* tag, void* p) {
+              MEMORY_BASIC_INFORMATION mbi{};
+              VirtualQuery(p, &mbi, sizeof(mbi));
+              std::printf("IMP008B_PHCODE_%s ADDR=%p BASE=%p ALLOC=%p SIZE=0x%llX TYPE=0x%lX PROTECT=0x%lX\n",
+                          tag, p, mbi.BaseAddress, mbi.AllocationBase,
+                          static_cast<unsigned long long>(mbi.RegionSize),
+                          static_cast<unsigned long>(mbi.Type), static_cast<unsigned long>(mbi.Protect));
+          }
+
+          int main() {
+              HANDLE process = GetCurrentProcess();
+              HMODULE kb = GetModuleHandleW(L"kernelbase.dll");
+              HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+              auto va2 = reinterpret_cast<VirtualAlloc2Fn>(GetProcAddress(kb, "VirtualAlloc2"));
+              auto mv3 = reinterpret_cast<MapViewOfFile3Fn>(GetProcAddress(kb, "MapViewOfFile3"));
+              auto ntc = reinterpret_cast<NtContinueFn>(GetProcAddress(nt, "NtContinue"));
+              g_exit = reinterpret_cast<ExitProcessFn>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ExitProcess"));
+              if (!va2 || !mv3 || !ntc || !g_exit) return 3;
+              if (!AddVectoredExceptionHandler(1, Veh)) return 4;
+
+              auto* arena = static_cast<std::uint8_t*>(va2(process, nullptr, 0x10000,
+                  MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0));
+              if (!arena) return 5;
+              if (!VirtualFreeEx(process, arena, 0x1000, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) return 6;
+              HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, 0x1000, nullptr);
+              if (!section) return 7;
+              auto* code = static_cast<std::uint32_t*>(mv3(section, process, arena, 0, 0x1000,
+                  MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0));
+              if (code != reinterpret_cast<std::uint32_t*>(arena)) return 8;
+              code[0] = 0xD43E0000u; // BRK #0xF000
+              code[1] = 0xD65F03C0u; // RET
+              FlushInstructionCache(process, code, 8);
+              DWORD old{};
+              if (!VirtualProtect(code, 0x1000, PAGE_EXECUTE_READ, &old)) return 9;
+
+              auto* stack = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, 0x2000,
+                  MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+              if (!stack) return 10;
+
+              CONTEXT ctx{};
+              RtlCaptureContext(&ctx);
+              ctx.ContextFlags = CONTEXT_FULL;
+              ctx.Pc = reinterpret_cast<DWORD64>(code);
+              ctx.Sp = (reinterpret_cast<DWORD64>(stack + 0x2000 - 0x20)) & ~0xFULL;
+              Dump("CODE", code);
+              Dump("STACK", reinterpret_cast<void*>(ctx.Sp));
+              std::printf("IMP008B_PHCODE_BEFORE_NT=PASS PC=0x%llX SP=0x%llX\n",
+                          static_cast<unsigned long long>(ctx.Pc), static_cast<unsigned long long>(ctx.Sp));
+              std::fflush(stdout);
+
+              auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+              tib->StackLimit = stack;
+              tib->StackBase = stack + 0x2000;
+              const LONG status = ntc(&ctx, FALSE);
+              return static_cast<int>(status);
+          }
+          '@ | Set-Content arm64_placeholder_code_probe.cpp -Encoding utf8
+
+          $vsdev = Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\*\Community\Common7\Tools\VsDevCmd.bat" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $vsdev) { throw 'VsDevCmd.bat not found' }
+          $cmd = '"' + $vsdev.FullName + '" -arch=arm64 -host_arch=arm64 >nul && cl.exe /nologo /std:c++20 /O2 /EHsc arm64_placeholder_code_probe.cpp /Fe:arm64_placeholder_code_probe.exe'
+          cmd.exe /d /s /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "compile failed rc=$LASTEXITCODE" }
+
+      - name: Run placeholder-code private-stack probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path '.\arm64_placeholder_code_probe.exe').Path
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $psi
+          [void]$p.Start()
+          $out = $p.StandardOutput.ReadToEnd()
+          $err = $p.StandardError.ReadToEnd()
+          $p.WaitForExit()
+          $out | Set-Content imp008b-placeholder-code.log -Encoding utf8
+          if ($out) { Write-Host $out }
+          if ($err) { Write-Host $err }
+          Write-Host "IMP008B_PHCODE_EXIT=$($p.ExitCode)"
+          if ($p.ExitCode -ne 42) { throw "placeholder-code probe failed exit=$($p.ExitCode)" }
+          if (-not (Select-String imp008b-placeholder-code.log -SimpleMatch 'IMP008B_PHCODE_VEH=PASS' -Quiet)) { throw 'VEH marker missing' }
+          Write-Host 'IMP008B_PHCODE_PRIVATE_STACK=PASS'
