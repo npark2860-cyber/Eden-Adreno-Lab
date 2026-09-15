@@ -51,6 +51,8 @@ jobs:
           if(([regex]::Matches($text,[regex]::Escape($install))).Count-ne 1){throw 'RunThread TEB install anchor mismatch'}
           if(([regex]::Matches($text,[regex]::Escape($restore))).Count-ne 1){throw 'RunThread TEB restore anchor mismatch'}
           $text=$text.Replace($install,'').Replace($restore,'')
+          $text=$text.Replace('[[nodiscard]] bool InstallGuestTebStackBounds','[[maybe_unused, nodiscard]] bool InstallGuestTebStackBounds')
+          $text=$text.Replace('void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept','[[maybe_unused]] void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept')
           [IO.File]::WriteAllText($armPath,$text,[Text.UTF8Encoding]::new($false))
           Write-Host 'IMP008E_RUNTHREAD_TEB_SEAM_REMOVED=PASS'
 
@@ -70,7 +72,7 @@ jobs:
             $armSource=((Resolve-Path 'imp008e_prod_no_runthread_teb_e2/arm_nce_windows.cpp').Path -replace '\\','/')
             $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",('-c '+$armSource))
             $overlay=((Resolve-Path 'imp008e_prod_no_runthread_teb_e2').Path -replace '\\','/')
-            $c=[regex]::Replace($c,'\s-I',(" -Wno-unused-function -I"+$overlay+' -I'),1)
+            $c=[regex]::Replace($c,'\s-I',(" -I"+$overlay+' -I'),1)
             $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
             $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
             & $env:ComSpec /D /S /C $c
