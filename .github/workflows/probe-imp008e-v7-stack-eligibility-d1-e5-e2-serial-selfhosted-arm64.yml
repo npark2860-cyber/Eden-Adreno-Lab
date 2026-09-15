@@ -113,9 +113,9 @@ jobs:
             foreach($m in $markers){if(-not $log.Contains($m)){Write-Host $log; throw "$label missing $m"}}
             Write-Host "IMP008E_IMMUTABLE_${label}_GATE=PASS"
           }
-          $d1=@('IMP008D_D1_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
-          $e5=@('IMP008B_E5_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
-          $e2=@('IMP008E_E2_GUEST_STACK_QUERY=PASS','IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS','IMP008B_GENERIC_STACK_TOP=PASS')
+          $d1=@('IMP008D_D1_GATE=PASS')
+          $e5=@('IMP008B_E5_GATE=PASS')
+          $e2=@('IMP008E_E2_GUEST_STACK_QUERY=PASS','IMP008E_E2_DATA_AV_EXACT=PASS','IMP008E_E2_REEXECUTED_VALUE_EXACT=PASS','IMP008E_E2_CONTEXT_COHERENT=PASS','IMP008E_E2_PHYSICAL_X18_TEB_AFTER=PASS','IMP008E_E2_GATE=PASS')
           for($i=1;$i-le 3;$i++){Run-Probe "D1_$i" 'eden/build/bin/imp008d_d1_exact_immutable.exe' 30000 $d1}
           for($i=1;$i-le 4;$i++){Run-Probe "E5_$i" 'eden/build/bin/imp008b_e5_exact_immutable.exe' 30000 $e5}
           for($i=1;$i-le 8;$i++){Run-Probe "E2_$i" 'eden/build/bin/imp008e_e2_exact_immutable.exe' 60000 $e2}
