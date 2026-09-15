@@ -1,4 +1,4 @@
-name: Inspect IMP-008E symmetric bridge fail-fast
+name: Probe IMP-008E symmetric ASM-only isolation
 
 on:
   push:
@@ -10,55 +10,72 @@ permissions:
   contents: read
 
 concurrency:
-  group: imp008e-symmetric-failfast-inspect
+  group: imp008e-symmetric-asm-only
   cancel-in-progress: false
 
 jobs:
-  inspect-failfast:
+  asm-only:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
-      - name: Compare bridge symbols and inspect fail-fast
+      - name: Build ASM-only host bridge variant
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
-          $guest=(Resolve-Path 'eden/build/bin/imp008e_guest_stack_bridge_e2.exe').Path
-          $sym=(Resolve-Path 'eden/build/bin/imp008e_symmetric_stack_bridge_e2.exe').Path
-          $llvm='C:\msys64\clangarm64\bin'
-          foreach($exe in @($guest,$sym)){if(-not(Test-Path $exe)){throw "missing $exe"}}
-          foreach($tool in @('llvm-nm.exe','llvm-objdump.exe','llvm-readobj.exe')){if(-not(Test-Path (Join-Path $llvm $tool))){throw "missing $tool"}}
+          $build='eden/build'
+          $dir="$build/imp008e_guest_stack_bridge_e2"
+          foreach($p in @("$dir/arm_nce_windows.cpp.obj","$dir/windows_nce_transition.cpp.obj","$dir/windows_nce_entry.obj","$dir/windows_nce_entry.asm","$dir/rasterizer_cached_retry_pagetable_stack.cpp.obj")){if(-not(Test-Path $p)){throw "missing retained guest bridge file: $p"}}
+          $src="$dir/windows_nce_entry_asm_only.asm"
+          $obj="$dir/windows_nce_entry_asm_only.obj"
+          $a=[IO.File]::ReadAllText((Resolve-Path "$dir/windows_nce_entry.asm").Path).Replace("`r`n","`n")
+          $exportOld="        EXPORT  WindowsNceGuestStackBridge`n        EXTERN  WindowsNceRestoreGuestContext`n"
+          $exportNew="        EXPORT  WindowsNceGuestStackBridge`n        EXPORT  WindowsNceHostStackBridge`n        EXTERN  WindowsNceRestoreGuestContext`n"
+          $endOld="WindowsNceGuestStackBridge PROC`n        str     x1, [x18, #8]`n        str     x2, [x18, #16]`n        b       WindowsNceContinueGuestContext`n        ENDP`n`n        END`n"
+          $endNew="WindowsNceGuestStackBridge PROC`n        str     x1, [x18, #8]`n        str     x2, [x18, #16]`n        b       WindowsNceContinueGuestContext`n        ENDP`n`nWindowsNceHostStackBridge PROC`n        str     x1, [x18, #8]`n        str     x2, [x18, #16]`n        br      x16`n        ENDP`n`n        END`n"
+          foreach($pair in @(@($exportOld,$exportNew),@($endOld,$endNew))){if(([regex]::Matches($a,[regex]::Escape($pair[0]))).Count-ne 1){throw 'asm-only anchor mismatch'}; $a=$a.Replace($pair[0],$pair[1])}
+          [IO.File]::WriteAllText($src,$a,[Text.UTF8Encoding]::new($false))
 
-          foreach($case in @(@('GUEST',$guest),@('SYMMETRIC',$sym))){
-            $name=$case[0]; $exe=$case[1]
-            Write-Host "===== IMP008E_${name}_SYMBOLS ====="
-            & (Join-Path $llvm 'llvm-nm.exe') -n $exe | Select-String 'WindowsNceGuestStackBridge|WindowsNceHostStackBridge|WindowsNceContinueGuestContext|WindowsNceRestoreGuestContext'
-            Write-Host "===== IMP008E_${name}_GUEST_BRIDGE_DISASM ====="
-            & (Join-Path $llvm 'llvm-objdump.exe') -d --disassemble-symbols=WindowsNceGuestStackBridge $exe
-            Write-Host "===== IMP008E_${name}_CONTINUE_DISASM ====="
-            & (Join-Path $llvm 'llvm-objdump.exe') -d --disassemble-symbols=WindowsNceContinueGuestContext $exe
-            Write-Host "===== IMP008E_${name}_LOAD_CONFIG ====="
-            & (Join-Path $llvm 'llvm-readobj.exe') --coff-load-config $exe | Select-String 'Guard|EHCont|SecurityCookie|SEHandler'
-          }
+          Push-Location $build
+          try {
+            $asmLine=Select-String -Path 'build.ninja' -Pattern 'armasm64\.exe' | Select-Object -First 1
+            if($null-eq $asmLine){throw 'armasm64 command missing'}
+            $am=[regex]::Match($asmLine.Line,'"([^"]*armasm64\.exe)"|(\S*armasm64\.exe)')
+            if(!$am.Success){throw 'armasm64 path parse failed'}
+            $asmExe=if($am.Groups[1].Success){$am.Groups[1].Value}else{$am.Groups[2].Value}
+            & $asmExe -nologo (Resolve-Path 'imp008e_guest_stack_bridge_e2/windows_nce_entry_asm_only.asm').Path (Join-Path (Resolve-Path 'imp008e_guest_stack_bridge_e2').Path 'windows_nce_entry_asm_only.obj')
+            if($LASTEXITCODE-ne 0){throw "armasm64 rc=$LASTEXITCODE"}
 
-          $candidates=@(
-            'C:\Program Files (x86)\Windows Kits\10\Debuggers\arm64\cdb.exe',
-            'C:\Program Files\Windows Kits\10\Debuggers\arm64\cdb.exe'
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
+            $links=@($commands|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
+            if($links.Count-ne 1){throw "link count=$($links.Count)"}
+            $link=[string]$links[0]
+            $oldProbe='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $probe='imp008e_guest_stack_bridge_e2/rasterizer_cached_retry_pagetable_stack.cpp.obj'
+            $link=$link.Replace($oldProbe,$probe).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_asm_only_e2.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_asm_only_e2.a')
+            $link=$link.Replace('src/core/libcore.a','imp008e_guest_stack_bridge_e2/arm_nce_windows.cpp.obj imp008e_guest_stack_bridge_e2/windows_nce_transition.cpp.obj imp008e_guest_stack_bridge_e2/windows_nce_entry_asm_only.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE"}
+          } finally {Pop-Location}
+          Write-Host 'IMP008E_ASM_ONLY_BUILD=PASS'
+
+      - name: Run guest baseline and ASM-only variant
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $eden=(Resolve-Path eden).Path
+          $cases=@(
+            @{Name='GUEST';Exe='eden/build/bin/imp008e_guest_stack_bridge_e2.exe'},
+            @{Name='ASM_ONLY';Exe='eden/build/bin/imp008e_asm_only_e2.exe'}
           )
-          $cdb=$candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if($null-eq $cdb){
-            foreach($root in @('C:\Program Files (x86)\Windows Kits\10\Debuggers','C:\Program Files\Windows Kits\10\Debuggers')){
-              if(Test-Path $root){
-                $found=Get-ChildItem $root -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.FullName -match '\\arm64\\'} | Select-Object -First 1
-                if($null-ne $found){$cdb=$found.FullName;break}
-              }
-            }
+          function Run-One($c,[int]$i){
+            $psi=New-Object Diagnostics.ProcessStartInfo; $psi.FileName=(Resolve-Path $c.Exe).Path; $psi.WorkingDirectory=$eden; $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+            $p=New-Object Diagnostics.Process; $p.StartInfo=$psi;[void]$p.Start();$ot=$p.StandardOutput.ReadToEndAsync();$et=$p.StandardError.ReadToEndAsync();$timeout=-not $p.WaitForExit(30000);if($timeout){$p.Kill();$p.WaitForExit()}
+            $log=$ot.Result+$et.Result;$rc=if($timeout){124}else{$p.ExitCode}
+            Write-Host "IMP008E_ASMISO_$($c.Name)_${i}_RC=$rc"
+            foreach($line in ($log -split "`r?`n")){if($line -match 'IMP008E_E2_GUEST_STACK_QUERY=|IMP008E_E2_PRE_RUN |IMP008E_E2_DATA_AV|IMP008E_E2_GATE=|IMP008B_E2_RESTORE_ENTER=|IMP008B_E2_BEFORE_NT_CONTINUE='){Write-Host "IMP008E_ASMISO_$($c.Name)_${i} $line"}}
           }
-          if($null-eq $cdb){
-            Write-Host 'IMP008E_CDB_AVAILABLE=NO'
-          } else {
-            Write-Host "IMP008E_CDB_AVAILABLE=YES PATH=$cdb"
-            & $cdb -o -g -G -c 'sxe 0xc0000409;g;.exr -1;r;kb;q' $sym
-            Write-Host "IMP008E_CDB_RC=$LASTEXITCODE"
-          }
-          Write-Host 'IMP008E_SYMMETRIC_FAILFAST_INSPECT=PASS'
+          for($i=1;$i-le 4;$i++){foreach($c in $cases){Run-One $c $i}}
+          Write-Host 'IMP008E_ASM_ONLY_ISOLATION_COMPLETE=PASS'
