@@ -46,22 +46,8 @@ jobs:
 
           $armPath=Join-Path $resolved 'arm_nce_windows.cpp'
           $text=[IO.File]::ReadAllText($armPath).Replace("`r`n","`n")
-          $old=@'
-        params->lock.store(SpinLockLocked, std::memory_order_release);
-        NCE::WindowsNceTransition::RedirectToHost(
-            context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
-        NCE::WindowsNceTransition::ContinueContext(context);
-'@
-          $new=@'
-        params->lock.store(SpinLockLocked, std::memory_order_release);
-        NCE::WindowsNceTransition::RedirectToHost(
-            context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
-        auto* const teb = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-        teb->StackLimit = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackLow());
-        teb->StackBase = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackHigh());
-        return EXCEPTION_CONTINUE_EXECUTION;
-'@
-          $old=$old.Replace("`r`n","`n"); $new=$new.Replace("`r`n","`n")
+          $old=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBwYXJhbXMtPmxvY2suc3RvcmUoU3BpbkxvY2tMb2NrZWQsIHN0ZDo6bWVtb3J5X29yZGVyX3JlbGVhc2UpOwogICAgICAgIE5DRTo6V2luZG93c05jZVRyYW5zaXRpb246OlJlZGlyZWN0VG9Ib3N0KAogICAgICAgICAgICBjb250ZXh0LCAqZ3Vlc3QsIHRydWUsIHN0YXRpY19jYXN0PHU2ND4oSGFsdFJlYXNvbjo6UHJlZmV0Y2hBYm9ydCkpOwogICAgICAgIE5DRTo6V2luZG93c05jZVRyYW5zaXRpb246OkNvbnRpbnVlQ29udGV4dChjb250ZXh0KTsK'))
+          $new=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBwYXJhbXMtPmxvY2suc3RvcmUoU3BpbkxvY2tMb2NrZWQsIHN0ZDo6bWVtb3J5X29yZGVyX3JlbGVhc2UpOwogICAgICAgIE5DRTo6V2luZG93c05jZVRyYW5zaXRpb246OlJlZGlyZWN0VG9Ib3N0KAogICAgICAgICAgICBjb250ZXh0LCAqZ3Vlc3QsIHRydWUsIHN0YXRpY19jYXN0PHU2ND4oSGFsdFJlYXNvbjo6UHJlZmV0Y2hBYm9ydCkpOwogICAgICAgIGF1dG8qIGNvbnN0IHRlYiA9IHJlaW50ZXJwcmV0X2Nhc3Q8TlRfVElCKj4oTnRDdXJyZW50VGViKCkpOwogICAgICAgIHRlYi0+U3RhY2tMaW1pdCA9IHJlaW50ZXJwcmV0X2Nhc3Q8UFZPSUQ+KG5jZS0+bV93aW5kb3dzX2JyZWFrLT5Ib3N0U3RhY2tMb3coKSk7CiAgICAgICAgdGViLT5TdGFja0Jhc2UgPSByZWludGVycHJldF9jYXN0PFBWT0lEPihuY2UtPm1fd2luZG93c19icmVhay0+SG9zdFN0YWNrSGlnaCgpKTsKICAgICAgICByZXR1cm4gRVhDRVBUSU9OX0NPTlRJTlVFX0VYRUNVVElPTjsK'))
           if(([regex]::Matches($text,[regex]::Escape($old))).Count-ne 1){throw 'AV continuation anchor mismatch'}
           $text=$text.Replace($old,$new)
           [IO.File]::WriteAllText($armPath,$text,[Text.UTF8Encoding]::new($false))
