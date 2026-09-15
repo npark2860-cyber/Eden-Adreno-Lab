@@ -1,0 +1,142 @@
+name: Probe IMP-008D D1 Mixed TEB Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008d-d1-mixed-teb-regression-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008d-d1-mixed-teb-regression
+  cancel-in-progress: false
+
+jobs:
+  d1-mixed-teb-regression:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify retained mixed TEB state
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $transition=[IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/windows_nce_transition.cpp'))
+          if (([regex]::Matches($transition,'IMP008B_E5_MIXED_TEB_LIMIT_AB')).Count -ne 1) { throw 'mixed TEB patch not retained exactly once' }
+          if (-not $transition.Contains('StackLimit = host_stack_limit_before_guest;')) { throw 'host StackLimit A/B missing' }
+          if (-not $transition.Contains('StackBase = reinterpret_cast<PVOID>(stack_base);')) { throw 'guest StackBase publication missing' }
+          if (-not (Test-Path 'eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp')) { throw 'D1 probe missing' }
+          Remove-Item 'eden/imp008d-d1-mixed-teb.log','eden/imp008d-d1-mixed-teb.out.log','eden/imp008d-d1-mixed-teb.err.log','eden/imp008d-d1-mixed-teb.rc','eden/imp008d-d1-mixed-teb-link.log' -Force -ErrorAction SilentlyContinue
+          Write-Host ('IMP008D_D1_MIXED_TEB_RETAINED_HEAD=' + $head)
+          Write-Host 'IMP008D_D1_MIXED_TEB_STATE=PASS'
+
+      - name: Compile D1 by reusing E5 compile flags
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference='Stop'
+          $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+          $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+          if ($hits.Count -ne 1) { throw "E5 probe compile command count=$($hits.Count)" }
+          $cmd=[string]$hits[0]
+          $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+          $newObj='src/yuzu_cmd/CMakeFiles/imp008d_d1_mixed_teb.dir/data_fault_skip_runtime.cpp.obj'
+          $newDep='src\yuzu_cmd\CMakeFiles\imp008d_d1_mixed_teb.dir\data_fault_skip_runtime.cpp.obj.d'
+          New-Item -ItemType Directory -Force 'src/yuzu_cmd/CMakeFiles/imp008d_d1_mixed_teb.dir' | Out-Null
+          $cmd=$cmd.Replace($oldObj,$newObj)
+          $cmd=[regex]::Replace($cmd,'-MF\s+src\\yuzu_cmd\\CMakeFiles\\imp008b_e5_x18_runtime\.dir\\__\\__\\probes\\windows-arm64-nce-runthread-e5\\x18_runtime_invariant\.cpp\.obj\.d',('-MF '+$newDep))
+          $cmd=$cmd.Replace('C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp','C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp')
+          $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd=$cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          $cmd=$cmd.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+          $cmd=$cmd.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+          $cmd=[regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+          & $env:ComSpec /D /S /C $cmd
+          $rc=$LASTEXITCODE
+          Write-Host "IMP008D_D1_MIXED_TEB_COMPILE_RC=$rc"
+          if ($rc -ne 0) { throw "D1 compile failed rc=$rc" }
+
+      - name: Link D1 using E5 library closure
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference='Stop'
+          $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+          $hits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "E5 link command count=$($hits.Count)" }
+          $cmd=[string]$hits[0]
+          $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+          $newObj='src/yuzu_cmd/CMakeFiles/imp008d_d1_mixed_teb.dir/data_fault_skip_runtime.cpp.obj'
+          $cmd=$cmd.Replace($oldObj,$newObj)
+          $cmd=$cmd.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008d_d1_mixed_teb.exe')
+          $cmd=$cmd.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008d_d1_mixed_teb.a')
+          $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd=$cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '..\imp008d-d1-mixed-teb-link.log'
+          $rc=$LASTEXITCODE
+          Write-Host "IMP008D_D1_MIXED_TEB_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "D1 link failed rc=$rc" }
+
+      - name: Run D1 regression exactly once
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference='Stop'
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'build/bin/imp008d_d1_mixed_teb.exe').Path
+          $psi.WorkingDirectory=(Get-Location).Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process
+          $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync()
+          $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result
+          $err=$et.Result
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008d-d1-mixed-teb.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008d-d1-mixed-teb.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008d-d1-mixed-teb.log'),$out+$err)
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008d-d1-mixed-teb.rc'),[string]$rc)
+          Write-Host $out
+          Write-Host $err
+          Write-Host ('IMP008D_D1_MIXED_TEB_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify D1 result
+        if: always()
+        shell: powershell
+        run: |
+          if (-not (Test-Path 'eden/imp008d-d1-mixed-teb.log')) { Write-Host 'IMP008D_D1_MIXED_TEB_RUNTIME=NOT_REACHED'; exit 0 }
+          $text=Get-Content 'eden/imp008d-d1-mixed-teb.log' -Raw
+          Get-Content 'eden/imp008d-d1-mixed-teb.log' | Select-String -Pattern 'IMP008D_D1_(RUNTHREAD_RETURNED|DATA_AV|SUPERVISOR_CALL_RETURN|SVC_NUMBER|SKIP_PC_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|GATE|FAIL)|IMP008B_E5_EXCEPTION_CODE|IMP008B_E2_RESTORE_CONTEXT'
+          if ($text.Contains('IMP008D_D1_GATE=PASS')) {
+            Write-Host 'IMP008D_D1_MIXED_TEB_REGRESSION=PASS'
+          } else {
+            Write-Host 'IMP008D_D1_MIXED_TEB_REGRESSION=FAIL_OR_INCOMPLETE'
+          }
+          if (Test-Path 'eden/imp008d-d1-mixed-teb.rc') { Write-Host ('IMP008D_D1_MIXED_TEB_RAW_RC=' + (Get-Content 'eden/imp008d-d1-mixed-teb.rc' -Raw).Trim()) }
+
+      - name: Upload D1 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008d-d1-mixed-teb-regression
+          path: |
+            eden/imp008d-d1-mixed-teb-link.log
+            eden/imp008d-d1-mixed-teb.log
+            eden/imp008d-d1-mixed-teb.out.log
+            eden/imp008d-d1-mixed-teb.err.log
+            eden/imp008d-d1-mixed-teb.rc
+            eden/imp008d-d1-first-exception.bin
+          if-no-files-found: warn
