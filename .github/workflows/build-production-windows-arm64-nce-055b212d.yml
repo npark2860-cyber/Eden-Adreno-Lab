@@ -2,11 +2,6 @@ name: Build frozen IMP-008E production 055b212d
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - build/imp008e-production-055b212d
-    paths:
-      - .github/workflows/build-production-windows-arm64-nce-055b212d.yml
 
 permissions:
   contents: read
@@ -155,7 +150,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: Eden-Windows-ARM64-NCE-PRODUCTION-055b212d
-          archive: false
           path: build/validation/055b212df86dbfc18257b127ee5a0cbfda8ff861/zelda-realgame-package/upload/*
           if-no-files-found: error
           retention-days: 14
