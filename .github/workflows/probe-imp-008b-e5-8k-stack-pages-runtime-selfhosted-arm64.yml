@@ -27,19 +27,20 @@ jobs:
           if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
           $head = (git -C eden rev-parse HEAD).Trim()
           if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
-          $src = 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          $probe = 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
           $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
-          if (-not (Test-Path $src)) { throw 'retained E5 probe source missing' }
-          if (-not (Test-Path $transition)) { throw 'retained transition source missing' }
+          $armnce = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          foreach ($p in @($probe,$transition,$armnce)) { if (-not (Test-Path $p)) { throw "retained source missing: $p" } }
           New-Item -ItemType Directory -Force 'retained-e5-snapshot' | Out-Null
-          Copy-Item $src 'retained-e5-snapshot/x18_runtime_invariant.cpp'
+          Copy-Item $probe 'retained-e5-snapshot/x18_runtime_invariant.cpp'
           Copy-Item $transition 'retained-e5-snapshot/windows_nce_transition.cpp'
+          Copy-Item $armnce 'retained-e5-snapshot/arm_nce_windows.cpp'
           git -C eden status --short | Out-File -Encoding ascii 'retained-e5-snapshot/git-status.txt'
-          git -C eden diff -- probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp src/core/arm/nce/windows_nce_transition.cpp | Out-File -Encoding utf8 'retained-e5-snapshot/retained-e5.diff'
-          $probe = [IO.File]::ReadAllText((Resolve-Path $src))
-          Write-Host ('IMP008B_E5_SNAPSHOT_GENERIC_ENTER=' + $probe.Contains('IMP008B_E5_GENERIC_VEH_ENTER=PASS'))
-          Write-Host ('IMP008B_E5_SNAPSHOT_GENERIC_STATE=' + $probe.Contains('IMP008B_E5_GENERIC_VEH_STATE'))
-          Write-Host ('IMP008B_E5_SNAPSHOT_X18_ENTER=' + $probe.Contains('IMP008B_E5_X18_VEH_ENTER=PASS'))
+          git -C eden diff -- probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp src/core/arm/nce/windows_nce_transition.cpp src/core/arm/nce/arm_nce_windows.cpp | Out-File -Encoding utf8 'retained-e5-snapshot/retained-e5.diff'
+          $all = [IO.File]::ReadAllText((Resolve-Path $probe)) + [IO.File]::ReadAllText((Resolve-Path $armnce))
+          Write-Host ('IMP008B_E5_SNAPSHOT_GENERIC_ENTER=' + $all.Contains('IMP008B_E5_GENERIC_VEH_ENTER=PASS'))
+          Write-Host ('IMP008B_E5_SNAPSHOT_GENERIC_STATE=' + $all.Contains('IMP008B_E5_GENERIC_VEH_STATE'))
+          Write-Host ('IMP008B_E5_SNAPSHOT_X18_ENTER=' + $all.Contains('IMP008B_E5_X18_VEH_ENTER=PASS'))
           Write-Host 'IMP008B_E5_RETAINED_SNAPSHOT=PASS'
 
       - name: Upload retained E5 source snapshot
