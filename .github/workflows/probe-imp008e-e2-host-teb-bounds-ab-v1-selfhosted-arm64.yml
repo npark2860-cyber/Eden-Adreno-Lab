@@ -1,0 +1,129 @@
+name: Probe IMP-008E E2 Host TEB Bounds A-B V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-host-teb-bounds-ab-v1-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-host-teb-bounds-ab-v1
+  cancel-in-progress: false
+
+jobs:
+  e2-host-teb-bounds-v1:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Build host-bounds transition object and E2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $generic='eden/build/generic_stacktop_ab/windows_nce_transition.cpp'
+          if (-not (Test-Path $generic)) { throw 'generic transition source missing' }
+          $text=[IO.File]::ReadAllText((Resolve-Path $generic))
+          $needle='reinterpret_cast<NT_TIB*>(teb)->StackBase = reinterpret_cast<PVOID>(stack_base);'
+          if (([regex]::Matches($text,[regex]::Escape($needle))).Count -ne 1) { throw 'StackBase publication anchor mismatch' }
+          $text=$text.Replace($needle,'reinterpret_cast<NT_TIB*>(teb)->StackBase = host_stack_base_before_guest; // IMP008B_HOST_TEB_BOUNDS_AB')
+          $text=$text.Replace('IMP008B_GENERIC_STACK_TOP=PASS','IMP008B_HOST_TEB_BOUNDS_AB=PASS')
+          $dir='eden/build/host_teb_bounds_ab'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item 'eden/src/core/arm/nce/*.inc' $dir -Force
+          $transitionSrc=Join-Path (Resolve-Path $dir).Path 'windows_nce_transition.cpp'
+          [IO.File]::WriteAllText($transitionSrc,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+            $transitionHits=@($commands | Where-Object { $_ -match 'windows_nce_transition\.cpp' -and $_ -match ' -c ' })
+            if ($transitionHits.Count -ne 1) { throw "transition compile count=$($transitionHits.Count)" }
+            $tc=[string]$transitionHits[0]
+            $objMatch=[regex]::Match($tc,'-o\s+(\S*windows_nce_transition\.cpp\.obj)')
+            if (-not $objMatch.Success) { throw 'transition object parse failed' }
+            $tc=$tc.Replace($objMatch.Groups[1].Value,'host_teb_bounds_ab/windows_nce_transition.cpp.obj')
+            $tc=[regex]::Replace($tc,'-MF\s+\S*windows_nce_transition\.cpp\.obj\.d','-MF host_teb_bounds_ab\windows_nce_transition.cpp.obj.d')
+            $tc=[regex]::Replace($tc,"-c\s+'?C:/[^']*?/src/core/arm/nce/windows_nce_transition\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/host_teb_bounds_ab/windows_nce_transition.cpp')
+            $tc=$tc.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $tc=[regex]::Replace($tc,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $tc
+            if ($LASTEXITCODE -ne 0) { throw "host-bounds transition compile rc=$LASTEXITCODE" }
+
+            $probeHits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($probeHits.Count -ne 1) { throw "E5 probe compile count=$($probeHits.Count)" }
+            $pc=[string]$probeHits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='host_teb_bounds_ab/rasterizer_cached_retry.cpp.obj'
+            $pc=$pc.Replace($oldObj,$newObj)
+            $pc=[regex]::Replace($pc,'-MF\s+\S+\.obj\.d','-MF host_teb_bounds_ab\rasterizer_cached_retry.cpp.obj.d')
+            $pc=[regex]::Replace($pc,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp')
+            $pc=$pc.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $pc=[regex]::Replace($pc,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $pc
+            if ($LASTEXITCODE -ne 0) { throw "E2 compile rc=$LASTEXITCODE" }
+
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj)
+            $link=$link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_host_teb_bounds_v1.exe')
+            $link=$link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_host_teb_bounds_v1.a')
+            $link=$link.Replace('src/core/libcore.a','host_teb_bounds_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008e-e2-host-teb-bounds-v1-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "E2 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_HOST_TEB_BOUNDS_BUILD=PASS'
+
+      - name: Run E2 host-bounds A-B exactly once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $edenPath=(Resolve-Path 'eden').Path
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_host_teb_bounds_v1.exe').Path
+          $psi.WorkingDirectory=$edenPath
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(300000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-host-teb-bounds-v1.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-host-teb-bounds-v1.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-host-teb-bounds-v1.log'),$out+$err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008e-e2-host-teb-bounds-v1.rc'),[string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008E_E2_HOST_TEB_BOUNDS_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify host-bounds A-B
+        shell: powershell
+        run: |
+          $log=Get-Content 'eden/imp008e-e2-host-teb-bounds-v1.log' -Raw
+          Get-Content 'eden/imp008e-e2-host-teb-bounds-v1.log' | Select-String -Pattern 'IMP008B_HOST_TEB_BOUNDS_AB|IMP008E_E2_(DATA_AV|RUNTHREAD_RETURNED|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|REEXECUTED_VALUE_EXACT|CONTEXT_COHERENT|GATE|FAIL)'
+          if ($log.Contains('IMP008E_E2_GATE=PASS')) { Write-Host 'IMP008E_E2_HOST_TEB_BOUNDS_V1=PASS' } else { Write-Host 'IMP008E_E2_HOST_TEB_BOUNDS_V1=FAIL_OR_INCOMPLETE' }
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008e-e2-host-teb-bounds-v1
+          path: |
+            eden/imp008e-e2-host-teb-bounds-v1-link.log
+            eden/imp008e-e2-host-teb-bounds-v1.log
+            eden/imp008e-e2-host-teb-bounds-v1.out.log
+            eden/imp008e-e2-host-teb-bounds-v1.err.log
+            eden/imp008e-e2-host-teb-bounds-v1.rc
+          if-no-files-found: warn
