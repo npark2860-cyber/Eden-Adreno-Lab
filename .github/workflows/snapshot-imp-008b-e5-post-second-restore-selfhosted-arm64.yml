@@ -1,0 +1,51 @@
+name: Snapshot IMP-008B E5 Post Second Restore
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/snapshot-imp-008b-e5-post-second-restore-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot-e5-post-second-restore:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Snapshot retained sources without mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $dir = 'eden/imp008b-e5-post-second-restore-snapshot'
+          Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $dir | Out-Null
+          $files = @(
+            'src/core/arm/nce/arm_nce_windows.cpp',
+            'src/core/arm/nce/windows_nce_transition.cpp',
+            'src/core/arm/nce/windows_x18_fallback_trap.cpp',
+            'src/core/arm/nce/windows_cross_thread_break.h',
+            'probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
+          )
+          foreach ($rel in $files) {
+            $src = Join-Path 'eden' $rel
+            if (-not (Test-Path $src)) { throw "missing retained file $rel" }
+            $dst = Join-Path $dir ([IO.Path]::GetFileName($rel))
+            Copy-Item $src $dst -Force
+          }
+          git -C eden diff -- src/core/arm/nce/arm_nce_windows.cpp src/core/arm/nce/windows_nce_transition.cpp src/core/arm/nce/windows_cross_thread_break.h probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp | Out-File -FilePath (Join-Path $dir 'retained.diff') -Encoding utf8
+          git -C eden status --short | Out-File -FilePath (Join-Path $dir 'status.txt') -Encoding utf8
+          Write-Host 'IMP008B_E5_POST_SECOND_RESTORE_SNAPSHOT=PASS'
+
+      - name: Upload retained snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-post-second-restore-snapshot
+          path: eden/imp008b-e5-post-second-restore-snapshot/
+          if-no-files-found: error
