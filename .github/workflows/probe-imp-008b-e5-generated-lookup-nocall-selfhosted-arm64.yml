@@ -1,0 +1,296 @@
+name: Probe IMP-008B E5 Generated Lookup No-Call A-B
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-generated-lookup-nocall-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-generated-lookup-nocall
+  cancel-in-progress: false
+
+jobs:
+  e5-generated-lookup-nocall:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify retained E5 state and local toolchain
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $arm = [IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/arm_nce_windows.cpp'))
+          foreach ($marker in @('IMP008B_E5_GENERIC_CRT_FREE_AB','IMP008B_E5_X18_CRT_FREE_AB','IMP008B_E5_HOST_TEB_BOUNDS_AB','IMP008B_E5_AV_CONTINUE_EXECUTION_AB')) {
+            if (-not $arm.Contains($marker)) { throw "missing retained marker $marker" }
+          }
+          foreach ($p in @(
+            'eden/src/core/arm/nce/current_nce_context.h',
+            'eden/src/core/arm/nce/windows_generated_context.h',
+            'eden/src/core/arm/nce/patcher.cpp',
+            'C:\msys64\clangarm64\bin\clang++.exe',
+            'C:\msys64\usr\bin\ninja.exe',
+            'C:\msys64\clangarm64\include\boost\intrusive\rbtree.hpp'
+          )) { if (-not (Test-Path $p)) { throw "required path missing: $p" } }
+          Remove-Item 'eden/imp008b-e5-nocall.log','eden/imp008b-e5-nocall.out.log','eden/imp008b-e5-nocall.err.log','eden/imp008b-e5-nocall.rc' -Force -ErrorAction SilentlyContinue
+          Write-Host 'IMP008B_E5_NOCALL_RETAINED_STATE=PASS'
+
+      - name: Mirror current NCE params in diagnostic global slot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'eden/src/core/arm/nce/current_nce_context.h'
+          $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          if (-not $text.Contains('IMP008B_E5_DIAGNOSTIC_GLOBAL_SLOT_AB')) {
+            $install = @(
+              '    static void Install(Parameters* parameters) noexcept {',
+              '        current = parameters;',
+              '    }'
+            ) -join "`n"
+            $installCr = $install.Replace("`n","`r`n")
+            $installNew = @(
+              '    static void Install(Parameters* parameters) noexcept {',
+              '        current = parameters;',
+              '        diagnostic_global = parameters;',
+              '    }'
+            ) -join "`n"
+            if ($text.Contains($install)) { $text = $text.Replace($install,$installNew) }
+            elseif ($text.Contains($installCr)) { $text = $text.Replace($installCr,$installNew.Replace("`n","`r`n")) }
+            else { throw 'Install anchor missing' }
+
+            $getNeedle = @(
+              '    static Parameters* Get() noexcept {',
+              '        return current;',
+              '    }'
+            ) -join "`n"
+            $getCr = $getNeedle.Replace("`n","`r`n")
+            $getNew = @(
+              '    static Parameters* Get() noexcept {',
+              '        return current;',
+              '    }',
+              '',
+              '    // IMP008B_E5_DIAGNOSTIC_GLOBAL_SLOT_AB: E5 single-thread diagnostic mirror.',
+              '    static Parameters** DiagnosticGlobalSlotAddress() noexcept {',
+              '        return &diagnostic_global;',
+              '    }'
+            ) -join "`n"
+            if ($text.Contains($getNeedle)) { $text = $text.Replace($getNeedle,$getNew) }
+            elseif ($text.Contains($getCr)) { $text = $text.Replace($getCr,$getNew.Replace("`n","`r`n")) }
+            else { throw 'Get anchor missing' }
+
+            $clear = @(
+              '    static void Clear() noexcept {',
+              '        current = nullptr;',
+              '    }'
+            ) -join "`n"
+            $clearCr = $clear.Replace("`n","`r`n")
+            $clearNew = @(
+              '    static void Clear() noexcept {',
+              '        diagnostic_global = nullptr;',
+              '        current = nullptr;',
+              '    }'
+            ) -join "`n"
+            if ($text.Contains($clear)) { $text = $text.Replace($clear,$clearNew) }
+            elseif ($text.Contains($clearCr)) { $text = $text.Replace($clearCr,$clearNew.Replace("`n","`r`n")) }
+            else { throw 'Clear anchor missing' }
+
+            $privateNeedle = '    inline static thread_local Parameters* current{};'
+            $privateNew = @(
+              '    inline static thread_local Parameters* current{};',
+              '    inline static Parameters* diagnostic_global{};'
+            ) -join "`n"
+            if (-not $text.Contains($privateNeedle)) { throw 'current storage anchor missing' }
+            $text = $text.Replace($privateNeedle,$privateNew)
+            $utf8 = New-Object System.Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText((Resolve-Path $path),$text,$utf8)
+          }
+          $check = [IO.File]::ReadAllText((Resolve-Path $path))
+          if (-not $check.Contains('IMP008B_E5_DIAGNOSTIC_GLOBAL_SLOT_AB')) { throw 'global slot marker missing' }
+          if (-not $check.Contains('diagnostic_global = parameters;')) { throw 'Install mirror missing' }
+          if (-not $check.Contains('DiagnosticGlobalSlotAddress()')) { throw 'slot address accessor missing' }
+          Write-Host 'IMP008B_E5_DIAGNOSTIC_GLOBAL_SLOT_PATCH=PASS'
+
+      - name: Replace generated getter ABI call with direct slot load
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'eden/src/core/arm/nce/windows_generated_context.h'
+          $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          if (-not $text.Contains('IMP008B_E5_GENERATED_LOOKUP_NOCALL_AB')) {
+            $includeNeedle = '#include "core/arm/nce/windows_nce_transition.h"'
+            if (-not $text.Contains($includeNeedle)) { throw 'transition include anchor missing' }
+            $text = $text.Replace($includeNeedle, '#include "core/arm/nce/current_nce_context.h"' + "`n" + $includeNeedle)
+            $text = $text.Replace('    constexpr u32 BlrBase = 0xD63F0000U;' + "`r`n", '')
+            $text = $text.Replace('    constexpr u32 BlrBase = 0xD63F0000U;' + "`n", '')
+            $text = $text.Replace('    oaknut::Label getter_address;', '    oaknut::Label slot_address;')
+
+            $callPattern = '(?s)    cg\.LDR\(X16, getter_address\);\r?\n    cg\.dw\(BlrBase \| \(16U << 5\)\);\r?\n    cg\.STR\(X0, SP, ResultOffset\);'
+            $matches = [regex]::Matches($text,$callPattern)
+            if ($matches.Count -ne 1) { throw "generated getter call block count=$($matches.Count)" }
+            $callReplacement = @(
+              '    // IMP008B_E5_GENERATED_LOOKUP_NOCALL_AB: preserve the existing frame/state',
+              '    // footprint but obtain NativeExecutionParameters with two data loads only.',
+              '    cg.LDR(X16, slot_address);',
+              '    cg.LDR(X0, X16);',
+              '    cg.STR(X0, SP, ResultOffset);'
+            ) -join "`n"
+            $text = [regex]::Replace($text,$callPattern,$callReplacement,1)
+
+            $literalPattern = '(?s)    // Keep the embedded function pointer out of the executed instruction stream\.\r?\n    cg\.B\(done\);\r?\n    cg\.l\(getter_address\);\r?\n    cg\.dx\(static_cast<u64>\(reinterpret_cast<std::uintptr_t>\(\r?\n        &GetCurrentNceContextForGeneratedCode\)\)\);\r?\n    cg\.l\(done\);'
+            $literalMatches = [regex]::Matches($text,$literalPattern)
+            if ($literalMatches.Count -ne 1) { throw "generated literal block count=$($literalMatches.Count)" }
+            $literalReplacement = @(
+              '    // Keep the embedded slot address out of the executed instruction stream.',
+              '    cg.B(done);',
+              '    cg.l(slot_address);',
+              '    cg.dx(static_cast<u64>(reinterpret_cast<std::uintptr_t>(',
+              '        CurrentNceContext::DiagnosticGlobalSlotAddress())));',
+              '    cg.l(done);'
+            ) -join "`n"
+            $text = [regex]::Replace($text,$literalPattern,$literalReplacement,1)
+            $utf8 = New-Object System.Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText((Resolve-Path $path),$text,$utf8)
+          }
+          $check = [IO.File]::ReadAllText((Resolve-Path $path))
+          if (-not $check.Contains('IMP008B_E5_GENERATED_LOOKUP_NOCALL_AB')) { throw 'no-call marker missing' }
+          if ($check.Contains('cg.dw(BlrBase | (16U << 5));')) { throw 'BLR emission still present' }
+          if ($check.Contains('&GetCurrentNceContextForGeneratedCode')) { throw 'getter function literal still present' }
+          if (-not $check.Contains('DiagnosticGlobalSlotAddress()')) { throw 'direct slot literal missing' }
+          Write-Host 'IMP008B_E5_GENERATED_LOOKUP_NOCALL_PATCH=PASS'
+
+      - name: Extract direct commands read-only
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Hash([string]$p) {
+            $s = [Security.Cryptography.SHA256]::Create()
+            try { return ([BitConverter]::ToString($s.ComputeHash([IO.File]::ReadAllBytes((Resolve-Path $p))))).Replace('-','') }
+            finally { $s.Dispose() }
+          }
+          $b = Hash 'build/build.ninja'
+          $r = Hash 'build/CMakeFiles/rules.ninja'
+          $commands = & 'C:\msys64\usr\bin\ninja.exe' -C build -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+          [IO.File]::WriteAllLines((Join-Path (Get-Location) 'imp008b-e5-nocall-commands.txt'),[string[]]$commands)
+          if ($b -ne (Hash 'build/build.ninja') -or $r -ne (Hash 'build/CMakeFiles/rules.ninja')) { throw 'Ninja graph changed' }
+          Write-Host 'IMP008B_E5_NOCALL_GRAPH_UNCHANGED=PASS'
+
+      - name: Compile ARM NCE and patcher objects
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-nocall-commands.txt')
+          function One([string]$pattern,[string]$label) {
+            $hits = @($lines | Where-Object { $_ -match $pattern })
+            if ($hits.Count -ne 1) { throw "$label command count=$($hits.Count)" }
+            return [string]$hits[0]
+          }
+          function Localize([string]$line) {
+            $cmd = $line.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            $cmd = $cmd.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+            $cmd = $cmd.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $cmd = [regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+            return $cmd
+          }
+          function Run([string]$label,[string]$line) {
+            $cmd = Localize $line
+            & $env:ComSpec /D /S /C $cmd
+            $rc = $LASTEXITCODE
+            Write-Host "IMP008B_E5_NOCALL_${label}_RC=$rc"
+            if ($rc -ne 0) { throw "$label compile failed rc=$rc" }
+          }
+          Run 'ARMNCE' (One " -c '?C:/[^']*/src/core/arm/nce/arm_nce_windows\.cpp'?$" 'ARMNCE')
+          Run 'PATCHER' (One " -c '?C:/[^']*/src/core/arm/nce/patcher\.cpp'?$" 'PATCHER')
+          Write-Host 'IMP008B_E5_NOCALL_COMPILE=PASS'
+
+      - name: Link E5 runtime
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-nocall-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "link command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          $cmd = $cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-nocall-link.log'
+          $rc = $LASTEXITCODE
+          Write-Host "IMP008B_E5_NOCALL_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "link failed rc=$rc" }
+          Write-Host 'IMP008B_E5_NOCALL_LINK=PASS'
+
+      - name: Run generated lookup no-call A-B
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'build/bin/imp008b_e5_x18_runtime.exe').Path
+          $psi.WorkingDirectory = (Get-Location).Path
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $outTask = $p.StandardOutput.ReadToEndAsync()
+          $errTask = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $outTask.Result
+          $err = $errTask.Result
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-nocall.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-nocall.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-nocall.log'),$out + $err)
+          if ($timeout) { $rc = 124 } else { $rc = $p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-nocall.rc'),[string]$rc)
+          Write-Host $out
+          Write-Host $err
+          Write-Host ('IMP008B_E5_NOCALL_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify no-call boundary
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-nocall.log')) { Write-Host 'IMP008B_E5_NOCALL_RUNTIME=NOT_REACHED'; exit 0 }
+          $log='imp008b-e5-nocall.log'
+          Get-Content $log | Select-String -Pattern 'IMP008B_E5_(8K_|NT_RESOLVED|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE|EXCEPTION_)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
+          $second = Select-String -Path $log -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
+          $returned = Select-String -Path $log -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          $svc = Select-String -Path $log -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
+          $x18 = Select-String -Path $log -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
+          $svcReturn = Select-String -Path $log -SimpleMatch 'IMP008B_E5_SVC_RETURN=PASS' -Quiet
+          $gate = Select-String -Path $log -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
+          Write-Host ('IMP008B_E5_NOCALL_SECOND_RESTORE=' + $(if ($second) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_NOCALL_RUNTHREAD_RETURNED=' + $(if ($returned) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_NOCALL_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_NOCALL_X18_RESULT=' + $(if ($x18) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_NOCALL_SVC_RETURN=' + $(if ($svcReturn) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_NOCALL_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
+          if (Test-Path 'imp008b-e5-nocall.rc') { Write-Host ('IMP008B_E5_NOCALL_RAW_RC=' + (Get-Content 'imp008b-e5-nocall.rc' -Raw).Trim()) }
+
+      - name: Upload no-call diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-generated-lookup-nocall
+          path: |
+            eden/imp008b-e5-nocall-commands.txt
+            eden/imp008b-e5-nocall-link.log
+            eden/imp008b-e5-nocall.log
+            eden/imp008b-e5-nocall.out.log
+            eden/imp008b-e5-nocall.err.log
+            eden/imp008b-e5-nocall.rc
+          if-no-files-found: warn
