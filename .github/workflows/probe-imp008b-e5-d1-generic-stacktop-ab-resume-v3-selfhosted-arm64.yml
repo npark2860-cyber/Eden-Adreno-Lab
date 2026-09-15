@@ -1,0 +1,158 @@
+name: Probe IMP-008B E5 D1 Generic StackTop A-B Resume V3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008b-e5-d1-generic-stacktop-ab-resume-v3-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008b-e5-d1-generic-stacktop-ab-resume-v3
+  cancel-in-progress: false
+
+jobs:
+  generic-stacktop-ab-resume-v3:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Verify generic transition object
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'generic transition object missing' }
+          $src = [IO.File]::ReadAllText((Resolve-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp'))
+          if (-not $src.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'generic StackTop marker missing' }
+          Write-Host 'IMP008B_GENERIC_STACKTOP_OBJECT_READY=PASS'
+
+      - name: Link and run E5 once with explicit generic object
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            $linkHits = @($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link command count=$($linkHits.Count)" }
+            $link = [string]$linkHits[0]
+            $link = $link.Replace('bin\imp008b_e5_x18_runtime.exe', 'bin\imp008b_e5_generic_stacktop_v3.exe')
+            $link = $link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a', 'src\yuzu_cmd\libimp008b_e5_generic_stacktop_v3.a')
+            $link = $link.Replace('src/core/libcore.a', 'generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link = $link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
+            $link = $link.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008b-e5-generic-stacktop-v3-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "E5 generic v3 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008b_e5_generic_stacktop_v3.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'E5 runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          if ($timeout) { $rc = 124 } else { $rc = $p.ExitCode }
+          $logPath = Join-Path $edenPath 'imp008b-e5-generic-stacktop-v3.log'
+          [IO.File]::WriteAllText($logPath, $out + $err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008b-e5-generic-stacktop-v3.rc'), [string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host "IMP008B_E5_GENERIC_STACKTOP_V3_RUNTIME_RC=$rc"
+          $e5 = [IO.File]::ReadAllText($logPath)
+          if (-not $e5.Contains('IMP008B_GENERIC_STACK_TOP=PASS')) { throw 'E5 did not execute generic transition object' }
+          if (-not $e5.Contains('IMP008B_E5_GATE=PASS')) { throw 'E5 generic StackTop gate failed' }
+          Write-Host 'IMP008B_E5_GENERIC_STACKTOP_V3=PASS'
+
+      - name: Build and run D1 once with same explicit generic object
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = (Resolve-Path 'eden/probes/windows-arm64-nce-fault-d1/data_fault_skip_runtime.cpp').Path
+          $dst = (Join-Path (Resolve-Path 'eden').Path 'build/generic_stacktop_ab/data_fault_skip_runtime_v3.cpp')
+          $text = [IO.File]::ReadAllText($src)
+          $needle = 'if (getter_literal_matches == 0) {'
+          if (([regex]::Matches($text, [regex]::Escape($needle))).Count -lt 1) { throw 'D1 stale getter condition missing' }
+          $text = $text.Replace($needle, 'if (false && getter_literal_matches == 0) { // current patcher compatibility')
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText($dst, $text, $utf8)
+
+          Push-Location 'eden/build'
+          try {
+            $commands = & 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            $compileHits = @($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($compileHits.Count -ne 1) { throw "E5 probe compile command count=$($compileHits.Count)" }
+            $compile = [string]$compileHits[0]
+            $oldObj = 'src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj = 'generic_stacktop_ab/data_fault_skip_runtime_v3.cpp.obj'
+            $compile = $compile.Replace($oldObj, $newObj)
+            $compile = [regex]::Replace($compile, '-MF\s+\S+\.obj\.d', '-MF generic_stacktop_ab\data_fault_skip_runtime_v3.cpp.obj.d')
+            $compile = [regex]::Replace($compile, "-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?", '-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/generic_stacktop_ab/data_fault_skip_runtime_v3.cpp')
+            $compile = $compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
+            $compile = $compile.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
+            $compile = $compile.Replace('C:\msys64\clangarm64\bin\sccache.exe ', '')
+            $compile = $compile.Replace('C:/msys64/clangarm64/bin/sccache.exe ', '')
+            $compile = [regex]::Replace($compile, "'(C:/[^']+)'", '$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "D1 generic v3 compile rc=$LASTEXITCODE" }
+
+            $linkHits = @($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link command count=$($linkHits.Count)" }
+            $link = [string]$linkHits[0]
+            $link = $link.Replace($oldObj, $newObj)
+            $link = $link.Replace('bin\imp008b_e5_x18_runtime.exe', 'bin\imp008d_d1_generic_stacktop_v3.exe')
+            $link = $link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a', 'src\yuzu_cmd\libimp008d_d1_generic_stacktop_v3.a')
+            $link = $link.Replace('src/core/libcore.a', 'generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link = $link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64', 'C:\msys64\clangarm64')
+            $link = $link.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64', 'C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link 2>&1 | Tee-Object -FilePath '..\imp008d-d1-generic-stacktop-v3-link.log'
+            if ($LASTEXITCODE -ne 0) { throw "D1 generic v3 link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $edenPath = (Resolve-Path 'eden').Path
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'eden/build/bin/imp008d_d1_generic_stacktop_v3.exe').Path
+          $psi.WorkingDirectory = $edenPath
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'D1 runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync(); $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result; $err = $et.Result
+          if ($timeout) { $rc = 124 } else { $rc = $p.ExitCode }
+          $logPath = Join-Path $edenPath 'imp008d-d1-generic-stacktop-v3.log'
+          [IO.File]::WriteAllText($logPath, $out + $err)
+          [IO.File]::WriteAllText((Join-Path $edenPath 'imp008d-d1-generic-stacktop-v3.rc'), [string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host "IMP008D_D1_GENERIC_STACKTOP_V3_RUNTIME_RC=$rc"
+          $d1 = [IO.File]::ReadAllText($logPath)
+          if ($d1.Contains('IMP008D_D1_GATE=PASS')) { Write-Host 'IMP008D_D1_GENERIC_STACKTOP_V3=PASS' } else { Write-Host 'IMP008D_D1_GENERIC_STACKTOP_V3=FAIL_OR_INCOMPLETE' }
+
+      - name: Upload generic StackTop V3 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imp008b-e5-d1-generic-stacktop-ab-v3
+          path: |
+            eden/imp008b-e5-generic-stacktop-v3-link.log
+            eden/imp008b-e5-generic-stacktop-v3.log
+            eden/imp008b-e5-generic-stacktop-v3.rc
+            eden/imp008d-d1-generic-stacktop-v3-link.log
+            eden/imp008d-d1-generic-stacktop-v3.log
+            eden/imp008d-d1-generic-stacktop-v3.rc
+            eden/imp008d-d1-first-exception.bin
+          if-no-files-found: warn
