@@ -1,4 +1,4 @@
-name: Build Windows ARM64 NCE real-game diagnostics 055b212d
+name: Build Windows ARM64 NCE real-game diagnostics V2 055b212d
 
 on:
   workflow_dispatch:
@@ -7,24 +7,25 @@ on:
       - fix/windows-nce-realgame-regression-055b212d
     paths:
       - .github/workflows/build-windows-arm64-nce-realgame-diag-055b212d.yml
+      - .github/diagnostics/apply-windows-nce-realgame-telemetry.py
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: build-windows-nce-realgame-diag-055b212d
+  group: build-windows-nce-realgame-diag-v2-055b212d
   cancel-in-progress: false
 
 env:
   SOURCE_SHA: 055b212df86dbfc18257b127ee5a0cbfda8ff861
   CI_REF: afead830f3a444427f9fdfd841218f932465c03a
-  TEST_NAME: realgame-diag-055b212d
+  TEST_NAME: realgame-diag-v2-055b212d
   SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-telemetry.py
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE real-game diagnostic package
+    name: Windows ARM64 NCE real-game diagnostic V2 package
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -44,7 +45,7 @@ jobs:
         with:
           repository: npark2860-cyber/Eden-Adreno-Lab
           ref: ${{ github.sha }}
-          path: build/validation/${{ github.sha }}/realgame-diag-055b212d/control
+          path: build/validation/${{ github.sha }}/realgame-diag-v2-055b212d/control
           fetch-depth: 0
 
       - name: Checkout exact frozen production source
@@ -52,11 +53,11 @@ jobs:
         with:
           repository: npark2860-cyber/Eden-Adreno-Lab
           ref: 055b212df86dbfc18257b127ee5a0cbfda8ff861
-          path: build/validation/${{ github.sha }}/realgame-diag-055b212d/source
+          path: build/validation/${{ github.sha }}/realgame-diag-v2-055b212d/source
           fetch-depth: 0
           submodules: recursive
 
-      - name: Verify Git-object provenance and apply telemetry transform
+      - name: Verify Git-object provenance and apply telemetry V2 transform
         shell: bash
         run: |
           set -euo pipefail
@@ -77,18 +78,20 @@ jobs:
           grep -Fq 'NCE_REALGAME_DIAG_FASTMEM' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'NCE_REALGAME_DIAG_STACK' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'NCE_REALGAME_DIAG_FAULT' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
-          git -C "$SOURCE" diff -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/arm_nce_windows.cpp.telemetry.diff"
+          grep -Fq 'NCE_REALGAME_DIAG_RETURN' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'REALGAME_DIAG_TRANSFORM_V2=PASS' "$PROV/apply-windows-nce-realgame-telemetry.py.git-object"
+          git -C "$SOURCE" diff -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/arm_nce_windows.cpp.telemetry-v2.diff"
 
-          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus telemetry-transform Git object\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\n' \
+          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus telemetry-V2-transform Git object\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\n' \
             "$SOURCE_SHA" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' "$GITHUB_SHA" "$TEST_NAME" "$SCRIPT_PATH" > "$PROV/BUILD_INFO.txt"
-          echo 'REALGAME_DIAG_GIT_OBJECT_GUARD=PASS'
+          echo 'REALGAME_DIAG_V2_GIT_OBJECT_GUARD=PASS'
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
         with:
           repository: Eden-CI/Workflow
           ref: afead830f3a444427f9fdfd841218f932465c03a
-          path: build/validation/${{ github.sha }}/realgame-diag-055b212d/ci
+          path: build/validation/${{ github.sha }}/realgame-diag-v2-055b212d/ci
 
       - name: Install fixed Eden CI scripts
         shell: bash
@@ -112,9 +115,9 @@ jobs:
             enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
             libwebp:p libtiff:p brotli:p
 
-      - name: Configure diagnostic Windows ARM64 NCE build
+      - name: Configure diagnostic V2 Windows ARM64 NCE build
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-diag-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/realgame-diag-v2-055b212d/source
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
@@ -122,32 +125,32 @@ jobs:
           ./.ci/build/configure.sh -DCCACHE_PATH=sccache
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           printf 'CONFIGURE_COMMAND=./.ci/build/configure.sh -DCCACHE_PATH=sccache\nNCE_COMPILE_GUARD=HAS_NCE=1\n' >> ../provenance/BUILD_INFO.txt
-          echo 'REALGAME_DIAG_CONFIGURE=PASS'
+          echo 'REALGAME_DIAG_V2_CONFIGURE=PASS'
 
-      - name: Build full Windows ARM64 Eden diagnostic package
+      - name: Build full Windows ARM64 Eden diagnostic V2 package
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-diag-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/realgame-diag-v2-055b212d/source
         run: |
           set -euo pipefail
           cmake --build build
           test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
           printf 'BUILD_COMMAND=cmake --build build\n' >> ../provenance/BUILD_INFO.txt
-          echo 'REALGAME_DIAG_BUILD=PASS'
+          echo 'REALGAME_DIAG_V2_BUILD=PASS'
 
-      - name: Package Windows ARM64 Eden diagnostics
+      - name: Package Windows ARM64 Eden diagnostics V2
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-diag-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/realgame-diag-v2-055b212d/source
         env:
-          ARTIFACT_REF: nce-realgame-diag-055b212d
+          ARTIFACT_REF: nce-realgame-diag-v2-055b212d
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
-          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-realgame-diag-055b212d\n' >> ../provenance/BUILD_INFO.txt
-          echo 'REALGAME_DIAG_PACKAGE=PASS'
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-realgame-diag-v2-055b212d\n' >> ../provenance/BUILD_INFO.txt
+          echo 'REALGAME_DIAG_V2_PACKAGE=PASS'
 
-      - name: Prepare diagnostic upload
+      - name: Prepare diagnostic V2 upload
         shell: pwsh
         run: |
           $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
@@ -160,16 +163,16 @@ jobs:
           Copy-Item $files[0].FullName $upload -Force
           Copy-Item (Join-Path $prov 'BUILD_INFO.txt') $upload -Force
           Copy-Item (Join-Path $prov 'apply-windows-nce-realgame-telemetry.py.git-object') $upload -Force
-          Copy-Item (Join-Path $prov 'arm_nce_windows.cpp.telemetry.diff') $upload -Force
+          Copy-Item (Join-Path $prov 'arm_nce_windows.cpp.telemetry-v2.diff') $upload -Force
           $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
           "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
           "PACKAGE_SHA256=$hash" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
           Get-Content (Join-Path $upload 'BUILD_INFO.txt')
 
-      - name: Upload real-game diagnostic package
+      - name: Upload real-game diagnostic V2 package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-REALGAME-DIAG-055b212d
-          path: build/validation/${{ github.sha }}/realgame-diag-055b212d/upload/*
+          name: Eden-Windows-ARM64-NCE-REALGAME-DIAG-V2-055b212d
+          path: build/validation/${{ github.sha }}/realgame-diag-v2-055b212d/upload/*
           if-no-files-found: error
           retention-days: 14
