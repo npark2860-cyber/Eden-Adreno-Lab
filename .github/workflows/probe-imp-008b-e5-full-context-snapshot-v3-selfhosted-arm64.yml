@@ -1,0 +1,206 @@
+name: Probe IMP-008B E5 Full CONTEXT Snapshot V3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-full-context-snapshot-v3-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-full-context-snapshot-v3
+  cancel-in-progress: false
+
+jobs:
+  e5-full-context-snapshot-v3:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify retained state and locate safe exception logger
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $transition=[IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/windows_nce_transition.cpp'))
+          foreach ($marker in @('IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS','IMP008B_E5_NT_CONTINUE_RETURN_STATUS')) {
+            if (-not $transition.Contains($marker)) { throw "missing transition marker $marker" }
+          }
+          $hits=@(& git -C eden grep -l 'IMP008B_E5_EXCEPTION_CODE' -- '*.cpp')
+          if ($hits.Count -ne 1) { throw "safe exception logger source count=$($hits.Count): $($hits -join ',')" }
+          $safeRel=[string]$hits[0]
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'eden/imp008b-e5-fullctx-v3-safe-source.txt'),$safeRel)
+          Write-Host ('IMP008B_E5_FULLCTX_V3_RETAINED_HEAD=' + $head)
+          Write-Host ('IMP008B_E5_FULLCTX_V3_DIRTY_ENTRIES=' + @((git -C eden status --short)).Count)
+          Write-Host ('IMP008B_E5_FULLCTX_V3_SAFE_SOURCE=' + $safeRel)
+          Remove-Item 'eden/imp008b-e5-fullctx-v3.log','eden/imp008b-e5-fullctx-v3.out.log','eden/imp008b-e5-fullctx-v3.err.log','eden/imp008b-e5-fullctx-v3.rc','eden/imp008b-e5-fullctx-v3-link.log','eden/imp008b-e5-fullctx-v3-commands.txt' -Force -ErrorAction SilentlyContinue
+          Write-Host 'IMP008B_E5_FULLCTX_V3_RETAINED_STATE=PASS'
+
+      - name: Install non-CRT capture and safe dump
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $transitionPath=(Resolve-Path 'eden/src/core/arm/nce/windows_nce_transition.cpp').Path
+          $safeRel=([IO.File]::ReadAllText((Resolve-Path 'eden/imp008b-e5-fullctx-v3-safe-source.txt'))).Trim()
+          $safePath=(Resolve-Path (Join-Path 'eden' $safeRel)).Path
+          $incPath=Join-Path (Get-Location) 'eden/src/core/arm/nce/windows_nce_fullctx_snapshot_v3.inc'
+          $incB64='c3RydWN0IGFsaWduYXMoMTYpIEltcDAwOGJFNUZ1bGxDb250ZXh0U25hcHNob3QgewogICAgQVJNNjRfTlRfQ09OVEVYVCBjb250ZXh0e307CiAgICBzdGQ6OnVpbnRwdHJfdCB0ZWJfc3RhY2tfbGltaXR7fTsKICAgIHN0ZDo6dWludHB0cl90IHRlYl9zdGFja19iYXNle307CiAgICB1bnNpZ25lZCBpbnQgc2VxdWVuY2V7fTsKfTsKCkltcDAwOGJFNUZ1bGxDb250ZXh0U25hcHNob3QgZ19pbXAwMDhiX2U1X2Z1bGxjdHhfc25hcHNob3RzWzJde307CnZvbGF0aWxlIHVuc2lnbmVkIGludCBnX2ltcDAwOGJfZTVfZnVsbGN0eF9zbmFwc2hvdF9jb3VudCA9IDA7Cgp2b2lkIEltcDAwOGJFNUNhcHR1cmVGdWxsQ29udGV4dChjb25zdCBBUk02NF9OVF9DT05URVhUJiBjb250ZXh0KSBub2V4Y2VwdCB7CiAgICBjb25zdCB1bnNpZ25lZCBpbnQgaW5kZXggPSBnX2ltcDAwOGJfZTVfZnVsbGN0eF9zbmFwc2hvdF9jb3VudDsKICAgIGlmIChpbmRleCA+PSAyKSB7CiAgICAgICAgcmV0dXJuOwogICAgfQoKICAgIGF1dG8mIHNsb3QgPSBnX2ltcDAwOGJfZTVfZnVsbGN0eF9zbmFwc2hvdHNbaW5kZXhdOwogICAgYXV0byogY29uc3QgZHN0ID0gcmVpbnRlcnByZXRfY2FzdDx2b2xhdGlsZSB1bnNpZ25lZCBjaGFyKj4oJnNsb3QuY29udGV4dCk7CiAgICBjb25zdCBhdXRvKiBjb25zdCBzcmMgPSByZWludGVycHJldF9jYXN0PGNvbnN0IHVuc2lnbmVkIGNoYXIqPigmY29udGV4dCk7CiAgICBmb3IgKHN0ZDo6c2l6ZV90IGkgPSAwOyBpIDwgc2l6ZW9mKGNvbnRleHQpOyArK2kpIHsKICAgICAgICBkc3RbaV0gPSBzcmNbaV07CiAgICB9CgogICAgY29uc3QgYXV0byogY29uc3QgdGliID0gcmVpbnRlcnByZXRfY2FzdDxjb25zdCBOVF9USUIqPihOdEN1cnJlbnRUZWIoKSk7CiAgICBzbG90LnRlYl9zdGFja19saW1pdCA9IHJlaW50ZXJwcmV0X2Nhc3Q8c3RkOjp1aW50cHRyX3Q+KHRpYi0+U3RhY2tMaW1pdCk7CiAgICBzbG90LnRlYl9zdGFja19iYXNlID0gcmVpbnRlcnByZXRfY2FzdDxzdGQ6OnVpbnRwdHJfdD4odGliLT5TdGFja0Jhc2UpOwogICAgc2xvdC5zZXF1ZW5jZSA9IGluZGV4ICsgMTsKICAgIGdfaW1wMDA4Yl9lNV9mdWxsY3R4X3NuYXBzaG90X2NvdW50ID0gaW5kZXggKyAxOwp9Cgp2b2lkIER1bXBJbXAwMDhiRTVGdWxsQ29udGV4dFNuYXBzaG90cygpIG5vZXhjZXB0IHsKICAgIGNvbnN0IHVuc2lnbmVkIGludCByYXdfY291bnQgPSBnX2ltcDAwOGJfZTVfZnVsbGN0eF9zbmFwc2hvdF9jb3VudDsKICAgIGNvbnN0IHVuc2lnbmVkIGludCBjb3VudCA9IHJhd19jb3VudCA+IDIgPyAyIDogcmF3X2NvdW50OwogICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwgIklNUDAwOEJfRTVfRlVMTENUWF9TQUZFX0RVTVBfQkVHSU4gQ09VTlQ9JXVcbiIsIGNvdW50KTsKICAgIGZvciAodW5zaWduZWQgaW50IHNsb3RfaW5kZXggPSAwOyBzbG90X2luZGV4IDwgY291bnQ7ICsrc2xvdF9pbmRleCkgewogICAgICAgIGNvbnN0IGF1dG8mIHNsb3QgPSBnX2ltcDAwOGJfZTVfZnVsbGN0eF9zbmFwc2hvdHNbc2xvdF9pbmRleF07CiAgICAgICAgY29uc3QgYXV0byYgY29udGV4dCA9IHNsb3QuY29udGV4dDsKICAgICAgICBjb25zdCB1bnNpZ25lZCBpbnQgc2VxID0gc2xvdC5zZXF1ZW5jZTsKICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLAogICAgICAgICAgICAgICAgICAgICAiSU1QMDA4Ql9FNV9GVUxMQ1RYX0JFR0lOIFNFUT0ldSBTSVpFPSVsbHUgRkxBR1M9MHglMDhsWCBDUFNSPTB4JTA4bFggIgogICAgICAgICAgICAgICAgICAgICAiU1A9MHglbGxYIFBDPTB4JWxsWCBURUJfTElNSVQ9MHglbGxYIFRFQl9CQVNFPTB4JWxsWFxuIiwKICAgICAgICAgICAgICAgICAgICAgc2VxLCBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KHNpemVvZihjb250ZXh0KSksCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KGNvbnRleHQuQ29udGV4dEZsYWdzKSwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4oY29udGV4dC5DcHNyKSwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihjb250ZXh0LlNwKSwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihjb250ZXh0LlBjKSwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihzbG90LnRlYl9zdGFja19saW1pdCksCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oc2xvdC50ZWJfc3RhY2tfYmFzZSkpOwogICAgICAgIGZvciAoc3RkOjpzaXplX3QgaSA9IDA7IGkgPCAzMTsgKytpKSB7CiAgICAgICAgICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsICJJTVAwMDhCX0U1X0ZVTExDVFhfUkVHIFNFUT0ldSBYJTAybGx1PTB4JTAxNmxsWFxuIiwgc2VxLAogICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihpKSwKICAgICAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oY29udGV4dC5YW2ldKSk7CiAgICAgICAgfQogICAgICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsCiAgICAgICAgICAgICAgICAgICAgICJJTVAwMDhCX0U1X0ZVTExDVFhfRlBfTFIgU0VRPSV1IEZQPTB4JTAxNmxsWCBMUj0weCUwMTZsbFhcbiIsIHNlcSwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihjb250ZXh0LlhbMjldKSwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihjb250ZXh0LlhbMzBdKSk7CiAgICAgICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwKICAgICAgICAgICAgICAgICAgICAgIklNUDAwOEJfRTVfRlVMTENUWF9GUFNUQVRFIFNFUT0ldSBGUENSPTB4JTA4bFggRlBTUj0weCUwOGxYXG4iLCBzZXEsCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KGNvbnRleHQuRnBjciksCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KGNvbnRleHQuRnBzcikpOwogICAgICAgIGZvciAoc3RkOjpzaXplX3QgaSA9IDA7IGkgPCAzMjsgKytpKSB7CiAgICAgICAgICAgIHN0ZDo6dWludDY0X3QgbGFuZXNbMl17fTsKICAgICAgICAgICAgc3RkOjptZW1jcHkobGFuZXMsICZjb250ZXh0LlZbaV0sIHNpemVvZihsYW5lcykpOwogICAgICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLAogICAgICAgICAgICAgICAgICAgICAgICAgIklNUDAwOEJfRTVfRlVMTENUWF9WUkVHIFNFUT0ldSBWJTAybGx1X0xPPTB4JTAxNmxsWCAiCiAgICAgICAgICAgICAgICAgICAgICAgICAiViUwMmxsdV9IST0weCUwMTZsbFhcbiIsCiAgICAgICAgICAgICAgICAgICAgICAgICBzZXEsIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oaSksCiAgICAgICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGxhbmVzWzBdKSwKICAgICAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oaSksCiAgICAgICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGxhbmVzWzFdKSk7CiAgICAgICAgfQogICAgICAgIGNvbnN0IGF1dG8qIGNvbnN0IHJhdyA9IHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3QgdW5zaWduZWQgY2hhcio+KCZjb250ZXh0KTsKICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiSU1QMDA4Ql9FNV9GVUxMQ1RYX1JBVyBTRVE9JXUgSEVYPSIsIHNlcSk7CiAgICAgICAgZm9yIChzdGQ6OnNpemVfdCBpID0gMDsgaSA8IHNpemVvZihjb250ZXh0KTsgKytpKSB7CiAgICAgICAgICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsICIlMDJYIiwgc3RhdGljX2Nhc3Q8dW5zaWduZWQgaW50PihyYXdbaV0pKTsKICAgICAgICB9CiAgICAgICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwgIlxuSU1QMDA4Ql9FNV9GVUxMQ1RYX0VORCBTRVE9JXVcbiIsIHNlcSk7CiAgICB9CiAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiSU1QMDA4Ql9FNV9GVUxMQ1RYX1NBRkVfRFVNUF9FTkRcbiIpOwogICAgc3RkOjpmZmx1c2goc3RkZXJyKTsKfQo='
+          [IO.File]::WriteAllBytes($incPath,[Convert]::FromBase64String($incB64))
+          $utf8=New-Object System.Text.UTF8Encoding($false)
+
+          $transition=[IO.File]::ReadAllText($transitionPath)
+          $transition=[regex]::Replace($transition,'(?m)^#include "windows_nce_fullctx_diag\.inc"\r?\n','')
+          $transition=[regex]::Replace($transition,'(?m)^\s*DumpImp008bE5FullArm64Context\(context\);\r?\n','')
+          Remove-Item 'eden/src/core/arm/nce/windows_nce_fullctx_diag.inc' -Force -ErrorAction SilentlyContinue
+          if (-not $transition.Contains('#include "windows_nce_fullctx_snapshot_v3.inc"')) {
+            $pattern='namespace Core::NCE \{\r?\n'
+            if ([regex]::Matches($transition,$pattern).Count -ne 1) { throw 'transition namespace anchor mismatch' }
+            $transition=[regex]::Replace($transition,$pattern,"namespace Core::NCE {`n#include `"windows_nce_fullctx_snapshot_v3.inc`"`n",1)
+          }
+          if (-not $transition.Contains('Imp008bE5CaptureFullContext(context);')) {
+            $statusPattern='(?m)^    const LONG nt_continue_status =\r?\n        direct_nt_continue\(reinterpret_cast<PCONTEXT>\(&context\), FALSE\);'
+            if ([regex]::Matches($transition,$statusPattern).Count -eq 1) {
+              $replacement="    Imp008bE5CaptureFullContext(context);`n    const LONG nt_continue_status =`n        direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);"
+              $transition=[regex]::Replace($transition,$statusPattern,$replacement,1)
+            } else {
+              $directPattern='(?m)^    direct_nt_continue\(reinterpret_cast<PCONTEXT>\(&context\), FALSE\);'
+              if ([regex]::Matches($transition,$directPattern).Count -ne 1) { throw 'direct NtContinue anchor mismatch' }
+              $replacement="    Imp008bE5CaptureFullContext(context);`n    direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);"
+              $transition=[regex]::Replace($transition,$directPattern,$replacement,1)
+            }
+          }
+          [IO.File]::WriteAllText($transitionPath,$transition,$utf8)
+
+          $safe=[IO.File]::ReadAllText($safePath)
+          if (-not $safe.Contains('IMP008B_E5_FULLCTX_V3_DECL')) {
+            $decl="// IMP008B_E5_FULLCTX_V3_DECL`nnamespace Core::NCE { void DumpImp008bE5FullContextSnapshots() noexcept; }`n`n"
+            $namespaceIndex=$safe.IndexOf('namespace ')
+            if ($namespaceIndex -lt 0) { $safe=$decl+$safe } else { $safe=$safe.Insert($namespaceIndex,$decl) }
+          }
+          if (-not $safe.Contains('IMP008B_E5_FULLCTX_SAFE_DUMP_CALL_V3')) {
+            $markerIndex=$safe.IndexOf('IMP008B_E5_EXCEPTION_CODE')
+            if ($markerIndex -lt 0) { throw 'exception marker vanished' }
+            $candidates=@($safe.LastIndexOf('std::fprintf',$markerIndex),$safe.LastIndexOf('fprintf',$markerIndex),$safe.LastIndexOf('std::printf',$markerIndex),$safe.LastIndexOf('std::fputs',$markerIndex))
+            $callIndex=($candidates | Measure-Object -Maximum).Maximum
+            if ($callIndex -lt 0) { throw 'safe log call anchor missing' }
+            $lineStart=$safe.LastIndexOf("`n",$callIndex)
+            if ($lineStart -lt 0) { $lineStart=0 } else { $lineStart++ }
+            $lineEnd=$safe.IndexOf("`n",$lineStart); if ($lineEnd -lt 0) { $lineEnd=$safe.Length }
+            $target=$safe.Substring($lineStart,$lineEnd-$lineStart)
+            $indent=([regex]::Match($target,'^\s*')).Value
+            $insert=$indent+'// IMP008B_E5_FULLCTX_SAFE_DUMP_CALL_V3'+"`n"+$indent+'Core::NCE::DumpImp008bE5FullContextSnapshots();'+"`n"
+            $safe=$safe.Insert($lineStart,$insert)
+          }
+          [IO.File]::WriteAllText($safePath,$safe,$utf8)
+
+          $check=[IO.File]::ReadAllText($transitionPath)
+          if ($check.Contains('DumpImp008bE5FullArm64Context(context);')) { throw 'unsafe V1 call remains' }
+          if (-not $check.Contains('Imp008bE5CaptureFullContext(context);')) { throw 'V3 capture missing' }
+          if (-not ([IO.File]::ReadAllText($safePath)).Contains('IMP008B_E5_FULLCTX_SAFE_DUMP_CALL_V3')) { throw 'V3 safe call missing' }
+          Write-Host ('IMP008B_E5_FULLCTX_V3_PATCH=PASS SAFE_SOURCE=' + $safeRel)
+
+      - name: Extract direct commands read-only
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference='Stop'
+          $commands=& 'C:\msys64\usr\bin\ninja.exe' -C build -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+          [IO.File]::WriteAllLines((Join-Path (Get-Location) 'imp008b-e5-fullctx-v3-commands.txt'),[string[]]$commands)
+          Write-Host 'IMP008B_E5_FULLCTX_V3_COMMANDS=PASS'
+
+      - name: Compile affected objects only
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference='Stop'
+          $lines=@(Get-Content '../imp008b-e5-fullctx-v3-commands.txt')
+          $safeRel=([IO.File]::ReadAllText((Resolve-Path '../imp008b-e5-fullctx-v3-safe-source.txt'))).Trim().Replace('\','/')
+          $sources=@('src/core/arm/nce/windows_nce_transition.cpp',$safeRel) | Select-Object -Unique
+          foreach ($source in $sources) {
+            $escaped=[regex]::Escape($source)
+            $hits=@($lines | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/$escaped'?$" })
+            if ($hits.Count -ne 1) { throw "$source command count=$($hits.Count)" }
+            $cmd=[string]$hits[0]
+            $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $cmd=$cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            $cmd=$cmd.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+            $cmd=$cmd.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $cmd=[regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $cmd
+            $rc=$LASTEXITCODE
+            Write-Host "IMP008B_E5_FULLCTX_V3_COMPILE $source RC=$rc"
+            if ($rc -ne 0) { throw "$source compile failed rc=$rc" }
+          }
+
+      - name: Link E5 runtime
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference='Stop'
+          $lines=@(Get-Content '../imp008b-e5-fullctx-v3-commands.txt')
+          $hits=@($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "link command count=$($hits.Count)" }
+          $cmd=[string]$hits[0]
+          $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd=$cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-fullctx-v3-link.log'
+          $rc=$LASTEXITCODE
+          Write-Host "IMP008B_E5_FULLCTX_V3_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "link failed rc=$rc" }
+
+      - name: Run corrected E5 diagnostic once
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference='Stop'
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'build/bin/imp008b_e5_x18_runtime.exe').Path
+          $psi.WorkingDirectory=(Get-Location).Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(30000); if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-fullctx-v3.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-fullctx-v3.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-fullctx-v3.log'),$out+$err)
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-fullctx-v3.rc'),[string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008B_E5_FULLCTX_V3_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Summarize full CONTEXT capture
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-fullctx-v3.log')) { Write-Host 'IMP008B_E5_FULLCTX_V3_RUNTIME=NOT_REACHED'; exit 0 }
+          $log=Get-Content 'imp008b-e5-fullctx-v3.log'
+          $begins=@($log | Where-Object { $_ -match '^IMP008B_E5_FULLCTX_BEGIN SEQ=' })
+          Write-Host ('IMP008B_E5_FULLCTX_V3_SNAPSHOT_COUNT=' + $begins.Count)
+          $log | Select-String -Pattern 'IMP008B_E5_FULLCTX_(SAFE_DUMP_BEGIN|BEGIN|REG|FP_LR|FPSTATE|VREG|RAW|END|SAFE_DUMP_END)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE|IMP008B_E5_EXCEPTION_|IMP008B_E5_RUNTHREAD_RETURNED|IMP008B_E5_SVC_NUMBER|IMP008B_E5_NT_CONTINUE_RETURN_STATUS'
+          if (Test-Path 'imp008b-e5-fullctx-v3.rc') { Write-Host ('IMP008B_E5_FULLCTX_V3_RAW_RC=' + (Get-Content 'imp008b-e5-fullctx-v3.rc' -Raw).Trim()) }
+
+      - name: Upload V3 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-full-context-snapshot-v3
+          path: |
+            eden/imp008b-e5-fullctx-v3-safe-source.txt
+            eden/imp008b-e5-fullctx-v3-commands.txt
+            eden/imp008b-e5-fullctx-v3-link.log
+            eden/imp008b-e5-fullctx-v3.log
+            eden/imp008b-e5-fullctx-v3.out.log
+            eden/imp008b-e5-fullctx-v3.err.log
+            eden/imp008b-e5-fullctx-v3.rc
+          if-no-files-found: warn
