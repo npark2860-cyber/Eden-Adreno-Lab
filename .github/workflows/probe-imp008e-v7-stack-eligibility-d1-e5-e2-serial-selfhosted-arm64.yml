@@ -27,7 +27,7 @@ jobs:
           $sym=(Resolve-Path 'eden/build/bin/imp008e_symmetric_stack_bridge_e2.exe').Path
           $llvm='C:\msys64\clangarm64\bin'
           foreach($exe in @($guest,$sym)){if(-not(Test-Path $exe)){throw "missing $exe"}}
-          foreach($tool in @('llvm-nm.exe','llvm-objdump.exe','llvm-readobj.exe')){if(-not(Test-Path (Join-Path $llvm $tool)){throw "missing $tool"}}
+          foreach($tool in @('llvm-nm.exe','llvm-objdump.exe','llvm-readobj.exe')){if(-not(Test-Path (Join-Path $llvm $tool))){throw "missing $tool"}}
 
           foreach($case in @(@('GUEST',$guest),@('SYMMETRIC',$sym))){
             $name=$case[0]; $exe=$case[1]
@@ -47,8 +47,12 @@ jobs:
           )
           $cdb=$candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if($null-eq $cdb){
-            $found=Get-ChildItem 'C:\Program Files*\Windows Kits\10\Debuggers' -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.FullName -match '\\arm64\\'} | Select-Object -First 1
-            if($null-ne $found){$cdb=$found.FullName}
+            foreach($root in @('C:\Program Files (x86)\Windows Kits\10\Debuggers','C:\Program Files\Windows Kits\10\Debuggers')){
+              if(Test-Path $root){
+                $found=Get-ChildItem $root -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.FullName -match '\\arm64\\'} | Select-Object -First 1
+                if($null-ne $found){$cdb=$found.FullName;break}
+              }
+            }
           }
           if($null-eq $cdb){
             Write-Host 'IMP008E_CDB_AVAILABLE=NO'
