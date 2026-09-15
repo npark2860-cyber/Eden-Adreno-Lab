@@ -1,0 +1,58 @@
+name: Inspect IMP-008D E2 Historical Wiring
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp008d-e2-historical-wiring-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inspect-imp008d-e2-historical-wiring
+  cancel-in-progress: false
+
+jobs:
+  inspect-historical-wiring:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 10
+    steps:
+      - name: Find historical workflow commits and contents
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          Write-Host ('IMP008_HIST_RETAINED_HEAD=' + (git -C eden rev-parse HEAD).Trim())
+
+          Write-Host 'IMP008_HIST_D1_LOG_BEGIN'
+          git -C eden log --all --oneline --decorate -S'data_fault_skip_runtime' -- .github workflows CMakeLists.txt probes 2>$null | Select-Object -First 80
+          Write-Host 'IMP008_HIST_D1_LOG_END'
+
+          Write-Host 'IMP008_HIST_E2_LOG_BEGIN'
+          git -C eden log --all --oneline --decorate -S'rasterizer_cached_retry' -- .github workflows CMakeLists.txt probes 2>$null | Select-Object -First 80
+          Write-Host 'IMP008_HIST_E2_LOG_END'
+
+          $commits=@()
+          $commits += @(git -C eden log --all --format='%H' -S'data_fault_skip_runtime' -- .github workflows CMakeLists.txt probes 2>$null | Select-Object -First 8)
+          $commits += @(git -C eden log --all --format='%H' -S'rasterizer_cached_retry' -- .github workflows CMakeLists.txt probes 2>$null | Select-Object -First 8)
+          $commits=@($commits | Where-Object { $_ } | Select-Object -Unique)
+          Write-Host ('IMP008_HIST_COMMIT_COUNT=' + $commits.Count)
+
+          foreach ($commit in $commits) {
+            Write-Host ('IMP008_HIST_COMMIT_BEGIN=' + $commit)
+            git -C eden show --stat --oneline $commit 2>$null | Select-Object -First 80
+            $paths=@(git -C eden diff-tree --no-commit-id --name-only -r $commit 2>$null |
+              Where-Object { $_ -match '(workflow|CMakeLists|probe|cmake)' })
+            foreach ($path in $paths) {
+              $blob=(git -C eden show "$commit`:$path" 2>$null | Out-String)
+              if ($blob -match 'data_fault_skip_runtime|rasterizer_cached_retry|windows-arm64-nce-fault-d1|windows-arm64-nce-rasterizer-e2') {
+                Write-Host ('IMP008_HIST_FILE_BEGIN=' + $commit + ':' + $path)
+                $blob -split "`r?`n" | Select-Object -First 500
+                Write-Host ('IMP008_HIST_FILE_END=' + $commit + ':' + $path)
+              }
+            }
+            Write-Host ('IMP008_HIST_COMMIT_END=' + $commit)
+          }
