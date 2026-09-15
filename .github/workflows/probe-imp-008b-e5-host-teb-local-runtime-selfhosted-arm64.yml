@@ -1,0 +1,177 @@
+name: Probe IMP-008B E5 Host TEB Local Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-host-teb-local-runtime-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-host-teb-local-runtime
+  cancel-in-progress: false
+
+jobs:
+  e5-host-teb-local-runtime:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify retained host TEB A-B and local dependency tree
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $arm = [IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/arm_nce_windows.cpp'))
+          $header = [IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/windows_cross_thread_break.h'))
+          if (-not $arm.Contains('IMP008B_E5_GENERIC_CRT_FREE_AB')) { throw 'generic CRT-free state missing' }
+          if (-not $arm.Contains('IMP008B_E5_X18_CRT_FREE_AB')) { throw 'x18 CRT-free state missing' }
+          if (-not $arm.Contains('IMP008B_E5_HOST_TEB_BOUNDS_AB')) { throw 'host TEB restore patch missing' }
+          if (-not $header.Contains('IMP008B_E5_HOST_STACK_ACCESSORS_AB')) { throw 'host stack accessors missing' }
+          $required = @(
+            'C:\msys64\clangarm64\bin\clang++.exe',
+            'C:\msys64\usr\bin\ninja.exe',
+            'C:\msys64\clangarm64\include\fmt\ranges.h',
+            'C:\msys64\clangarm64\lib\libfmt.a'
+          )
+          foreach ($p in $required) { if (-not (Test-Path $p)) { throw "local dependency missing: $p" } }
+          & 'C:\msys64\clangarm64\bin\clang++.exe' --version | Select-Object -First 1
+          & 'C:\msys64\usr\bin\ninja.exe' --version
+          Write-Host 'IMP008B_E5_HOST_TEB_LOCAL_PREFLIGHT=PASS'
+          Remove-Item 'eden/imp008b-e5-hostteb-local.log','eden/imp008b-e5-hostteb-local.out.log','eden/imp008b-e5-hostteb-local.err.log','eden/imp008b-e5-hostteb-local.rc' -Force -ErrorAction SilentlyContinue
+
+      - name: Extract commands read-only
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Hash([string]$path) {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes((Resolve-Path $path))))).Replace('-','') }
+            finally { $sha.Dispose() }
+          }
+          $b1 = Hash 'build/build.ninja'
+          $r1 = Hash 'build/CMakeFiles/rules.ninja'
+          $commands = & 'C:\msys64\usr\bin\ninja.exe' -C build -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode failed rc=$LASTEXITCODE" }
+          [IO.File]::WriteAllLines((Join-Path (Get-Location) 'imp008b-e5-hostteb-local-commands.txt'), [string[]]$commands)
+          if ($b1 -ne (Hash 'build/build.ninja') -or $r1 -ne (Hash 'build/CMakeFiles/rules.ninja')) { throw 'Ninja graph changed' }
+          Write-Host 'IMP008B_E5_HOST_TEB_LOCAL_GRAPH_UNCHANGED=PASS'
+
+      - name: Compile host TEB A-B with local headers
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-hostteb-local-commands.txt')
+          function One([string]$pattern,[string]$label) {
+            $hits = @($lines | Where-Object { $_ -match $pattern })
+            if ($hits.Count -ne 1) { throw "$label command count=$($hits.Count)" }
+            return [string]$hits[0]
+          }
+          function Localize([string]$line) {
+            $cmd = $line.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+            $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            $cmd = [regex]::Replace($cmd,'^C:\\msys64\\clangarm64\\bin\\sccache\.exe\s+','')
+            $cmd = [regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+            $cmd = $cmd.Replace('C:\msys64\clangarm64\bin\clang++.exe ','C:\msys64\clangarm64\bin\clang++.exe -isystem C:/msys64/clangarm64/include ')
+            return $cmd
+          }
+          function Run([string]$label,[string]$line) {
+            $cmd = Localize $line
+            & $env:ComSpec /D /S /C $cmd
+            $rc = $LASTEXITCODE
+            Write-Host "IMP008B_E5_HOST_TEB_LOCAL_${label}_RC=$rc"
+            if ($rc -ne 0) { throw "$label compile failed rc=$rc" }
+          }
+          Run 'ARMNCE' (One " -c '?C:/[^']*/src/core/arm/nce/arm_nce_windows\.cpp'?$" 'ARMNCE')
+          Run 'TRANSITION' (One " -c '?C:/[^']*windows_nce_transition\.cpp'?$" 'TRANSITION')
+          Run 'SERVICE' (One " -c '?C:/[^']*/src/core/hle/service/service\.cpp'?$" 'SERVICE')
+          Run 'NIFM' (One " -c '?C:/[^']*/src/core/hle/service/nifm/nifm\.cpp'?$" 'NIFM')
+          Run 'CONDITION' (One " -c '?C:/[^']*/src/shader_recompiler/frontend/ir/condition\.cpp'?$" 'CONDITION')
+          Write-Host 'IMP008B_E5_HOST_TEB_LOCAL_COMPILE=PASS'
+
+      - name: Link host TEB A-B with local libraries
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-hostteb-local-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "link command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          $cmd = $cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-hostteb-local-link.log'
+          $rc = $LASTEXITCODE
+          Write-Host "IMP008B_E5_HOST_TEB_LOCAL_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "link failed rc=$rc" }
+          Write-Host 'IMP008B_E5_HOST_TEB_LOCAL_LINK=PASS'
+
+      - name: Run host TEB A-B
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'build/bin/imp008b_e5_x18_runtime.exe').Path
+          $psi.WorkingDirectory = (Get-Location).Path
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $outTask = $p.StandardOutput.ReadToEndAsync()
+          $errTask = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $outTask.Result
+          $err = $errTask.Result
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-hostteb-local.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-hostteb-local.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-hostteb-local.log'),$out + $err)
+          if ($timeout) { $rc = 124 } else { $rc = $p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-hostteb-local.rc'),[string]$rc)
+          Write-Host $out
+          Write-Host $err
+          Write-Host ('IMP008B_E5_HOST_TEB_LOCAL_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify host TEB A-B
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-hostteb-local.log')) { Write-Host 'IMP008B_E5_HOST_TEB_LOCAL_RUNTIME=NOT_REACHED'; exit 0 }
+          $log = 'imp008b-e5-hostteb-local.log'
+          Get-Content $log | Select-String -Pattern 'IMP008B_E5_(8K_|NT_RESOLVED|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
+          $second = Select-String -Path $log -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
+          $returned = Select-String -Path $log -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          $svc = Select-String -Path $log -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
+          $x18 = Select-String -Path $log -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
+          $gate = Select-String -Path $log -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
+          Write-Host ('IMP008B_E5_HOST_TEB_LOCAL_SECOND_RESTORE=' + $(if ($second) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_HOST_TEB_LOCAL_RUNTHREAD_RETURNED=' + $(if ($returned) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_HOST_TEB_LOCAL_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_HOST_TEB_LOCAL_X18_RESULT=' + $(if ($x18) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_HOST_TEB_LOCAL_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
+          if (Test-Path 'imp008b-e5-hostteb-local.rc') { Write-Host ('IMP008B_E5_HOST_TEB_LOCAL_RAW_RC=' + (Get-Content 'imp008b-e5-hostteb-local.rc' -Raw).Trim()) }
+
+      - name: Upload host TEB local diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-host-teb-local-runtime
+          path: |
+            eden/imp008b-e5-hostteb-local-commands.txt
+            eden/imp008b-e5-hostteb-local-link.log
+            eden/imp008b-e5-hostteb-local.log
+            eden/imp008b-e5-hostteb-local.out.log
+            eden/imp008b-e5-hostteb-local.err.log
+            eden/imp008b-e5-hostteb-local.rc
+          if-no-files-found: warn
