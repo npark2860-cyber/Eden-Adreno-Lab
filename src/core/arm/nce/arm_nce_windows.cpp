@@ -291,9 +291,10 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         NCE::WindowsX18FallbackTrap::FindOriginalInstruction(
             context.Pc, process->GetPostHandlers()).has_value()) {
         params->lock.store(SpinLockLocked, std::memory_order_release);
-        if (NCE::WindowsX18FallbackTrap::TryRedirect(exception, *guest,
-                                                     process->GetPostHandlers())) {
-            NCE::WindowsNceTransition::ContinueContext(context);
+        const bool redirected = NCE::WindowsX18FallbackTrap::TryRedirect(
+            exception, *guest, process->GetPostHandlers());
+        if (redirected) {
+            return EXCEPTION_CONTINUE_EXECUTION;
         }
         params->lock.store(SpinLockUnlocked, std::memory_order_release);
         return EXCEPTION_CONTINUE_SEARCH;
@@ -308,9 +309,6 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         params->lock.store(SpinLockLocked, std::memory_order_release);
         NCE::WindowsNceTransition::RedirectToHost(
             context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
-        auto* const teb = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-        teb->StackLimit = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackLow());
-        teb->StackBase = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackHigh());
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
