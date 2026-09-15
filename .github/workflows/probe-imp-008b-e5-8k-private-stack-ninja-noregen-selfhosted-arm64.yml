@@ -41,34 +41,23 @@ jobs:
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) { throw 'x18 VEH observer missing' }
           Write-Host 'IMP008B_E5_DIRECT_EXTRACT_WORKSPACE=PASS'
 
-      - name: Set up CLANGARM64 toolchain
+      - name: Set up minimal MSYS2 Ninja tooling
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANGARM64
           update: false
           cache: false
           install: >-
-            git make autoconf libtool automake-wrapper patch jq pactoys ninja
-          pacboy: >-
-            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p
-            toolchain:p clang:p python-pip:p lld:p openssl:p boost:p fmt:p lz4:p
-            nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p
-            glslang:p enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p
-            xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p libwebp:p
-            libtiff:p brotli:p
+            ninja
 
       - name: Snapshot retained Ninja graph hashes
-        shell: powershell
+        shell: msys2 {0}
+        working-directory: eden
         run: |
-          $ErrorActionPreference = 'Stop'
-          $build = (Get-FileHash 'eden/build/build.ninja' -Algorithm SHA256).Hash
-          $rules = (Get-FileHash 'eden/build/CMakeFiles/rules.ninja' -Algorithm SHA256).Hash
-          @(
-            "BUILD_NINJA=$build"
-            "RULES_NINJA=$rules"
-          ) | Set-Content -Encoding ASCII 'eden/imp008b-e5-direct-before.sha256'
-          Get-Content 'eden/imp008b-e5-direct-before.sha256'
-          Write-Host 'IMP008B_E5_DIRECT_HASH_BEFORE=PASS'
+          set -euo pipefail
+          sha256sum build/build.ninja build/CMakeFiles/rules.ninja > imp008b-e5-direct-before.sha256
+          cat imp008b-e5-direct-before.sha256
+          echo 'IMP008B_E5_DIRECT_HASH_BEFORE=PASS'
 
       - name: Extract target commands with Ninja tool mode only
         shell: msys2 {0}
@@ -90,36 +79,28 @@ jobs:
           echo 'IMP008B_E5_DIRECT_TOOL_EXTRACT=PASS'
 
       - name: Prove Ninja tool mode did not mutate graph
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $before = @{}
-          Get-Content 'eden/imp008b-e5-direct-before.sha256' | ForEach-Object {
-            $k,$v = $_ -split '=',2
-            $before[$k] = $v
-          }
-          $build = (Get-FileHash 'eden/build/build.ninja' -Algorithm SHA256).Hash
-          $rules = (Get-FileHash 'eden/build/CMakeFiles/rules.ninja' -Algorithm SHA256).Hash
-          Write-Host "BUILD_NINJA_AFTER=$build"
-          Write-Host "RULES_NINJA_AFTER=$rules"
-          if ($build -ne $before['BUILD_NINJA']) { throw 'build.ninja changed during Ninja tool mode' }
-          if ($rules -ne $before['RULES_NINJA']) { throw 'rules.ninja changed during Ninja tool mode' }
-          Write-Host 'IMP008B_E5_DIRECT_GRAPH_UNCHANGED=PASS'
-
-      - name: Summarize direct command candidates
-        shell: powershell
+        shell: msys2 {0}
         working-directory: eden
         run: |
-          $ErrorActionPreference = 'Stop'
-          $lines = Get-Content 'imp008b-e5-direct-commands.txt'
-          $dirty = $lines | Where-Object { $_ -match 'x18_runtime_invariant\.cpp|windows_nce_transition\.cpp|arm_nce_windows\.cpp' }
-          $target = $lines | Where-Object { $_ -match 'imp008b_e5_x18_runtime(\.exe)?' }
-          Write-Host ('IMP008B_E5_DIRECT_COMMAND_COUNT=' + $lines.Count)
-          Write-Host ('IMP008B_E5_DIRECT_DIRTY_COMPILE_HITS=' + $dirty.Count)
-          Write-Host ('IMP008B_E5_DIRECT_TARGET_HITS=' + $target.Count)
-          if ($dirty.Count -lt 3) { throw 'did not recover all three dirty-source command lines' }
-          if ($target.Count -lt 1) { throw 'final target command not found' }
-          Write-Host 'IMP008B_E5_DIRECT_COMMAND_CANDIDATES=PASS'
+          set -euo pipefail
+          sha256sum build/build.ninja build/CMakeFiles/rules.ninja > imp008b-e5-direct-after.sha256
+          diff -u imp008b-e5-direct-before.sha256 imp008b-e5-direct-after.sha256
+          echo 'IMP008B_E5_DIRECT_GRAPH_UNCHANGED=PASS'
+
+      - name: Summarize direct command candidates
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          total=$(wc -l < imp008b-e5-direct-commands.txt)
+          dirty=$(grep -Ec 'x18_runtime_invariant\.cpp|windows_nce_transition\.cpp|arm_nce_windows\.cpp' imp008b-e5-direct-commands.txt || true)
+          target=$(grep -Ec 'imp008b_e5_x18_runtime(\.exe)?' imp008b-e5-direct-commands.txt || true)
+          echo "IMP008B_E5_DIRECT_COMMAND_COUNT=$total"
+          echo "IMP008B_E5_DIRECT_DIRTY_COMPILE_HITS=$dirty"
+          echo "IMP008B_E5_DIRECT_TARGET_HITS=$target"
+          test "$dirty" -ge 3
+          test "$target" -ge 1
+          echo 'IMP008B_E5_DIRECT_COMMAND_CANDIDATES=PASS'
 
       - name: Upload extraction logs
         if: always()
@@ -128,6 +109,7 @@ jobs:
           name: e5-direct-command-extraction
           path: |
             eden/imp008b-e5-direct-before.sha256
+            eden/imp008b-e5-direct-after.sha256
             eden/imp008b-e5-direct-commands.txt
             eden/imp008b-e5-direct-compdb.json
             eden/imp008b-e5-direct-query.txt
