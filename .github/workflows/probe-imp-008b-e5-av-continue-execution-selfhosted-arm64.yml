@@ -1,0 +1,187 @@
+name: Probe IMP-008B E5 AV Continue Execution A-B
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-av-continue-execution-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-av-continue-execution
+  cancel-in-progress: false
+
+jobs:
+  e5-av-continue-execution:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify retained E5 state
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $path = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          foreach ($marker in @('IMP008B_E5_GENERIC_CRT_FREE_AB','IMP008B_E5_X18_CRT_FREE_AB','IMP008B_E5_HOST_TEB_BOUNDS_AB')) {
+            if (-not $text.Contains($marker)) { throw "missing retained marker $marker" }
+          }
+          if (-not $text.Contains('NCE::WindowsNceTransition::ContinueContext(context);')) { throw 'expected AV ContinueContext path missing' }
+          if (-not (Test-Path 'C:\msys64\clangarm64\include\boost\intrusive\rbtree.hpp')) { throw 'local boost dependency missing' }
+          Write-Host 'IMP008B_E5_AV_CE_RETAINED_STATE=PASS'
+          Remove-Item 'eden/imp008b-e5-avce.log','eden/imp008b-e5-avce.out.log','eden/imp008b-e5-avce.err.log','eden/imp008b-e5-avce.rc' -Force -ErrorAction SilentlyContinue
+
+      - name: Replace AV VEH NtContinue with dispatcher continuation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
+          $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          if ($text.Contains('IMP008B_E5_AV_CONTINUE_EXECUTION_AB')) {
+            Write-Host 'IMP008B_E5_AV_CE_PATCH_ALREADY=PASS'
+            exit 0
+          }
+          $pattern = '(?s)(        NCE::WindowsNceTransition::RedirectToHost\(\r?\n            context, \*guest, true, static_cast<u64>\(HaltReason::PrefetchAbort\)\);\r?\n)        NCE::WindowsNceTransition::ContinueContext\(context\);'
+          $matches = [regex]::Matches($text, $pattern)
+          if ($matches.Count -ne 1) { throw "AV continuation anchor count=$($matches.Count)" }
+          $replacement = @(
+            '$1',
+            '        // IMP008B_E5_AV_CONTINUE_EXECUTION_AB: RedirectToHost already rewrote the',
+            '        // interrupted ContextRecord to host PC/SP. Match the TEB to that host stack and',
+            '        // let the Windows exception dispatcher perform the continuation.',
+            '        auto* const teb = reinterpret_cast<NT_TIB*>(NtCurrentTeb());',
+            '        teb->StackLimit = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackLow());',
+            '        teb->StackBase = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackHigh());',
+            '        return EXCEPTION_CONTINUE_EXECUTION;'
+          ) -join "`n"
+          $text = [regex]::Replace($text, $pattern, $replacement, 1)
+          if (-not $text.Contains('IMP008B_E5_AV_CONTINUE_EXECUTION_AB')) { throw 'AV CE marker missing' }
+          if ($text.Contains('NCE::WindowsNceTransition::ContinueContext(context);')) { throw 'VEH ContinueContext call still present' }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText((Resolve-Path $path), $text, $utf8)
+          Write-Host 'IMP008B_E5_AV_CE_PATCH=PASS'
+
+      - name: Extract direct commands read-only
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Hash([string]$p) {
+            $s = [Security.Cryptography.SHA256]::Create()
+            try { return ([BitConverter]::ToString($s.ComputeHash([IO.File]::ReadAllBytes((Resolve-Path $p))))).Replace('-','') }
+            finally { $s.Dispose() }
+          }
+          $b = Hash 'build/build.ninja'
+          $r = Hash 'build/CMakeFiles/rules.ninja'
+          $commands = & 'C:\msys64\usr\bin\ninja.exe' -C build -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+          [IO.File]::WriteAllLines((Join-Path (Get-Location) 'imp008b-e5-avce-commands.txt'), [string[]]$commands)
+          if ($b -ne (Hash 'build/build.ninja') -or $r -ne (Hash 'build/CMakeFiles/rules.ninja')) { throw 'Ninja graph changed' }
+          Write-Host 'IMP008B_E5_AV_CE_GRAPH_UNCHANGED=PASS'
+
+      - name: Compile changed ARM NCE object
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-avce-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match " -c '?C:/[^']*/src/core/arm/nce/arm_nce_windows\.cpp'?$" })
+          if ($hits.Count -ne 1) { throw "ARMNCE command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          $cmd = $cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          $cmd = $cmd.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+          $cmd = $cmd.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+          $cmd = [regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+          & $env:ComSpec /D /S /C $cmd
+          $rc = $LASTEXITCODE
+          Write-Host "IMP008B_E5_AV_CE_ARMNCE_RC=$rc"
+          if ($rc -ne 0) { throw "ARMNCE compile failed rc=$rc" }
+
+      - name: Link E5 runtime
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-avce-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "link command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          $cmd = $cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-avce-link.log'
+          $rc = $LASTEXITCODE
+          Write-Host "IMP008B_E5_AV_CE_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "link failed rc=$rc" }
+          Write-Host 'IMP008B_E5_AV_CE_LINK=PASS'
+
+      - name: Run AV dispatcher continuation A-B
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'build/bin/imp008b_e5_x18_runtime.exe').Path
+          $psi.WorkingDirectory = (Get-Location).Path
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $outTask = $p.StandardOutput.ReadToEndAsync()
+          $errTask = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $outTask.Result
+          $err = $errTask.Result
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-avce.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-avce.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-avce.log'),$out + $err)
+          if ($timeout) { $rc = 124 } else { $rc = $p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-avce.rc'),[string]$rc)
+          Write-Host $out
+          Write-Host $err
+          Write-Host ('IMP008B_E5_AV_CE_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify AV continuation result
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-avce.log')) { Write-Host 'IMP008B_E5_AV_CE_RUNTIME=NOT_REACHED'; exit 0 }
+          $log = 'imp008b-e5-avce.log'
+          Get-Content $log | Select-String -Pattern 'IMP008B_E5_(8K_|NT_RESOLVED|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|PHYSICAL_X18|GATE|EXCEPTION_)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
+          $second = Select-String -Path $log -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
+          $returned = Select-String -Path $log -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          $svc = Select-String -Path $log -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
+          $x18 = Select-String -Path $log -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
+          $svcReturn = Select-String -Path $log -SimpleMatch 'IMP008B_E5_SVC_RETURN=PASS' -Quiet
+          $gate = Select-String -Path $log -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
+          Write-Host ('IMP008B_E5_AV_CE_SECOND_RESTORE=' + $(if ($second) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_AV_CE_RUNTHREAD_RETURNED=' + $(if ($returned) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_AV_CE_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_AV_CE_X18_RESULT=' + $(if ($x18) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_AV_CE_SVC_RETURN=' + $(if ($svcReturn) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_AV_CE_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
+          if (Test-Path 'imp008b-e5-avce.rc') { Write-Host ('IMP008B_E5_AV_CE_RAW_RC=' + (Get-Content 'imp008b-e5-avce.rc' -Raw).Trim()) }
+
+      - name: Upload AV continuation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-av-continue-execution
+          path: |
+            eden/imp008b-e5-avce-commands.txt
+            eden/imp008b-e5-avce-link.log
+            eden/imp008b-e5-avce.log
+            eden/imp008b-e5-avce.out.log
+            eden/imp008b-e5-avce.err.log
+            eden/imp008b-e5-avce.rc
+          if-no-files-found: warn
