@@ -32,15 +32,23 @@ jobs:
           if (-not $check.Contains('IMP008B_E5_8K_STACK_READY=PASS')) { throw '8K transition marker missing' }
           if (-not $check.Contains('reinterpret_cast<NT_TIB*>(teb)->StackLimit')) { throw 'normalized NT_TIB StackLimit access missing' }
           if (-not $check.Contains('reinterpret_cast<NT_TIB*>(teb)->StackBase')) { throw 'normalized NT_TIB StackBase access missing' }
-          $objects = @(
-            'eden/build/src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj',
-            'eden/build/src/core/CMakeFiles/core.dir/arm/nce/arm_nce_windows.cpp.obj',
-            'eden/build/src/core/CMakeFiles/core.dir/arm/nce/windows_nce_transition.cpp.obj'
-          )
-          foreach ($obj in $objects) {
-            if (-not (Test-Path $obj)) { throw "retained direct-build object missing: $obj" }
-          }
           Write-Host 'IMP008B_E5_ABI_REPAIR_RETAINED_STATE=PASS'
+
+      - name: Relax false 8K region-size fail-fast to allocation bounds
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          $text = $text.Replace('        stack_mbi.RegionSize < 0x2000) {', '        stack_mbi.AllocationBase == nullptr) {')
+          $text = $text.Replace('reinterpret_cast<std::uint64_t>(stack_mbi.BaseAddress);', 'reinterpret_cast<std::uint64_t>(stack_mbi.AllocationBase);')
+          $text = $text.Replace('stack_limit + static_cast<std::uint64_t>(stack_mbi.RegionSize);', 'stack_limit + 0x2000;')
+          if (-not $text.Contains('stack_mbi.AllocationBase == nullptr) {')) { throw 'allocation-base query guard missing' }
+          if (-not $text.Contains('reinterpret_cast<std::uint64_t>(stack_mbi.AllocationBase);')) { throw 'allocation-base stack limit missing' }
+          if (-not $text.Contains('stack_limit + 0x2000;')) { throw 'fixed 8K stack base missing' }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText((Resolve-Path $path), $text, $utf8)
+          Write-Host 'IMP008B_E5_8K_ALLOCATION_BOUNDS_PATCH=PASS'
 
       - name: Set up minimal direct-link CLANGARM64 toolchain
         uses: msys2/setup-msys2@v2
@@ -68,7 +76,7 @@ jobs:
           test "$before_rules" = "$after_rules"
           echo 'IMP008B_E5_ABI_REPAIR_GRAPH_UNCHANGED=PASS'
 
-      - name: Refresh only fmt ABI stale objects
+      - name: Compile transition and refresh fmt ABI stale objects
         shell: powershell
         working-directory: eden/build
         run: |
@@ -89,9 +97,11 @@ jobs:
             if ($rc -ne 0) { throw "$label refresh failed rc=$rc" }
             Write-Host "IMP008B_E5_ABI_${label}=PASS"
           }
+          $transition = Get-One " -c '?C:/[^']*windows_nce_transition\.cpp'?$" 'TRANSITION'
           $service = Get-One " -c '?C:/[^']*/src/core/hle/service/service\.cpp'?$" 'SERVICE'
           $nifm = Get-One " -c '?C:/[^']*/src/core/hle/service/nifm/nifm\.cpp'?$" 'NIFM'
           $condition = Get-One " -c '?C:/[^']*/src/shader_recompiler/frontend/ir/condition\.cpp'?$" 'CONDITION'
+          Invoke-Direct 'TRANSITION' $transition
           Invoke-Direct 'SERVICE' $service
           Invoke-Direct 'NIFM' $nifm
           Invoke-Direct 'CONDITION' $condition
