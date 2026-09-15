@@ -1,4 +1,4 @@
-name: Inspect IMP-008E V6 Production Source
+name: Inspect IMP-008E Generic Transition Source
 
 on:
   push:
@@ -11,20 +11,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: inspect-imp008e-v6-production-source
+  group: inspect-imp008e-generic-transition-source
   cancel-in-progress: false
 
 jobs:
-  inspect-v6-source:
+  inspect-generic-transition-source:
     runs-on: [self-hosted, Windows, ARM64]
     timeout-minutes: 5
     steps:
-      - name: Print retained V6 PASS source
+      - name: Print retained generic transition PASS source
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $src='eden/build/e2_runthread_private_stack_lease_scope_v6/arm_nce_windows.cpp'
-          if(-not(Test-Path $src)){throw 'retained V6 PASS source missing'}
-          Write-Host 'IMP008E_V6_SOURCE_BEGIN'
+          $src='eden/build/generic_stacktop_ab/windows_nce_transition.cpp'
+          if(-not(Test-Path $src)){throw 'retained generic transition PASS source missing'}
+          Write-Host 'IMP008E_GENERIC_TRANSITION_SOURCE_BEGIN'
+          Get-FileHash $src -Algorithm SHA256 | Format-List
           Get-Content $src
-          Write-Host 'IMP008E_V6_SOURCE_END'
+          Write-Host 'IMP008E_GENERIC_TRANSITION_SOURCE_END'
