@@ -1,0 +1,45 @@
+name: Inspect IMP-008B ucrtbase C460
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/inspect-imp-008b-ucrtbase-c460-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-ucrtbase-c460:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Disassemble local ucrtbase RVA C460
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dll = "$env:WINDIR\System32\ucrtbase.dll"
+          $readobj = 'C:\msys64\clangarm64\bin\llvm-readobj.exe'
+          $objdump = 'C:\msys64\clangarm64\bin\llvm-objdump.exe'
+          foreach ($path in @($dll,$readobj,$objdump)) {
+            if (-not (Test-Path $path)) { throw "missing $path" }
+          }
+          $headers = @(& $readobj --file-headers $dll)
+          $imageLine = $headers | Where-Object { $_ -match 'ImageBase:' } | Select-Object -First 1
+          if (-not $imageLine) { throw 'PE ImageBase not found' }
+          $m = [regex]::Match($imageLine,'ImageBase:\s*0x([0-9A-Fa-f]+)')
+          if (-not $m.Success) { throw "cannot parse ImageBase: $imageLine" }
+          $imageBase = [Convert]::ToUInt64($m.Groups[1].Value,16)
+          $rva = [UInt64]0xC460
+          $target = $imageBase + $rva
+          $start = $target - 0x60
+          $stop = $target + 0x64
+          Write-Host ('IMP008B_UCRT_IMAGEBASE=0x{0:X}' -f $imageBase)
+          Write-Host ('IMP008B_UCRT_RVA=0x{0:X}' -f $rva)
+          Write-Host ('IMP008B_UCRT_TARGET_VMA=0x{0:X}' -f $target)
+          Write-Host 'IMP008B_UCRT_DISASM_BEGIN'
+          & $objdump -d ("--start-address=0x{0:X}" -f $start) ("--stop-address=0x{0:X}" -f $stop) $dll
+          if ($LASTEXITCODE -ne 0) { throw "llvm-objdump rc=$LASTEXITCODE" }
+          Write-Host 'IMP008B_UCRT_DISASM_END'
