@@ -93,7 +93,9 @@ struct WindowsTebStackBounds {
     bounds.tib = tib;
     bounds.host_stack_base = tib->StackBase;
     bounds.host_stack_limit = tib->StackLimit;
-    tib->StackLimit = reinterpret_cast<void*>(allocation_base);
+    // Keep the host StackLimit through the host-side NtContinue transition. Publishing the guest
+    // allocation limit here makes the Windows ARM64 stack probe in ucrtbase run against guest
+    // bounds while it still owns the host stack. Only publish the guest StackBase/top at this seam.
     tib->StackBase = reinterpret_cast<void*>(allocation_end);
     return true;
 }
