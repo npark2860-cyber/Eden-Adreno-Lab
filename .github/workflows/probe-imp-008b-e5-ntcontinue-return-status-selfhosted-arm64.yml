@@ -1,0 +1,175 @@
+name: Probe IMP-008B E5 NtContinue Return Status
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-ntcontinue-return-status-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-ntcontinue-return-status
+  cancel-in-progress: false
+
+jobs:
+  e5-ntcontinue-return-status:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify retained E5 state
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $transition = [IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/windows_nce_transition.cpp'))
+          $arm = [IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/arm_nce_windows.cpp'))
+          if (-not $transition.Contains('IMP008B_E5_NT_RESOLVED_BEFORE_TEB=PASS')) { throw 'E5 transition state missing' }
+          foreach ($marker in @('IMP008B_E5_HOST_TEB_BOUNDS_AB','IMP008B_E5_AV_CONTINUE_EXECUTION_AB')) {
+            if (-not $arm.Contains($marker)) { throw "missing retained marker $marker" }
+          }
+          Remove-Item 'eden/imp008b-e5-ntret.log','eden/imp008b-e5-ntret.out.log','eden/imp008b-e5-ntret.err.log','eden/imp008b-e5-ntret.rc' -Force -ErrorAction SilentlyContinue
+          Write-Host 'IMP008B_E5_NTRET_RETAINED_STATE=PASS'
+
+      - name: Capture NtContinue failure status after restoring host TEB bounds
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
+          $text = [IO.File]::ReadAllText((Resolve-Path $path))
+          if (-not $text.Contains('IMP008B_E5_NT_CONTINUE_RETURN_STATUS')) {
+            $tebNeedle = '    auto* const teb = NtCurrentTeb();'
+            if (-not $text.Contains($tebNeedle)) { throw 'TEB anchor missing' }
+            $tebReplacement = @(
+              '    auto* const teb = NtCurrentTeb();',
+              '    const auto host_stack_limit_before_guest = reinterpret_cast<NT_TIB*>(teb)->StackLimit;',
+              '    const auto host_stack_base_before_guest = reinterpret_cast<NT_TIB*>(teb)->StackBase;'
+            ) -join "`n"
+            $text = $text.Replace($tebNeedle,$tebReplacement)
+
+            $callPattern = '(?s)    direct_nt_continue\(reinterpret_cast<PCONTEXT>\(&context\), FALSE\);\r?\n    std::abort\(\);'
+            $matches = [regex]::Matches($text,$callPattern)
+            if ($matches.Count -ne 1) { throw "direct NtContinue terminal block count=$($matches.Count)" }
+            $replacement = @(
+              '    const LONG nt_continue_status =',
+              '        direct_nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);',
+              '    // NtContinue must not return on a successful restore. If Windows rejects this',
+              '    // second restore, put TEB bounds back on the live host stack before any CRT call.',
+              '    reinterpret_cast<NT_TIB*>(teb)->StackLimit = host_stack_limit_before_guest;',
+              '    reinterpret_cast<NT_TIB*>(teb)->StackBase = host_stack_base_before_guest;',
+              '    std::fprintf(stderr, "IMP008B_E5_NT_CONTINUE_RETURN_STATUS=0x%08lX PC=0x%llX SP=0x%llX\\n",',
+              '                 static_cast<unsigned long>(nt_continue_status),',
+              '                 static_cast<unsigned long long>(context.Pc),',
+              '                 static_cast<unsigned long long>(context.Sp));',
+              '    std::fflush(stderr);',
+              '    ExitProcess(static_cast<UINT>(nt_continue_status));'
+            ) -join "`n"
+            $text = [regex]::Replace($text,$callPattern,$replacement,1)
+            $utf8 = New-Object System.Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText((Resolve-Path $path),$text,$utf8)
+          }
+          $check = [IO.File]::ReadAllText((Resolve-Path $path))
+          if (-not $check.Contains('IMP008B_E5_NT_CONTINUE_RETURN_STATUS')) { throw 'return status marker missing' }
+          if (-not $check.Contains('host_stack_limit_before_guest')) { throw 'host TEB capture missing' }
+          Write-Host 'IMP008B_E5_NTRET_PATCH=PASS'
+
+      - name: Extract direct commands read-only
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $commands = & 'C:\msys64\usr\bin\ninja.exe' -C build -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+          [IO.File]::WriteAllLines((Join-Path (Get-Location) 'imp008b-e5-ntret-commands.txt'),[string[]]$commands)
+          Write-Host 'IMP008B_E5_NTRET_COMMANDS=PASS'
+
+      - name: Compile transition object
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-ntret-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match " -c '?C:/[^']*windows_nce_transition\.cpp'?$" })
+          if ($hits.Count -ne 1) { throw "transition command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          $cmd = $cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          $cmd = $cmd.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+          $cmd = $cmd.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+          $cmd = [regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+          & $env:ComSpec /D /S /C $cmd
+          $rc=$LASTEXITCODE
+          Write-Host "IMP008B_E5_NTRET_TRANSITION_RC=$rc"
+          if ($rc -ne 0) { throw "transition compile failed rc=$rc" }
+
+      - name: Link E5 runtime
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-ntret-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "link command count=$($hits.Count)" }
+          $cmd=[string]$hits[0]
+          $cmd=$cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd=$cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-ntret-link.log'
+          $rc=$LASTEXITCODE
+          Write-Host "IMP008B_E5_NTRET_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "link failed rc=$rc" }
+
+      - name: Run NtContinue return-status probe
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference='Stop'
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'build/bin/imp008b_e5_x18_runtime.exe').Path
+          $psi.WorkingDirectory=(Get-Location).Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process
+          $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-ntret.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-ntret.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-ntret.log'),$out+$err)
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-ntret.rc'),[string]$rc)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008B_E5_NTRET_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify NtContinue return
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-ntret.log')) { Write-Host 'IMP008B_E5_NTRET_RUNTIME=NOT_REACHED'; exit 0 }
+          Get-Content 'imp008b-e5-ntret.log' | Select-String -Pattern 'IMP008B_E5_NT_CONTINUE_RETURN_STATUS|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE|IMP008B_E5_EXCEPTION_|IMP008B_E5_RUNTHREAD_RETURNED|IMP008B_E5_SVC_NUMBER'
+          $returned=Select-String -Path 'imp008b-e5-ntret.log' -SimpleMatch 'IMP008B_E5_NT_CONTINUE_RETURN_STATUS=' -Quiet
+          Write-Host ('IMP008B_E5_NTRET_STATUS_CAPTURED=' + $(if ($returned) {'PASS'} else {'NO'}))
+          if (Test-Path 'imp008b-e5-ntret.rc') { Write-Host ('IMP008B_E5_NTRET_RAW_RC=' + (Get-Content 'imp008b-e5-ntret.rc' -Raw).Trim()) }
+
+      - name: Upload NtContinue return diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-ntcontinue-return-status
+          path: |
+            eden/imp008b-e5-ntret-commands.txt
+            eden/imp008b-e5-ntret-link.log
+            eden/imp008b-e5-ntret.log
+            eden/imp008b-e5-ntret.out.log
+            eden/imp008b-e5-ntret.err.log
+            eden/imp008b-e5-ntret.rc
+          if-no-files-found: warn
