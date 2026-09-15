@@ -1,0 +1,118 @@
+name: Probe IMP-008E E2 Private Stack Cleanup Localize V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-private-stack-cleanup-localize-v1-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-private-stack-cleanup-localize-v1
+  cancel-in-progress: false
+
+jobs:
+  e2-private-stack-cleanup-localize-v1:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Build cleanup-localized E2 probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $src='eden/build/e2_two_phase_private_stack_v1/rasterizer_cached_retry_private_stack.cpp'
+          if (-not (Test-Path $src)) { throw 'private-stack V1 generated source missing' }
+          if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'generic transition object missing' }
+
+          $dir='eden/build/e2_private_stack_cleanup_localize_v1'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dst=Join-Path (Resolve-Path $dir).Path 'rasterizer_cached_retry_cleanup_localize.cpp'
+          $text=[IO.File]::ReadAllText((Resolve-Path $src).Path)
+
+          $markers=@(
+            @('    rasterizer->OnCacheInvalidation(TargetDeviceAddress, PageSize);','IMP008E_E2_CLEANUP_01_BEFORE_RASTER_TARGET'),
+            @('    rasterizer->OnCacheInvalidation(DestinationDeviceAddress, PageSize);','IMP008E_E2_CLEANUP_02_BEFORE_RASTER_DEST'),
+            @('    gpu_memory->Unmap(TargetGpuAddress, PageSize);','IMP008E_E2_CLEANUP_03_BEFORE_GPU_UNMAP_TARGET'),
+            @('    gpu_memory->Unmap(DestinationGpuAddress, PageSize);','IMP008E_E2_CLEANUP_04_BEFORE_GPU_UNMAP_DEST'),
+            @('    gpu_memory.reset();','IMP008E_E2_CLEANUP_05_BEFORE_GPU_MEMORY_RESET'),
+            @('    channel.reset();','IMP008E_E2_CLEANUP_06_BEFORE_CHANNEL_RESET'),
+            @('    device_memory.Unmap(TargetDeviceAddress, PageSize);','IMP008E_E2_CLEANUP_07_BEFORE_DEVICE_UNMAP_TARGET'),
+            @('    device_memory.Unmap(DestinationDeviceAddress, PageSize);','IMP008E_E2_CLEANUP_08_BEFORE_DEVICE_UNMAP_DEST'),
+            @('    device_memory.Free(TargetDeviceAddress, PageSize * 2);','IMP008E_E2_CLEANUP_09_BEFORE_DEVICE_FREE'),
+            @('    device_memory.UnregisterProcess(asid);','IMP008E_E2_CLEANUP_10_BEFORE_UNREGISTER'),
+            @('    thread->Close(system.Kernel());','IMP008E_E2_CLEANUP_11_BEFORE_THREAD_CLOSE'),
+            @('    system.ShutdownMainProcess();','IMP008E_E2_CLEANUP_12_BEFORE_SHUTDOWN'),
+            @('    std::filesystem::remove(nro_path);','IMP008E_E2_CLEANUP_13_BEFORE_REMOVE_NRO'),
+            @('    Trace("IMP008E_E2_GATE");','IMP008E_E2_CLEANUP_14_GATE_REACHED')
+          )
+          foreach ($pair in $markers) {
+            $anchor=[string]$pair[0]; $marker=[string]$pair[1]
+            if (([regex]::Matches($text,[regex]::Escape($anchor))).Count -ne 1) { throw "cleanup anchor mismatch: $anchor" }
+            $insert='    Trace("'+$marker+'");' + "`r`n" + $anchor
+            $text=$text.Replace($anchor,$insert)
+          }
+          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja rc=$LASTEXITCODE" }
+            $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($hits.Count -ne 1) { throw "E5 compile count=$($hits.Count)" }
+            $compile=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='e2_private_stack_cleanup_localize_v1/rasterizer_cached_retry_cleanup_localize.cpp.obj'
+            $compile=$compile.Replace($oldObj,$newObj)
+            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF e2_private_stack_cleanup_localize_v1\rasterizer_cached_retry_cleanup_localize.cpp.obj.d')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/e2_private_stack_cleanup_localize_v1/rasterizer_cached_retry_cleanup_localize.cpp')
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "cleanup-localize compile rc=$LASTEXITCODE" }
+
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj)
+            $link=$link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_private_stack_cleanup_localize_v1.exe')
+            $link=$link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_private_stack_cleanup_localize_v1.a')
+            $link=$link.Replace('src/core/libcore.a','generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if ($LASTEXITCODE -ne 0) { throw "cleanup-localize link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_CLEANUP_LOCALIZE_BUILD=PASS'
+
+      - name: Run cleanup-localized E2 once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_private_stack_cleanup_localize_v1.exe').Path
+          $psi.WorkingDirectory=(Resolve-Path 'eden').Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          $log=$out+$err
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path 'eden').Path 'imp008e-e2-private-stack-cleanup-localize-v1.log'),$log)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008E_E2_CLEANUP_LOCALIZE_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify cleanup boundary
+        shell: powershell
+        run: |
+          Get-Content 'eden/imp008e-e2-private-stack-cleanup-localize-v1.log' | Select-String -Pattern 'IMP008E_E2_(DATA_AV_EXACT|REEXECUTED_VALUE_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|CLEANUP_|GATE)'
