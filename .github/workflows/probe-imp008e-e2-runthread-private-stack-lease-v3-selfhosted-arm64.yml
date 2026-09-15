@@ -1,0 +1,126 @@
+name: Probe IMP-008E E2 RunThread Private Stack Lease V3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/imp-008e-windows-nce-rasterizer-recovery-runtime]
+    paths:
+      - .github/workflows/probe-imp008e-e2-runthread-private-stack-lease-v3-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-runthread-private-stack-lease-v3
+  cancel-in-progress: false
+
+jobs:
+  e2-runthread-private-stack-lease-v3:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 8
+    steps:
+      - name: Build integrated E2 probe from exact retained RunThread
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw 'unexpected retained HEAD' }
+          if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'known-good generic transition object missing' }
+          if (-not (Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')) { throw 'page-table E2 source missing' }
+
+          $dir='eden/build/e2_runthread_private_stack_lease_v3'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $armSrc=Join-Path (Resolve-Path $dir).Path 'arm_nce_windows.cpp'
+          $text=[IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/arm_nce_windows.cpp').Path).Replace("`r`n","`n")
+          $text=$text.Replace('#include <thread>',"#include <thread>`n#include <cstdio>`n#include <cstring>`n#include <vector>")
+          $text=$text.Replace('#include "core/core.h"',"#include `"core/core.h`"`n#include `"core/device_memory.h`"")
+
+          $helper=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('dXNpbmcgUGZuVmlydHVhbEFsbG9jMkZvck5jZVN0YWNrID0gUFZPSUQoV0lOQVBJKikoCiAgICBIQU5ETEUsIFBWT0lELCBTSVpFX1QsIFVMT05HLCBVTE9ORywgTUVNX0VYVEVOREVEX1BBUkFNRVRFUiosIFVMT05HKTsKCnN0cnVjdCBXaW5kb3dzUHJpdmF0ZVN0YWNrTGVhc2UgewogICAgYm9vbCBhY3RpdmV7fTsKICAgIGJvb2wgcGFzc3Rocm91Z2h7fTsKICAgIHU2NCBiYXNle307CiAgICBzaXplX3Qgc2l6ZXt9OwogICAgc2l6ZV90IGJhY2tpbmdfb2Zmc2V0e307Cn07CgpbW25vZGlzY2FyZF1dIGJvb2wgQmVnaW5Qcml2YXRlR3Vlc3RTdGFja0xlYXNlKFN5c3RlbSYgc3lzdGVtLCBLZXJuZWw6OktQcm9jZXNzJiBwcm9jZXNzLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdTY0IGd1ZXN0X3NwLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgV2luZG93c1ByaXZhdGVTdGFja0xlYXNlJiBsZWFzZSkgbm9leGNlcHQgewogICAgaWYgKGd1ZXN0X3NwID09IDApIHsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICB9CgogICAgTUVNT1JZX0JBU0lDX0lORk9STUFUSU9OIHN0YWNrX21iaXt9OwogICAgaWYgKFZpcnR1YWxRdWVyeShyZWludGVycHJldF9jYXN0PGNvbnN0IHZvaWQqPihndWVzdF9zcCAtIDEpLCAmc3RhY2tfbWJpLAogICAgICAgICAgICAgICAgICAgICBzaXplb2Yoc3RhY2tfbWJpKSkgPT0gMCB8fAogICAgICAgIHN0YWNrX21iaS5BbGxvY2F0aW9uQmFzZSA9PSBudWxscHRyKSB7CiAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgfQoKICAgIGlmIChzdGFja19tYmkuVHlwZSA9PSBNRU1fUFJJVkFURSkgewogICAgICAgIGxlYXNlLnBhc3N0aHJvdWdoID0gdHJ1ZTsKICAgICAgICBzdGQ6OmZwdXRzKCJJTVAwMDhFX05DRV9TVEFDS19MRUFTRV9QQVNTVEhST1VHSF9QQVNTPVxuIiwgc3RkZXJyKTsKICAgICAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgICAgIHJldHVybiB0cnVlOwogICAgfQogICAgaWYgKHN0YWNrX21iaS5UeXBlICE9IE1FTV9NQVBQRUQpIHsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICB9CgogICAgY29uc3QgYXV0byBhbGxvY2F0aW9uX2Jhc2UgPQogICAgICAgIHJlaW50ZXJwcmV0X2Nhc3Q8c3RkOjp1aW50cHRyX3Q+KHN0YWNrX21iaS5BbGxvY2F0aW9uQmFzZSk7CiAgICBzdGQ6OnVpbnRwdHJfdCBhbGxvY2F0aW9uX2VuZCA9IGFsbG9jYXRpb25fYmFzZTsKICAgIGZvciAoc3RkOjp1aW50cHRyX3QgY3Vyc29yID0gYWxsb2NhdGlvbl9iYXNlOzspIHsKICAgICAgICBNRU1PUllfQkFTSUNfSU5GT1JNQVRJT04gcmVnaW9ue307CiAgICAgICAgaWYgKFZpcnR1YWxRdWVyeShyZWludGVycHJldF9jYXN0PGNvbnN0IHZvaWQqPihjdXJzb3IpLCAmcmVnaW9uLCBzaXplb2YocmVnaW9uKSkgPT0gMCB8fAogICAgICAgICAgICByZWdpb24uQWxsb2NhdGlvbkJhc2UgIT0gc3RhY2tfbWJpLkFsbG9jYXRpb25CYXNlKSB7CiAgICAgICAgICAgIGJyZWFrOwogICAgICAgIH0KICAgICAgICBjb25zdCBhdXRvIHJlZ2lvbl9lbmQgPSByZWludGVycHJldF9jYXN0PHN0ZDo6dWludHB0cl90PihyZWdpb24uQmFzZUFkZHJlc3MpICsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDxzdGQ6OnVpbnRwdHJfdD4ocmVnaW9uLlJlZ2lvblNpemUpOwogICAgICAgIGlmIChyZWdpb25fZW5kIDw9IGN1cnNvcikgewogICAgICAgICAgICBicmVhazsKICAgICAgICB9CiAgICAgICAgYWxsb2NhdGlvbl9lbmQgPSByZWdpb25fZW5kOwogICAgICAgIGN1cnNvciA9IHJlZ2lvbl9lbmQ7CiAgICB9CgogICAgY29uc3QgYXV0byBndWVzdF9zcF92YWx1ZSA9IHN0YXRpY19jYXN0PHN0ZDo6dWludHB0cl90PihndWVzdF9zcCk7CiAgICBpZiAoZ3Vlc3Rfc3BfdmFsdWUgPD0gYWxsb2NhdGlvbl9iYXNlIHx8IGd1ZXN0X3NwX3ZhbHVlID49IGFsbG9jYXRpb25fZW5kIHx8CiAgICAgICAgYWxsb2NhdGlvbl9lbmQgPD0gYWxsb2NhdGlvbl9iYXNlKSB7CiAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgfQoKICAgIGNvbnN0IHNpemVfdCBzdGFja19zaXplID0gYWxsb2NhdGlvbl9lbmQgLSBhbGxvY2F0aW9uX2Jhc2U7CiAgICBhdXRvKiBjb25zdCBiYWNraW5nX3B0ciA9CiAgICAgICAgcHJvY2Vzcy5HZXRNZW1vcnkoKS5HZXRQb2ludGVyKENvbW1vbjo6UHJvY2Vzc0FkZHJlc3N7YWxsb2NhdGlvbl9iYXNlfSk7CiAgICBpZiAoYmFja2luZ19wdHIgPT0gbnVsbHB0cikgewogICAgICAgIHJldHVybiBmYWxzZTsKICAgIH0KCiAgICBhdXRvJiBkZXZpY2VfbWVtb3J5ID0gc3lzdGVtLkRldmljZU1lbW9yeSgpOwogICAgYXV0byYgYnVmZmVyID0gZGV2aWNlX21lbW9yeS5idWZmZXI7CiAgICBjb25zdCBzaXplX3QgYmFja2luZ19vZmZzZXQgPQogICAgICAgIHN0YXRpY19jYXN0PHNpemVfdD4oZGV2aWNlX21lbW9yeS5HZXRSYXdQaHlzaWNhbEFkZHIoYmFja2luZ19wdHIpKTsKCiAgICBzdGQ6OnZlY3Rvcjx1OD4gc25hcHNob3Qoc3RhY2tfc2l6ZSk7CiAgICBzdGQ6Om1lbWNweShzbmFwc2hvdC5kYXRhKCksIHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3Qgdm9pZCo+KGFsbG9jYXRpb25fYmFzZSksIHN0YWNrX3NpemUpOwoKICAgIGJ1ZmZlci5Vbm1hcChhbGxvY2F0aW9uX2Jhc2UsIHN0YWNrX3NpemUsIGZhbHNlKTsKCiAgICBpZiAoIVZpcnR1YWxGcmVlRXgoR2V0Q3VycmVudFByb2Nlc3MoKSwgcmVpbnRlcnByZXRfY2FzdDx2b2lkKj4oYWxsb2NhdGlvbl9iYXNlKSwgc3RhY2tfc2l6ZSwKICAgICAgICAgICAgICAgICAgICAgICBNRU1fUkVMRUFTRSB8IE1FTV9QUkVTRVJWRV9QTEFDRUhPTERFUikpIHsKICAgICAgICBidWZmZXIuTWFwKGFsbG9jYXRpb25fYmFzZSwgYmFja2luZ19vZmZzZXQsIHN0YWNrX3NpemUsCiAgICAgICAgICAgICAgICAgICBDb21tb246Ok1lbW9yeVBlcm1pc3Npb246OlJlYWRXcml0ZSwgZmFsc2UpOwogICAgICAgIHJldHVybiBmYWxzZTsKICAgIH0KCiAgICBhdXRvKiBjb25zdCBrZXJuZWxiYXNlID0gR2V0TW9kdWxlSGFuZGxlVyhMIktlcm5lbEJhc2UuZGxsIik7CiAgICBhdXRvKiBjb25zdCB2aXJ0dWFsX2FsbG9jMiA9CiAgICAgICAga2VybmVsYmFzZSAhPSBudWxscHRyCiAgICAgICAgICAgID8gcmVpbnRlcnByZXRfY2FzdDxQZm5WaXJ0dWFsQWxsb2MyRm9yTmNlU3RhY2s+KAogICAgICAgICAgICAgICAgICBHZXRQcm9jQWRkcmVzcyhrZXJuZWxiYXNlLCAiVmlydHVhbEFsbG9jMiIpKQogICAgICAgICAgICA6IG51bGxwdHI7CiAgICBpZiAodmlydHVhbF9hbGxvYzIgPT0gbnVsbHB0cikgewogICAgICAgIGJ1ZmZlci5NYXAoYWxsb2NhdGlvbl9iYXNlLCBiYWNraW5nX29mZnNldCwgc3RhY2tfc2l6ZSwKICAgICAgICAgICAgICAgICAgIENvbW1vbjo6TWVtb3J5UGVybWlzc2lvbjo6UmVhZFdyaXRlLCBmYWxzZSk7CiAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgfQoKICAgIHZvaWQqIGNvbnN0IHByaXZhdGVfc3RhY2sgPSB2aXJ0dWFsX2FsbG9jMigKICAgICAgICBHZXRDdXJyZW50UHJvY2VzcygpLCByZWludGVycHJldF9jYXN0PHZvaWQqPihhbGxvY2F0aW9uX2Jhc2UpLCBzdGFja19zaXplLAogICAgICAgIE1FTV9SRVNFUlZFIHwgTUVNX0NPTU1JVCB8IE1FTV9SRVBMQUNFX1BMQUNFSE9MREVSLCBQQUdFX1JFQURXUklURSwgbnVsbHB0ciwgMCk7CiAgICBpZiAocHJpdmF0ZV9zdGFjayAhPSByZWludGVycHJldF9jYXN0PHZvaWQqPihhbGxvY2F0aW9uX2Jhc2UpKSB7CiAgICAgICAgYnVmZmVyLk1hcChhbGxvY2F0aW9uX2Jhc2UsIGJhY2tpbmdfb2Zmc2V0LCBzdGFja19zaXplLAogICAgICAgICAgICAgICAgICAgQ29tbW9uOjpNZW1vcnlQZXJtaXNzaW9uOjpSZWFkV3JpdGUsIGZhbHNlKTsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICB9CgogICAgc3RkOjptZW1jcHkocHJpdmF0ZV9zdGFjaywgc25hcHNob3QuZGF0YSgpLCBzdGFja19zaXplKTsKCiAgICBsZWFzZS5hY3RpdmUgPSB0cnVlOwogICAgbGVhc2UuYmFzZSA9IGFsbG9jYXRpb25fYmFzZTsKICAgIGxlYXNlLnNpemUgPSBzdGFja19zaXplOwogICAgbGVhc2UuYmFja2luZ19vZmZzZXQgPSBiYWNraW5nX29mZnNldDsKCiAgICBzdGQ6OmZwcmludGYoc3RkZXJyLAogICAgICAgICAgICAgICAgICJJTVAwMDhFX05DRV9TVEFDS19MRUFTRV9CRUdJTj1QQVNTIEJBU0U9MHglbGxYIFNJWkU9MHglbGxYIEJBQ0tJTkc9MHglbGxYXG4iLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4obGVhc2UuYmFzZSksCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihsZWFzZS5zaXplKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGxlYXNlLmJhY2tpbmdfb2Zmc2V0KSk7CiAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwogICAgcmV0dXJuIHRydWU7Cn0KCltbbm9kaXNjYXJkXV0gYm9vbCBFbmRQcml2YXRlR3Vlc3RTdGFja0xlYXNlKFN5c3RlbSYgc3lzdGVtLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIFdpbmRvd3NQcml2YXRlU3RhY2tMZWFzZSYgbGVhc2UpIG5vZXhjZXB0IHsKICAgIGlmIChsZWFzZS5wYXNzdGhyb3VnaCkgewogICAgICAgIGxlYXNlLnBhc3N0aHJvdWdoID0gZmFsc2U7CiAgICAgICAgcmV0dXJuIHRydWU7CiAgICB9CiAgICBpZiAoIWxlYXNlLmFjdGl2ZSkgewogICAgICAgIHJldHVybiBmYWxzZTsKICAgIH0KCiAgICBhdXRvJiBidWZmZXIgPSBzeXN0ZW0uRGV2aWNlTWVtb3J5KCkuYnVmZmVyOwogICAgc3RkOjptZW1jcHkoYnVmZmVyLkJhY2tpbmdCYXNlUG9pbnRlcigpICsgbGVhc2UuYmFja2luZ19vZmZzZXQsCiAgICAgICAgICAgICAgICByZWludGVycHJldF9jYXN0PGNvbnN0IHZvaWQqPihsZWFzZS5iYXNlKSwgbGVhc2Uuc2l6ZSk7CgogICAgaWYgKCFWaXJ0dWFsRnJlZUV4KEdldEN1cnJlbnRQcm9jZXNzKCksIHJlaW50ZXJwcmV0X2Nhc3Q8dm9pZCo+KGxlYXNlLmJhc2UpLCBsZWFzZS5zaXplLAogICAgICAgICAgICAgICAgICAgICAgIE1FTV9SRUxFQVNFIHwgTUVNX1BSRVNFUlZFX1BMQUNFSE9MREVSKSkgewogICAgICAgIHJldHVybiBmYWxzZTsKICAgIH0KCiAgICBidWZmZXIuTWFwKGxlYXNlLmJhc2UsIGxlYXNlLmJhY2tpbmdfb2Zmc2V0LCBsZWFzZS5zaXplLAogICAgICAgICAgICAgICBDb21tb246Ok1lbW9yeVBlcm1pc3Npb246OlJlYWRXcml0ZSwgZmFsc2UpOwoKICAgIE1FTU9SWV9CQVNJQ19JTkZPUk1BVElPTiByZXN0b3JlZHt9OwogICAgaWYgKFZpcnR1YWxRdWVyeShyZWludGVycHJldF9jYXN0PGNvbnN0IHZvaWQqPihsZWFzZS5iYXNlKSwgJnJlc3RvcmVkLAogICAgICAgICAgICAgICAgICAgIHNpemVvZihyZXN0b3JlZCkpID09IDAgfHwKICAgICAgICByZXN0b3JlZC5UeXBlICE9IE1FTV9NQVBQRUQpIHsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICB9CgogICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwKICAgICAgICAgICAgICAgICAiSU1QMDQwOEVfTkNFX1NUQUNLX0xFQVNFX0VORD1QQVNTIEJBU0U9MHglbGxYIFNJWkU9MHglbGxYIFRZUEU9MHglbFhcbiIsCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihsZWFzZS5iYXNlKSwKICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGxlYXNlLnNpemUpLAogICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmc+KHJlc3RvcmVkLlR5cGUpKTsKICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7CgogICAgbGVhc2UuYWN0aXZlID0gZmFsc2U7CiAgICBsZWFzZS5iYXNlID0gMDsKICAgIGxlYXNlLnNpemUgPSAwOwogICAgbGVhc2UuYmFja2luZ19vZmZzZXQgPSAwOwogICAgcmV0dXJuIHRydWU7Cn0='))
+          $helper=$helper.Replace('MEM_PRESERVE_PLACEHOLDER','0x2').Replace('MEM_REPLACE_PLACEHOLDER','0x4000')
+          $anchor='struct WindowsTebStackBounds {'
+          if(([regex]::Matches($text,[regex]::Escape($anchor))).Count -ne 1){throw 'helper anchor mismatch'}
+          $text=$text.Replace($anchor,$helper+"`n`n"+$anchor)
+
+          $old=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBOQ0U6OkN1cnJlbnROY2VDb250ZXh0OjpJbnN0YWxsKHRocmVhZF9wYXJhbXMpOwogICAgICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTVfQUJfSElTVE9SSUNBTF9SVU5USFJFQUQ9UEFTU1xuIiwgc3RkZXJyKTsKICAgICAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwo='))
+          $new=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBOQ0U6OkN1cnJlbnROY2VDb250ZXh0OjpJbnN0YWxsKHRocmVhZF9wYXJhbXMpOwogICAgICAgIHN0ZDo6ZnB1dHMoIklNUDAwOEJfRTVfQUJfSElTVE9SSUNBTF9SVU5USFJFQUQ9UEFTU1xuIiwgc3RkZXJyKTsKICAgICAgICBzdGQ6OmZmbHVzaChzdGRlcnIpOwoKICAgICAgICBXaW5kb3dzUHJpdmF0ZVN0YWNrTGVhc2UgcHJpdmF0ZV9zdGFja19sZWFzZXt9OwogICAgICAgIGlmICghQmVnaW5Qcml2YXRlR3Vlc3RTdGFja0xlYXNlKG1fc3lzdGVtLCAqcHJvY2VzcywgbV9ndWVzdF9jdHguc3AsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgcHJpdmF0ZV9zdGFja19sZWFzZSkpIHsKICAgICAgICAgICAgTkNFOjpDdXJyZW50TmNlQ29udGV4dDo6Q2xlYXIoKTsKICAgICAgICAgICAgaHIgPSBIYWx0UmVhc29uOjpQcmVmZXRjaEFib3J0OwogICAgICAgICAgICBicmVhazsKICAgICAgICB9Cg=='))
+          if(([regex]::Matches($text,[regex]::Escape($old))).Count -ne 1){throw 'entry exact count mismatch'}
+          $text=$text.Replace($old,$new)
+
+          $old=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBOQ0U6OkN1cnJlbnROY2VDb250ZXh0OjpDbGVhcigpOwo='))
+          $new=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgICAgICBpZiAoIUVuZFByaXZhdGVHdWVzdFN0YWNrTGVhc2UobV9zeXN0ZW0sIHByaXZhdGVfc3RhY2tfbGVhc2UpKSB7CiAgICAgICAgICAgIE5DRTo6Q3VycmVudE5jZUNvbnRleHQ6OkNsZWFyKCk7CiAgICAgICAgICAgIGhyID0gSGFsdFJlYXNvbjo6UHJlZmV0Y2hBYm9ydDsKICAgICAgICAgICAgYnJlYWs7CiAgICAgICAgfQogICAgICAgIE5DRTo6Q3VycmVudE5jZUNvbnRleHQ6OkNsZWFyKCk7Cg=='))
+          if(([regex]::Matches($text,[regex]::Escape($old))).Count -ne 1){throw 'clear exact count mismatch'}
+          $text=$text.Replace($old,$new)
+          [IO.File]::WriteAllText($armSrc,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location eden/build
+          try {
+            $cmds=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
+            $arm=@($cmds|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
+            if($arm.Count-ne 1){throw "arm compile count=$($arm.Count)"}
+            $c=[string]$arm[0]
+            $m=[regex]::Match($c,'-o\s+(\S*arm_nce_windows\.cpp\.obj)')
+            if(!$m.Success){throw 'arm object path missing'}
+            $oldArm=$m.Groups[1].Value.Trim("'")
+            $newArm='e2_runthread_private_stack_lease_v3/arm_nce_windows.cpp.obj'
+            $c=$c.Replace($oldArm,$newArm)
+            $c=[regex]::Replace($c,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF e2_runthread_private_stack_lease_v3\arm_nce_windows.cpp.obj.d')
+            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/e2_runthread_private_stack_lease_v3/arm_nce_windows.cpp')
+            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $c
+            if($LASTEXITCODE-ne 0){throw "arm compile rc=$LASTEXITCODE"}
+
+            $main=@($cmds|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
+            if($main.Count-ne 1){throw "main compile count=$($main.Count)"}
+            $c=[string]$main[0]
+            $oldMain='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newMain='e2_runthread_private_stack_lease_v3/rasterizer_cached_retry.cpp.obj'
+            $c=$c.Replace($oldMain,$newMain)
+            $c=[regex]::Replace($c,'-MF\s+\S+\.obj\.d','-MF e2_runthread_private_stack_lease_v3\rasterizer_cached_retry.cpp.obj.d')
+            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')
+            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $c
+            if($LASTEXITCODE-ne 0){throw "main compile rc=$LASTEXITCODE"}
+
+            $links=@($cmds|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
+            if($links.Count-ne 1){throw "link count=$($links.Count)"}
+            $l=[string]$links[0]
+            $l=$l.Replace($oldMain,$newMain).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_runthread_private_stack_lease_v3.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_runthread_private_stack_lease_v3.a').Replace('src/core/libcore.a',"$newArm generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a")
+            $l=$l.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $l
+            if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE"}
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_V3_BUILD=PASS'
+
+      - name: Run integrated E2 exactly once
+        shell: powershell
+        run: |
+          $psi=New-Object Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_runthread_private_stack_lease_v3.exe').Path
+          $psi.WorkingDirectory=(Resolve-Path eden).Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object Diagnostics.Process
+          $p.StartInfo=$psi
+          [void]$p.Start()
+          $ot=$p.StandardOutput.ReadToEndAsync()
+          $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(60000)
+          if($timeout){$p.Kill();$p.WaitForExit()}
+          $out=$ot.Result
+          $err=$et.Result
+          $rc=if($timeout){124}else{$p.ExitCode}
+          $log=$out+$err
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path eden).Path 'imp008e-e2-runthread-private-stack-lease-v3.log'),$log)
+          Write-Host $out
+          Write-Host $err
+          Write-Host "IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_V3_RC=$rc"
+
+      - name: Classify integrated lease result
+        shell: powershell
+        run: |
+          $log=Get-Content 'eden/imp008e-e2-runthread-private-stack-lease-v3.log' -Raw
+          Get-Content 'eden/imp008e-e2-runthread-private-stack-lease-v3.log' | Select-String -Pattern 'IMP008E_NCE_STACK_LEASE|IMP008E_E2_(GUEST_STACK_QUERY|DATA_AV_EXACT|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|REEXECUTED_VALUE_EXACT|POST_SVC_PC_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|GATE|FAIL)'
+          if($log.Contains('IMP008E_E2_GATE=PASS') -and $log.Contains('IMP008E_NCE_STACK_LEASE_BEGIN=PASS') -and $log.Contains('IMP008E_NCE_STACK_LEASE_END=PASS')){Write-Host 'IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_V3=PASS'} elseif($log.Contains('IMP008E_NCE_STACK_LEASE_BEGIN=PASS')){Write-Host 'IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_V3=LEASE_ACTIVE_RUNTIME_FAIL'} else {Write-Host 'IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_V3=LEASE_BEGIN_FAIL'}
