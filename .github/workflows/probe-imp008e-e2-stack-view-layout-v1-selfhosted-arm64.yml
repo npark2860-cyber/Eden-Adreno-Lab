@@ -1,0 +1,82 @@
+name: Probe IMP-008E E2 Stack View Layout V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-stack-view-layout-v1-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-stack-view-layout-v1
+  cancel-in-progress: false
+
+jobs:
+  e2-stack-view-layout-v1:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Build stack-view layout probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw 'unexpected retained head' }
+          $src='eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp'
+          if (-not (Test-Path $src)) { throw 'page-table stack generated source missing' }
+          $dir='eden/build/e2_stack_view_layout_v1'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dst=Join-Path (Resolve-Path $dir).Path 'stack_view_layout.cpp'
+          $text=[IO.File]::ReadAllText((Resolve-Path $src).Path)
+          $anchor='    const u64 guest_sp = guest_stack_limit + 0x10000 - 0x20;'
+          if (([regex]::Matches($text,[regex]::Escape($anchor))).Count -ne 1) { throw 'sp anchor mismatch' }
+          $inject=@(
+            '    const u64 guest_sp = guest_stack_limit + 0x10000 - 0x20;',
+            '    for (const u64 probe_addr : {guest_stack_limit, guest_stack_limit + 0x1000, guest_stack_limit + 0x4000, guest_stack_limit + 0x8000, guest_sp}) {',
+            '        MEMORY_BASIC_INFORMATION mbi{};',
+            '        const SIZE_T q = VirtualQuery(reinterpret_cast<void*>(probe_addr), &mbi, sizeof(mbi));',
+            '        std::fprintf(stderr, "IMP008E_E2_STACK_VIEW ADDR=0x%llX Q=%llu BASE=%p ALLOC=%p SIZE=0x%llX STATE=0x%lX PROTECT=0x%lX TYPE=0x%lX\\n", static_cast<unsigned long long>(probe_addr), static_cast<unsigned long long>(q), mbi.BaseAddress, mbi.AllocationBase, static_cast<unsigned long long>(mbi.RegionSize), static_cast<unsigned long>(mbi.State), static_cast<unsigned long>(mbi.Protect), static_cast<unsigned long>(mbi.Type));',
+            '        std::fflush(stderr);',
+            '    }',
+            '    ExitProcess(0);'
+          ) -join "`r`n"
+          $text=$text.Replace($anchor,$inject)
+          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location eden/build
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($hits.Count -ne 1) { throw "compile count=$($hits.Count)" }
+            $compile=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='e2_stack_view_layout_v1/stack_view_layout.cpp.obj'
+            $compile=$compile.Replace($oldObj,$newObj)
+            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF e2_stack_view_layout_v1\stack_view_layout.cpp.obj.d')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/e2_stack_view_layout_v1/stack_view_layout.cpp')
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "compile rc=$LASTEXITCODE" }
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_stack_view_layout_v1.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_stack_view_layout_v1.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if ($LASTEXITCODE -ne 0) { throw "link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+
+      - name: Run stack-view layout probe
+        shell: powershell
+        run: |
+          & 'eden/build/bin/imp008e_e2_stack_view_layout_v1.exe' 2>&1 | Tee-Object -FilePath 'eden/imp008e-e2-stack-view-layout-v1.log'
+          exit 0
+
+      - name: Show stack-view layout
+        shell: powershell
+        run: |
+          Get-Content 'eden/imp008e-e2-stack-view-layout-v1.log' | Select-String -Pattern 'IMP008E_E2_STACK_VIEW'
