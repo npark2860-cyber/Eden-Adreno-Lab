@@ -1,0 +1,156 @@
+name: Probe IMP-008B E5 Final AV Detail V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp-008b-e5-final-av-detail-v2-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp-008b-e5-final-av-detail-v2
+  cancel-in-progress: false
+
+jobs:
+  e5-final-av-detail-v2:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify retained V3 state
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head = (git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          $transition = [IO.File]::ReadAllText((Resolve-Path 'eden/src/core/arm/nce/windows_nce_transition.cpp'))
+          $probe = [IO.File]::ReadAllText((Resolve-Path 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'))
+          if (-not $transition.Contains('Imp008bE5CaptureFullContext(context);')) { throw 'V3 non-CRT capture missing' }
+          if (-not $probe.Contains('IMP008B_E5_FULLCTX_SAFE_DUMP_CALL_V3')) { throw 'V3 safe dump missing' }
+          if ($probe.Contains('IMP008B_E5_AVDETAIL_V2')) { throw 'V2 AV detail already applied' }
+          Remove-Item 'eden/imp008b-e5-avdetail-v2.log','eden/imp008b-e5-avdetail-v2.out.log','eden/imp008b-e5-avdetail-v2.err.log','eden/imp008b-e5-avdetail-v2.rc','eden/imp008b-e5-avdetail-v2-link.log','eden/imp008b-e5-avdetail-v2-commands.txt' -Force -ErrorAction SilentlyContinue
+          Write-Host ('IMP008B_E5_AVDETAIL_V2_RETAINED_HEAD=' + $head)
+          Write-Host ('IMP008B_E5_AVDETAIL_V2_DIRTY_ENTRIES=' + @((git -C eden status --short)).Count)
+          Write-Host 'IMP008B_E5_AVDETAIL_V2_RETAINED_STATE=PASS'
+
+      - name: Add AV detail diagnostics only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = (Resolve-Path 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp').Path
+          $text = [IO.File]::ReadAllText($path)
+          $detail = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIC8vIElNUDAwOEJfRTVfQVZERVRBSUxfVjIKICAgIHN0ZDo6ZnByaW50ZihzdGRlcnIsICJJTVAwMDhCX0U1X0VYQ0VQVElPTl9OVU1CRVJfUEFSQU1FVEVSUz0lbHVcbiIsCiAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4ocmVjb3JkLT5OdW1iZXJQYXJhbWV0ZXJzKSk7CiAgICBmb3IgKFVMT05HIGkgPSAwOyBpIDwgcmVjb3JkLT5OdW1iZXJQYXJhbWV0ZXJzICYmIGkgPCBFWENFUFRJT05fTUFYSU1VTV9QQVJBTUVURVJTOyArK2kpIHsKICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiSU1QMDA4Ql9FNV9FWENFUFRJT05fSU5GT1JNQVRJT05fJWx1PTB4JWxsWFxuIiwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4oaSksCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4ocmVjb3JkLT5FeGNlcHRpb25JbmZvcm1hdGlvbltpXSkpOwogICAgfQojaWYgZGVmaW5lZChfTV9BUk02NCkgfHwgZGVmaW5lZChfX2FhcmNoNjRfXykKICAgIGlmIChleGNlcHRpb24tPkNvbnRleHRSZWNvcmQgIT0gbnVsbHB0cikgewogICAgICAgIGNvbnN0IGF1dG8qIGNvbnN0IGF2Y3R4ID0KICAgICAgICAgICAgcmVpbnRlcnByZXRfY2FzdDxjb25zdCBBUk02NF9OVF9DT05URVhUKj4oZXhjZXB0aW9uLT5Db250ZXh0UmVjb3JkKTsKICAgICAgICBzdGQ6OmZwcmludGYoc3RkZXJyLAogICAgICAgICAgICAgICAgICAgICAiSU1QMDA4Ql9FNV9BVkNUWCBGTEFHUz0weCUwOGxYIENQU1I9MHglMDhsWCBTUD0weCVsbFggUEM9MHglbGxYXG4iLAogICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nPihhdmN0eC0+Q29udGV4dEZsYWdzKSwKICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZz4oYXZjdHgtPkNwc3IpLAogICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGF2Y3R4LT5TcCksCiAgICAgICAgICAgICAgICAgICAgIHN0YXRpY19jYXN0PHVuc2lnbmVkIGxvbmcgbG9uZz4oYXZjdHgtPlBjKSk7CiAgICAgICAgZm9yIChzdGQ6OnNpemVfdCBpID0gMDsgaSA8IDMxOyArK2kpIHsKICAgICAgICAgICAgc3RkOjpmcHJpbnRmKHN0ZGVyciwgIklNUDAwOEJfRTVfQVZDVFhfWCUwMmxsdT0weCUwMTZsbFhcbiIsCiAgICAgICAgICAgICAgICAgICAgICAgICBzdGF0aWNfY2FzdDx1bnNpZ25lZCBsb25nIGxvbmc+KGkpLAogICAgICAgICAgICAgICAgICAgICAgICAgc3RhdGljX2Nhc3Q8dW5zaWduZWQgbG9uZyBsb25nPihhdmN0eC0+WFtpXSkpOwogICAgICAgIH0KICAgIH0KI2VuZGlmCg=='))
+          $moduleLog = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ICAgIC8vIElNUDAwOEJfRTVfQVZERVRBSUxfTU9EVUxFX1YyCiAgICBjb25zdCBITU9EVUxFIGltcDAwOGJfZTVfdWNydGJhc2UgPSBHZXRNb2R1bGVIYW5kbGVXKEwidWNydGJhc2UuZGxsIik7CiAgICBzdGQ6OmZwcmludGYoc3RkZXJyLCAiSU1QMDA4Ql9FNV9VQ1JUQkFTRV9CQVNFPSVwXG4iLCBpbXAwMDhiX2U1X3VjcnRiYXNlKTsKICAgIHN0ZDo6ZmZsdXNoKHN0ZGVycik7Cg=='))
+          $recordAnchor = '    const auto* const record = exception->ExceptionRecord;'
+          $vehAnchor = '    Trace("IMP008B_E5_VEH_INSTALLED");'
+          if (([regex]::Matches($text,[regex]::Escape($recordAnchor))).Count -ne 1) { throw 'record anchor mismatch' }
+          if (([regex]::Matches($text,[regex]::Escape($vehAnchor))).Count -ne 1) { throw 'VEH anchor mismatch' }
+          $text = $text.Replace($recordAnchor,$recordAnchor+"`n"+$detail)
+          $text = $text.Replace($vehAnchor,$vehAnchor+"`n"+$moduleLog)
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText($path,$text,$utf8)
+          $verify = [IO.File]::ReadAllText($path)
+          if (([regex]::Matches($verify,'IMP008B_E5_AVDETAIL_V2')).Count -ne 1) { throw 'detail marker mismatch' }
+          if (([regex]::Matches($verify,'IMP008B_E5_AVDETAIL_MODULE_V2')).Count -ne 1) { throw 'module marker mismatch' }
+          Write-Host 'IMP008B_E5_AVDETAIL_V2_PATCH=PASS'
+
+      - name: Extract direct commands read-only
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $commands = & 'C:\msys64\usr\bin\ninja.exe' -C build -t commands imp008b_e5_x18_runtime
+          if ($LASTEXITCODE -ne 0) { throw "ninja tool-mode rc=$LASTEXITCODE" }
+          [IO.File]::WriteAllLines((Join-Path (Get-Location) 'imp008b-e5-avdetail-v2-commands.txt'),[string[]]$commands)
+          Write-Host 'IMP008B_E5_AVDETAIL_V2_COMMANDS=PASS'
+
+      - name: Compile E5 probe object only
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-avdetail-v2-commands.txt')
+          $hits = @($lines | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+          if ($hits.Count -ne 1) { throw "E5 probe command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          $cmd = $cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          $cmd = $cmd.Replace('C:\msys64\clangarm64\bin\sccache.exe ','')
+          $cmd = $cmd.Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+          $cmd = [regex]::Replace($cmd,"'(C:/[^']+)'",'$1')
+          & $env:ComSpec /D /S /C $cmd
+          $rc = $LASTEXITCODE
+          Write-Host "IMP008B_E5_AVDETAIL_V2_COMPILE_RC=$rc"
+          if ($rc -ne 0) { throw "probe compile failed rc=$rc" }
+
+      - name: Link E5 runtime
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-avdetail-v2-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "link command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          $cmd = $cmd.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64')
+          $cmd = $cmd.Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+          & $env:ComSpec /D /S /C $cmd 2>&1 | Tee-Object -FilePath '../imp008b-e5-avdetail-v2-link.log'
+          $rc = $LASTEXITCODE
+          Write-Host "IMP008B_E5_AVDETAIL_V2_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "link failed rc=$rc" }
+
+      - name: Run E5 diagnostic exactly once
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path 'build/bin/imp008b_e5_x18_runtime.exe').Path
+          $psi.WorkingDirectory = (Get-Location).Path
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot = $p.StandardOutput.ReadToEndAsync()
+          $et = $p.StandardError.ReadToEndAsync()
+          $timeout = -not $p.WaitForExit(30000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out = $ot.Result
+          $err = $et.Result
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-avdetail-v2.out.log'),$out)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-avdetail-v2.err.log'),$err)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-avdetail-v2.log'),$out+$err)
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'imp008b-e5-avdetail-v2.rc'),[string]$rc)
+          Write-Host $out
+          Write-Host $err
+          Write-Host ('IMP008B_E5_AVDETAIL_V2_RUNTIME_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Summarize AV detail
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          if (-not (Test-Path 'imp008b-e5-avdetail-v2.log')) { Write-Host 'IMP008B_E5_AVDETAIL_V2_RUNTIME=NOT_REACHED'; exit 0 }
+          Get-Content 'imp008b-e5-avdetail-v2.log' | Select-String -Pattern 'IMP008B_E5_EXCEPTION_(CODE|FLAGS|ADDRESS|NUMBER_PARAMETERS|INFORMATION_)|IMP008B_E5_AVCTX|IMP008B_E5_UCRTBASE_BASE|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE|IMP008B_E5_RUNTHREAD_RETURNED|IMP008B_E5_SVC_NUMBER'
+          if (Test-Path 'imp008b-e5-avdetail-v2.rc') { Write-Host ('IMP008B_E5_AVDETAIL_V2_RAW_RC=' + (Get-Content 'imp008b-e5-avdetail-v2.rc' -Raw).Trim()) }
+
+      - name: Upload AV detail diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-final-av-detail-v2
+          path: |
+            eden/imp008b-e5-avdetail-v2-commands.txt
+            eden/imp008b-e5-avdetail-v2-link.log
+            eden/imp008b-e5-avdetail-v2.log
+            eden/imp008b-e5-avdetail-v2.out.log
+            eden/imp008b-e5-avdetail-v2.err.log
+            eden/imp008b-e5-avdetail-v2.rc
+          if-no-files-found: warn
