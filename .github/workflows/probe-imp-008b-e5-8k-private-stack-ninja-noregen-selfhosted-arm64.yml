@@ -1,4 +1,4 @@
-name: Probe IMP-008B E5 Direct Command Extraction
+name: Probe IMP-008B E5 8K Private Stack Direct Compile Link Runtime
 
 on:
   workflow_dispatch:
@@ -12,13 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: probe-imp-008b-e5-direct-command-extraction
+  group: probe-imp-008b-e5-8k-private-stack-direct-runtime
   cancel-in-progress: false
 
 jobs:
-  e5-direct-command-extraction:
+  e5-8k-private-stack-direct-runtime:
     runs-on: [self-hosted, Windows, ARM64]
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Verify retained E5 8K A-B workspace
         shell: powershell
@@ -30,18 +30,16 @@ jobs:
           $probe = 'eden/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp'
           $transition = 'eden/src/core/arm/nce/windows_nce_transition.cpp'
           $runtime = 'eden/src/core/arm/nce/arm_nce_windows.cpp'
-          $build = 'eden/build/build.ninja'
-          $rules = 'eden/build/CMakeFiles/rules.ninja'
-          foreach ($p in @($probe,$transition,$runtime,$build,$rules)) {
+          foreach ($p in @($probe,$transition,$runtime,'eden/build/build.ninja','eden/build/CMakeFiles/rules.ninja')) {
             if (-not (Test-Path $p)) { throw "required retained file missing: $p" }
           }
           if (-not (Select-String -Path $probe -SimpleMatch 'IMP008B_E5_8K_GUEST_STACK=PASS' -Quiet)) { throw '8K guest stack patch missing' }
           if (-not (Select-String -Path $transition -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet)) { throw '8K transition patch missing' }
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet)) { throw 'generic VEH observer missing' }
           if (-not (Select-String -Path $runtime -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet)) { throw 'x18 VEH observer missing' }
-          Write-Host 'IMP008B_E5_DIRECT_EXTRACT_WORKSPACE=PASS'
+          Write-Host 'IMP008B_E5_DIRECT_RUNTIME_WORKSPACE=PASS'
 
-      - name: Set up minimal MSYS2 Ninja tooling
+      - name: Set up direct-build CLANGARM64 toolchain
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANGARM64
@@ -49,68 +47,151 @@ jobs:
           cache: false
           install: >-
             ninja
+          pacboy: >-
+            toolchain:p sccache:p libusb:p zlib:p enet:p boost:p fmt:p lz4:p
+            zstd:p opus:p libiconv:p
 
-      - name: Snapshot retained Ninja graph hashes
+      - name: Extract exact commands and prove tool mode read-only
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
-          sha256sum build/build.ninja build/CMakeFiles/rules.ninja > imp008b-e5-direct-before.sha256
-          cat imp008b-e5-direct-before.sha256
-          echo 'IMP008B_E5_DIRECT_HASH_BEFORE=PASS'
-
-      - name: Extract target commands with Ninja tool mode only
-        shell: msys2 {0}
-        working-directory: eden
-        run: |
-          set -euo pipefail
+          before_build=$(sha256sum build/build.ninja | awk '{print $1}')
+          before_rules=$(sha256sum build/CMakeFiles/rules.ninja | awk '{print $1}')
           ninja -C build -t commands imp008b_e5_x18_runtime > imp008b-e5-direct-commands.txt
-          ninja -C build -t compdb > imp008b-e5-direct-compdb.json
-          ninja -C build -t query imp008b_e5_x18_runtime > imp008b-e5-direct-query.txt
-          test -s imp008b-e5-direct-commands.txt
-          test -s imp008b-e5-direct-compdb.json
-          test -s imp008b-e5-direct-query.txt
-          echo '=== DIRTY SOURCE COMMAND HITS ==='
-          grep -nE 'x18_runtime_invariant\.cpp|windows_nce_transition\.cpp|arm_nce_windows\.cpp' imp008b-e5-direct-commands.txt || true
-          echo '=== FINAL TARGET HITS ==='
-          grep -nE 'imp008b_e5_x18_runtime(\.exe)?' imp008b-e5-direct-commands.txt || true
-          echo '=== TARGET QUERY ==='
-          cat imp008b-e5-direct-query.txt
-          echo 'IMP008B_E5_DIRECT_TOOL_EXTRACT=PASS'
-
-      - name: Prove Ninja tool mode did not mutate graph
-        shell: msys2 {0}
-        working-directory: eden
-        run: |
-          set -euo pipefail
-          sha256sum build/build.ninja build/CMakeFiles/rules.ninja > imp008b-e5-direct-after.sha256
-          diff -u imp008b-e5-direct-before.sha256 imp008b-e5-direct-after.sha256
+          after_build=$(sha256sum build/build.ninja | awk '{print $1}')
+          after_rules=$(sha256sum build/CMakeFiles/rules.ninja | awk '{print $1}')
+          printf 'BUILD_BEFORE=%s\nBUILD_AFTER=%s\nRULES_BEFORE=%s\nRULES_AFTER=%s\n' "$before_build" "$after_build" "$before_rules" "$after_rules" | tee imp008b-e5-direct-graph-hashes.txt
+          test "$before_build" = "$after_build"
+          test "$before_rules" = "$after_rules"
+          probe_hits=$(grep -Ec 'x18_runtime_invariant\.cpp' imp008b-e5-direct-commands.txt || true)
+          runtime_hits=$(grep -Ec 'arm_nce_windows\.cpp' imp008b-e5-direct-commands.txt || true)
+          transition_hits=$(grep -Ec 'windows_nce_transition\.cpp' imp008b-e5-direct-commands.txt || true)
+          link_hits=$(grep -Ec -- '-o bin\\imp008b_e5_x18_runtime\.exe' imp008b-e5-direct-commands.txt || true)
+          echo "IMP008B_E5_DIRECT_PROBE_CMD_HITS=$probe_hits"
+          echo "IMP008B_E5_DIRECT_RUNTIME_CMD_HITS=$runtime_hits"
+          echo "IMP008B_E5_DIRECT_TRANSITION_CMD_HITS=$transition_hits"
+          echo "IMP008B_E5_DIRECT_LINK_CMD_HITS=$link_hits"
+          test "$probe_hits" -eq 1
+          test "$runtime_hits" -eq 1
+          test "$transition_hits" -eq 1
+          test "$link_hits" -eq 1
           echo 'IMP008B_E5_DIRECT_GRAPH_UNCHANGED=PASS'
+          echo 'IMP008B_E5_DIRECT_COMMAND_EXTRACTION=PASS'
 
-      - name: Summarize direct command candidates
+      - name: Directly compile only three retained E5 changed sources
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-direct-commands.txt')
+          function Get-One([string]$pattern, [string]$label) {
+            $hits = @($lines | Where-Object { $_ -match $pattern })
+            if ($hits.Count -ne 1) { throw "$label command count=$($hits.Count)" }
+            return [string]$hits[0]
+          }
+          function Invoke-Direct([string]$label, [string]$line) {
+            if ($line -match 'RERUN_CMAKE|regenerate-during-build') { throw "$label unexpectedly contains CMake regeneration" }
+            $cmd = [regex]::Replace($line, "'(C:/[^']+)'", '$1')
+            Write-Host "IMP008B_E5_DIRECT_${label}_BEGIN=PASS"
+            & $env:ComSpec /D /S /C $cmd
+            $rc = $LASTEXITCODE
+            Write-Host "IMP008B_E5_DIRECT_${label}_RC=$rc"
+            if ($rc -ne 0) { throw "$label direct command failed rc=$rc" }
+            Write-Host "IMP008B_E5_DIRECT_${label}=PASS"
+          }
+          $probe = Get-One 'x18_runtime_invariant\.cpp' 'PROBE_COMPILE'
+          $runtime = Get-One 'arm_nce_windows\.cpp' 'RUNTIME_COMPILE'
+          $transition = Get-One 'windows_nce_transition\.cpp' 'TRANSITION_COMPILE'
+          Invoke-Direct 'PROBE_COMPILE' $probe
+          Invoke-Direct 'RUNTIME_COMPILE' $runtime
+          Invoke-Direct 'TRANSITION_COMPILE' $transition
+          foreach ($obj in @(
+            'src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj',
+            'src/core/CMakeFiles/core.dir/arm/nce/arm_nce_windows.cpp.obj',
+            'src/core/CMakeFiles/core.dir/arm/nce/windows_nce_transition.cpp.obj'
+          )) {
+            if (-not (Test-Path $obj)) { throw "direct compile object missing: $obj" }
+          }
+          Write-Host 'IMP008B_E5_DIRECT_THREE_OBJECTS=PASS'
+          Write-Host 'IMP008B_E5_DIRECT_CORE_THIN_ARCHIVE_RELINK=NOT_REQUIRED'
+
+      - name: Directly execute extracted final link command
+        shell: powershell
+        working-directory: eden/build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = @(Get-Content '../imp008b-e5-direct-commands.txt')
+          $hits = @($lines | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+          if ($hits.Count -ne 1) { throw "final link command count=$($hits.Count)" }
+          $cmd = [string]$hits[0]
+          if ($cmd -match 'RERUN_CMAKE|regenerate-during-build') { throw 'final link unexpectedly contains CMake regeneration' }
+          Write-Host 'IMP008B_E5_DIRECT_LINK_BEGIN=PASS'
+          & $env:ComSpec /D /S /C $cmd
+          $rc = $LASTEXITCODE
+          Write-Host "IMP008B_E5_DIRECT_LINK_RC=$rc"
+          if ($rc -ne 0) { throw "direct final link failed rc=$rc" }
+          if (-not (Test-Path 'bin/imp008b_e5_x18_runtime.exe')) { throw 'direct-linked E5 executable missing' }
+          Write-Host 'IMP008B_E5_DIRECT_LINK=PASS'
+
+      - name: Launch E5 8K private guest stack A-B
         shell: msys2 {0}
         working-directory: eden
         run: |
-          set -euo pipefail
-          total=$(wc -l < imp008b-e5-direct-commands.txt)
-          dirty=$(grep -Ec 'x18_runtime_invariant\.cpp|windows_nce_transition\.cpp|arm_nce_windows\.cpp' imp008b-e5-direct-commands.txt || true)
-          target=$(grep -Ec 'imp008b_e5_x18_runtime(\.exe)?' imp008b-e5-direct-commands.txt || true)
-          echo "IMP008B_E5_DIRECT_COMMAND_COUNT=$total"
-          echo "IMP008B_E5_DIRECT_DIRTY_COMPILE_HITS=$dirty"
-          echo "IMP008B_E5_DIRECT_TARGET_HITS=$target"
-          test "$dirty" -ge 3
-          test "$target" -ge 1
-          echo 'IMP008B_E5_DIRECT_COMMAND_CANDIDATES=PASS'
+          set -uo pipefail
+          set +e
+          timeout 30s build/bin/imp008b_e5_x18_runtime.exe > imp008b-e5-8k-direct.out.log 2> imp008b-e5-8k-direct.err.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > imp008b-e5-8k-direct.rc
+          cat imp008b-e5-8k-direct.out.log imp008b-e5-8k-direct.err.log > imp008b-e5-8k-direct.log 2>/dev/null || true
+          cat imp008b-e5-8k-direct.log || true
+          echo "IMP008B_E5_8K_DIRECT_RC=$rc"
 
-      - name: Upload extraction logs
+      - name: Classify E5 8K stack boundary
+        if: always()
+        shell: powershell
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'imp008b-e5-8k-direct.log')) { throw 'runtime log missing' }
+          Get-Content 'imp008b-e5-8k-direct.log' | Select-String -Pattern 'IMP008B_E5_(8K_|GENERIC_VEH_|X18_VEH_|X18_TRYREDIRECT|RUNTHREAD_RETURNED|GUEST_X18_EXECUTED|SVC_RETURN|ARCH_CONTEXT|HALT_REASON|SVC_NUMBER|RETURN_CONTEXT|GATE)|IMP008B_E2_RESTORE_CONTEXT|IMP008B_E2_BEFORE_NT_CONTINUE'
+          $guestStack = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E5_8K_GUEST_STACK=PASS' -Quiet
+          $ready = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E5_8K_STACK_READY=PASS' -Quiet
+          $beforeNt = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E2_BEFORE_NT_CONTINUE=PASS' -Quiet
+          $generic = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E5_GENERIC_VEH_ENTER=PASS' -Quiet
+          $x18 = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E5_X18_VEH_ENTER=PASS' -Quiet
+          $secondRestore = Select-String -Path 'imp008b-e5-8k-direct.log' -Pattern 'IMP008B_E2_RESTORE_CONTEXT PC=0x[0-9A-Fa-f]*28 ' -Quiet
+          $returned = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E5_RUNTHREAD_RETURNED=PASS' -Quiet
+          $svc = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E5_SVC_NUMBER_RAW=0x00000055' -Quiet
+          $x18result = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E5_GUEST_X18_EXECUTED=PASS' -Quiet
+          $gate = Select-String -Path 'imp008b-e5-8k-direct.log' -SimpleMatch 'IMP008B_E5_GATE=PASS' -Quiet
+          Write-Host ('IMP008B_E5_8K_GUEST_STACK_RESULT=' + $(if ($guestStack) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_READY=' + $(if ($ready) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_BEFORE_NT=' + $(if ($beforeNt) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_GENERIC_VEH=' + $(if ($generic) {'PASS'} else {'NO_ENTRY'}))
+          Write-Host ('IMP008B_E5_8K_X18_VEH=' + $(if ($x18) {'PASS'} else {'NO_ENTRY'}))
+          Write-Host ('IMP008B_E5_8K_SECOND_RESTORE=' + $(if ($secondRestore) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_RUNTHREAD_RETURNED=' + $(if ($returned) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_SVC55=' + $(if ($svc) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_X18_RESULT=' + $(if ($x18result) {'PASS'} else {'NO'}))
+          Write-Host ('IMP008B_E5_8K_GATE=' + $(if ($gate) {'PASS'} else {'NO'}))
+          if ($generic) {
+            Write-Host 'IMP008B_E5_8K_STACK_VAD_BOUNDARY=CONFIRMED'
+          } else {
+            Write-Host 'IMP008B_E5_8K_STACK_VAD_BOUNDARY=NOT_CONFIRMED'
+          }
+
+      - name: Upload direct-build runtime diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e5-direct-command-extraction
+          name: e5-8k-private-stack-direct-runtime
           path: |
-            eden/imp008b-e5-direct-before.sha256
-            eden/imp008b-e5-direct-after.sha256
             eden/imp008b-e5-direct-commands.txt
-            eden/imp008b-e5-direct-compdb.json
-            eden/imp008b-e5-direct-query.txt
+            eden/imp008b-e5-direct-graph-hashes.txt
+            eden/imp008b-e5-8k-direct.log
+            eden/imp008b-e5-8k-direct.out.log
+            eden/imp008b-e5-8k-direct.err.log
+            eden/imp008b-e5-8k-direct.rc
           if-no-files-found: warn
