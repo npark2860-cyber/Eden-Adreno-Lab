@@ -48,9 +48,7 @@ jobs:
             @('    device_memory.Free(TargetDeviceAddress, PageSize * 2);','IMP008E_E2_CLEANUP_09_BEFORE_DEVICE_FREE'),
             @('    device_memory.UnregisterProcess(asid);','IMP008E_E2_CLEANUP_10_BEFORE_UNREGISTER'),
             @('    thread->Close(system.Kernel());','IMP008E_E2_CLEANUP_11_BEFORE_THREAD_CLOSE'),
-            @('    system.ShutdownMainProcess();','IMP008E_E2_CLEANUP_12_BEFORE_SHUTDOWN'),
-            @('    std::filesystem::remove(nro_path);','IMP008E_E2_CLEANUP_13_BEFORE_REMOVE_NRO'),
-            @('    Trace("IMP008E_E2_GATE");','IMP008E_E2_CLEANUP_14_GATE_REACHED')
+            @('    system.ShutdownMainProcess();','IMP008E_E2_CLEANUP_12_BEFORE_SHUTDOWN')
           )
           foreach ($pair in $markers) {
             $anchor=[string]$pair[0]; $marker=[string]$pair[1]
