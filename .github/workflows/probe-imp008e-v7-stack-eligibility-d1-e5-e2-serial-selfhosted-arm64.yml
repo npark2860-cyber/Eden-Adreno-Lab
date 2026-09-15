@@ -70,7 +70,7 @@ jobs:
             $compile=[regex]::Replace($compile,'\s-I',(" -I"+$overlay+' -I'),1)
             $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
             $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
-            & $env:ComSpec /D /S /C $compile 2>&1 | Tee-Object -FilePath '..\imp008e-corrected-production-arm-compile.log'
+            & $env:ComSpec /D /S /C $compile
             if($LASTEXITCODE-ne 0){throw "corrected production arm compile rc=$LASTEXITCODE"}
           } finally { Pop-Location }
           if(-not(Test-Path 'eden/build/imp008e_production_hostmemory_lease_compile_6e1167c9/arm_nce_windows.cpp.obj')){throw 'corrected production object missing'}
@@ -182,7 +182,6 @@ jobs:
         with:
           name: imp008e-corrected-production-hostmemory-lease-d1-e5-e2
           path: |
-            eden/imp008e-corrected-production-arm-compile.log
             eden/imp008d-d1-corrected-production.log
             eden/imp008b-e5-corrected-production.log
             eden/imp008e-e2-corrected-production.log
