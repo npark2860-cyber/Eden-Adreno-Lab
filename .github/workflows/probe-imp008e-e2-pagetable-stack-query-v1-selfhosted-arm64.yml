@@ -1,0 +1,150 @@
+name: Probe IMP-008E E2 PageTable Stack Query V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/imp-008e-windows-nce-rasterizer-recovery-runtime
+    paths:
+      - .github/workflows/probe-imp008e-e2-pagetable-stack-query-v1-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-pagetable-stack-query-v1
+  cancel-in-progress: false
+
+jobs:
+  e2-pagetable-stack-query-v1:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 8
+    steps:
+      - name: Build E2 page-table stack probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if (-not (Test-Path 'eden/.git')) { throw 'retained eden checkout missing' }
+          $head=(git -C eden rev-parse HEAD).Trim()
+          if ($head -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31') { throw "unexpected retained head $head" }
+          if (-not (Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')) { throw 'generic transition object missing' }
+
+          $src=(Resolve-Path 'eden/probes/windows-arm64-nce-rasterizer-e2/rasterizer_cached_retry.cpp').Path
+          $dir='eden/build/e2_pagetable_stack_query_v1'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dst=Join-Path (Resolve-Path $dir).Path 'rasterizer_cached_retry_pagetable_stack.cpp'
+          $text=[IO.File]::ReadAllText($src)
+
+          $a='constexpr std::size_t GuestLoadOffset = 0x300;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'GuestLoadOffset anchor mismatch' }
+          $text=$text.Replace($a,"constexpr std::size_t GuestStackLimitHandoffOffset = 0x300;`r`nconstexpr std::size_t GuestLoadOffset = 0x304;")
+          $text=$text.Replace('constexpr std::size_t GuestSvcOffset = 0x304;','constexpr std::size_t GuestSvcOffset = 0x308;')
+          $text=$text.Replace('constexpr std::size_t GuestAfterSvcOffset = 0x308;','constexpr std::size_t GuestAfterSvcOffset = 0x30C;')
+
+          $a='constexpr u32 GuestLdrX3X2 = 0xF9400043U; // ldr x3, [x2]'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'guest opcode anchor mismatch' }
+          $text=$text.Replace($a,"constexpr u32 GuestStoreGuestStackLimit = 0xF9000A45U; // str x5, [x18, #16] => NT_TIB.StackLimit`r`nconstexpr u32 GuestLdrX3X2 = 0xF9400043U; // ldr x3, [x2]")
+
+          $a='    WriteU32(bytes, GuestLoadOffset, GuestLdrX3X2);'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'guest write anchor mismatch' }
+          $text=$text.Replace($a,"    WriteU32(bytes, GuestStackLimitHandoffOffset, GuestStoreGuestStackLimit);`r`n    WriteU32(bytes, GuestLoadOffset, GuestLdrX3X2);")
+
+          $a='    const u64 guest_pc = load_base + GuestLoadOffset;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'guest pc anchor mismatch' }
+          $text=$text.Replace($a,"    const u64 guest_entry_pc = load_base + GuestStackLimitHandoffOffset;`r`n    const u64 guest_pc = load_base + GuestLoadOffset;")
+
+          $a='    const u64 guest_sp = load_base + SyntheticNroSize - 0x20;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'guest sp anchor mismatch' }
+          $replacement=@(
+            '    Kernel::KProcessAddress guest_stack_bottom{};',
+            '    const auto guest_stack_map = process->GetPageTable().MapPages(std::addressof(guest_stack_bottom), 0x10, Kernel::KMemoryState::Stack, Kernel::KMemoryPermission::UserReadWrite);',
+            '    if (guest_stack_map.IsFailure()) { Fatal("IMP008E_E2_GUEST_STACK_MAP", 69); }',
+            '    const u64 guest_stack_limit = guest_stack_bottom.GetValue();',
+            '    const u64 guest_sp = guest_stack_limit + 0x10000 - 0x20;',
+            '    Kernel::KMemoryInfo guest_stack_info{};',
+            '    Kernel::Svc::PageInfo guest_stack_page{};',
+            '    const auto guest_stack_query = process->GetPageTable().QueryInfo(std::addressof(guest_stack_info), std::addressof(guest_stack_page), Kernel::KProcessAddress{guest_sp});',
+            '    if (guest_stack_query.IsFailure() || guest_stack_info.GetAddress() != guest_stack_limit || guest_stack_info.GetSize() < 0x10000 || guest_stack_info.GetState() != Kernel::KMemoryState::Stack) { Fatal("IMP008E_E2_GUEST_STACK_QUERY", 70); }',
+            '    std::fprintf(stderr, "IMP008E_E2_GUEST_STACK_QUERY=PASS LIMIT=0x%llX BASE=0x%llX SIZE=0x%llX STATE=0x%llX\n", static_cast<unsigned long long>(guest_stack_info.GetAddress()), static_cast<unsigned long long>(guest_stack_info.GetEndAddress()), static_cast<unsigned long long>(guest_stack_info.GetSize()), static_cast<unsigned long long>(guest_stack_info.GetSvcState()));',
+            '    std::fflush(stderr);'
+          ) -join "`r`n"
+          $text=$text.Replace($a,$replacement)
+
+          $a='    context.r[18] = X18Sentinel;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'x18 context anchor mismatch' }
+          $text=$text.Replace($a,"    context.r[18] = X18Sentinel;`r`n    context.r[5] = guest_stack_limit;")
+
+          $a='    context.pc = guest_pc;'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'context pc anchor mismatch' }
+          $text=$text.Replace($a,'    context.pc = guest_entry_pc;')
+
+          $a='        Fatal("IMP008E_E2_PRODUCTION_RETRY_STATE", 95);'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'legacy retry assertion anchor mismatch' }
+          $text=$text.Replace($a,'        Trace("IMP008E_E2_PRODUCTION_RETRY_STATE_HOST_ROUNDTRIP");')
+
+          $a='    Trace("IMP008E_E2_PHYSICAL_X18_TEB_AFTER");'
+          if (([regex]::Matches($text,[regex]::Escape($a))).Count -ne 1) { throw 'final x18 anchor mismatch' }
+          $text=$text.Replace($a,"    Trace(\"IMP008E_E2_PHYSICAL_X18_TEB_AFTER\");`r`n    Trace(\"IMP008E_E2_GATE\");`r`n    ExitProcess(0);")
+
+          [IO.File]::WriteAllText($dst,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location 'eden/build'
+          try {
+            $commands=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if ($LASTEXITCODE -ne 0) { throw "ninja rc=$LASTEXITCODE" }
+            $hits=@($commands | Where-Object { (($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$" })
+            if ($hits.Count -ne 1) { throw "E5 compile count=$($hits.Count)" }
+            $compile=[string]$hits[0]
+            $oldObj='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newObj='e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp.obj'
+            $compile=$compile.Replace($oldObj,$newObj)
+            $compile=[regex]::Replace($compile,'-MF\s+\S+\.obj\.d','-MF e2_pagetable_stack_query_v1\rasterizer_cached_retry_pagetable_stack.cpp.obj.d')
+            $compile=[regex]::Replace($compile,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c C:/actions-runner/_work/Eden-Adreno-Lab/Eden-Adreno-Lab/eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')
+            $compile=$compile.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $compile=[regex]::Replace($compile,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $compile
+            if ($LASTEXITCODE -ne 0) { throw "pagetable-stack compile rc=$LASTEXITCODE" }
+
+            $linkHits=@($commands | Where-Object { $_ -match '-o bin\\imp008b_e5_x18_runtime\.exe' })
+            if ($linkHits.Count -ne 1) { throw "E5 link count=$($linkHits.Count)" }
+            $link=[string]$linkHits[0]
+            $link=$link.Replace($oldObj,$newObj)
+            $link=$link.Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_pagetable_stack_query_v1.exe')
+            $link=$link.Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_pagetable_stack_query_v1.a')
+            $link=$link.Replace('src/core/libcore.a','generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a')
+            $link=$link.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $link
+            if ($LASTEXITCODE -ne 0) { throw "pagetable-stack link rc=$LASTEXITCODE" }
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_PAGETABLE_STACK_BUILD=PASS'
+
+      - name: Run E2 page-table stack exactly once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $psi=New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_pagetable_stack_query_v1.exe').Path
+          $psi.WorkingDirectory=(Resolve-Path 'eden').Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+          if (-not $p.Start()) { throw 'runtime start failed' }
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(60000)
+          if ($timeout) { $p.Kill(); $p.WaitForExit() }
+          $out=$ot.Result; $err=$et.Result
+          if ($timeout) { $rc=124 } else { $rc=$p.ExitCode }
+          $log=$out+$err
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path 'eden').Path 'imp008e-e2-pagetable-stack-query-v1.log'),$log)
+          Write-Host $out; Write-Host $err
+          Write-Host ('IMP008E_E2_PAGETABLE_STACK_RC={0} (0x{1:X8})' -f $rc,($rc -band 0xffffffffL))
+
+      - name: Classify page-table stack result
+        shell: powershell
+        run: |
+          $log=Get-Content 'eden/imp008e-e2-pagetable-stack-query-v1.log' -Raw
+          Get-Content 'eden/imp008e-e2-pagetable-stack-query-v1.log' | Select-String -Pattern 'IMP008E_E2_GUEST_STACK_QUERY|IMP008B_GENERIC_STACK_TOP|IMP008E_E2_(DATA_AV|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|RETURNED|REEXECUTED_VALUE_EXACT|POST_SVC_PC_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|GATE|FAIL)'
+          if ($log.Contains('IMP008E_E2_GATE=PASS')) { Write-Host 'IMP008E_E2_PAGETABLE_STACK_QUERY_V1=PASS' }
+          elseif ($log.Contains('IMP008E_E2_GUEST_STACK_QUERY=PASS')) { Write-Host 'IMP008E_E2_PAGETABLE_STACK_QUERY_V1=STACK_QUERY_PASS_RUNTIME_FAIL' }
+          else { Write-Host 'IMP008E_E2_PAGETABLE_STACK_QUERY_V1=STACK_QUERY_FAIL' }
