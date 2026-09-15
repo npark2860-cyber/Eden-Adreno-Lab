@@ -308,7 +308,10 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         params->lock.store(SpinLockLocked, std::memory_order_release);
         NCE::WindowsNceTransition::RedirectToHost(
             context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
-        NCE::WindowsNceTransition::ContinueContext(context);
+        auto* const teb = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        teb->StackLimit = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackLow());
+        teb->StackBase = reinterpret_cast<PVOID>(nce->m_windows_break->HostStackHigh());
+        return EXCEPTION_CONTINUE_EXECUTION;
     }
 
     // IMP-008A does not claim complete game fault compatibility. Unknown host/guest exception
