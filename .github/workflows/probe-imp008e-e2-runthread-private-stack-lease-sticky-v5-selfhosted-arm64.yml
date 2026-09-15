@@ -1,0 +1,168 @@
+name: Probe IMP-008E E2 RunThread Private Stack Lease Sticky V5
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/imp-008e-windows-nce-rasterizer-recovery-runtime]
+    paths:
+      - .github/workflows/probe-imp008e-e2-runthread-private-stack-lease-sticky-v5-selfhosted-arm64.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-imp008e-e2-runthread-private-stack-lease-sticky-v5
+  cancel-in-progress: false
+
+jobs:
+  e2-runthread-private-stack-lease-sticky-v5:
+    runs-on: [self-hosted, Windows, ARM64]
+    timeout-minutes: 8
+    steps:
+      - name: Build sticky RunThread lease probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if((git -C eden rev-parse HEAD).Trim() -ne '38ffd8f36f797c487e3e88ec7dbe4cac327a2c31'){throw 'unexpected retained HEAD'}
+          if(-not(Test-Path 'eden/build/generic_stacktop_ab/windows_nce_transition.cpp.obj')){throw 'generic transition object missing'}
+          if(-not(Test-Path 'eden/build/e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp')){throw 'E2 source missing'}
+          $v4src='eden/build/e2_runthread_private_stack_lease_v4/arm_nce_windows.cpp'
+          if(-not(Test-Path $v4src)){throw 'v4 generated RunThread source missing'}
+
+          $dir='eden/build/e2_runthread_private_stack_lease_sticky_v5'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $armSrc=Join-Path (Resolve-Path $dir).Path 'arm_nce_windows.cpp'
+          $text=[IO.File]::ReadAllText((Resolve-Path $v4src).Path).Replace("`r`n","`n")
+
+          $decl=@'
+        bool private_stack_active = false;
+        bool private_stack_passthrough = false;
+        u64 private_stack_base = 0;
+        size_t private_stack_size = 0;
+        size_t private_stack_backing_offset = 0;
+
+'@
+          if(([regex]::Matches($text,[regex]::Escape($decl))).Count-ne 1){throw 'v4 lease declaration anchor mismatch'}
+          $text=$text.Replace($decl,'')
+
+          $loopAnchor="    const auto& post_handlers = process->GetPostHandlers();`n`n    for (;;) {"
+          $loopState=@'
+    const auto& post_handlers = process->GetPostHandlers();
+
+    // Diagnostic V5: lease lifetime is the entire RunThread fault/retry epoch, not one loop iteration.
+    bool private_stack_active = false;
+    bool private_stack_passthrough = false;
+    u64 private_stack_base = 0;
+    size_t private_stack_size = 0;
+    size_t private_stack_backing_offset = 0;
+
+    for (;;) {
+'@
+          if(([regex]::Matches($text,[regex]::Escape($loopAnchor))).Count-ne 1){throw 'RunThread loop anchor mismatch'}
+          $text=$text.Replace($loopAnchor,$loopState.TrimEnd("`r","`n"))
+
+          $privateAnchor='        if (private_stack_mbi.Type == MEM_PRIVATE) {'
+          $privateReuse=@'
+        if (private_stack_active && private_stack_mbi.Type == MEM_PRIVATE) {
+            const u64 private_stack_end =
+                private_stack_base + static_cast<u64>(private_stack_size);
+            if (m_guest_ctx.sp <= private_stack_base || m_guest_ctx.sp >= private_stack_end ||
+                reinterpret_cast<u64>(private_stack_mbi.AllocationBase) != private_stack_base) {
+                NCE::CurrentNceContext::Clear();
+                hr = HaltReason::PrefetchAbort;
+                break;
+            }
+            std::fprintf(stderr,
+                         "IMP008E_NCE_STACK_LEASE_REUSE=PASS BASE=0x%llX SIZE=0x%llX TYPE=0x%lX\n",
+                         static_cast<unsigned long long>(private_stack_base),
+                         static_cast<unsigned long long>(private_stack_size),
+                         static_cast<unsigned long>(private_stack_mbi.Type));
+            std::fflush(stderr);
+        } else if (private_stack_mbi.Type == MEM_PRIVATE) {
+'@
+          if(([regex]::Matches($text,[regex]::Escape($privateAnchor))).Count-ne 1){throw 'MEM_PRIVATE lease anchor mismatch'}
+          $text=$text.Replace($privateAnchor,$privateReuse.TrimEnd("`r","`n"))
+
+          $cleanupAnchor='        if (private_stack_active) {'
+          if(([regex]::Matches($text,[regex]::Escape($cleanupAnchor))).Count-ne 1){throw 'lease cleanup anchor mismatch'}
+          $text=$text.Replace($cleanupAnchor,'        if (private_stack_active && !m_windows_pending_nce_fault) {')
+
+          [IO.File]::WriteAllText($armSrc,$text,[Text.UTF8Encoding]::new($false))
+
+          Push-Location eden/build
+          try {
+            $cmds=& 'C:\msys64\usr\bin\ninja.exe' -t commands imp008b_e5_x18_runtime
+            if($LASTEXITCODE-ne 0){throw "ninja commands rc=$LASTEXITCODE"}
+
+            $arm=@($cmds|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/src/core/arm/nce/arm_nce_windows\.cpp'?$"})
+            if($arm.Count-ne 1){throw "arm compile count=$($arm.Count)"}
+            $c=[string]$arm[0]
+            $m=[regex]::Match($c,'-o\s+(\S*arm_nce_windows\.cpp\.obj)')
+            if(!$m.Success){throw 'arm object path missing'}
+            $oldArm=$m.Groups[1].Value.Trim("'")
+            $newArm='e2_runthread_private_stack_lease_sticky_v5/arm_nce_windows.cpp.obj'
+            $c=$c.Replace($oldArm,$newArm)
+            $c=[regex]::Replace($c,'-MF\s+\S*arm_nce_windows\.cpp\.obj\.d','-MF e2_runthread_private_stack_lease_sticky_v5\arm_nce_windows.cpp.obj.d')
+            $armSource=((Resolve-Path 'e2_runthread_private_stack_lease_sticky_v5/arm_nce_windows.cpp').Path -replace '\\','/')
+            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/src/core/arm/nce/arm_nce_windows\.cpp'?",'-c '+$armSource)
+            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $c
+            if($LASTEXITCODE-ne 0){throw "arm compile rc=$LASTEXITCODE"}
+
+            $main=@($cmds|Where-Object{(($_ -replace '\\','/')) -match " -c '?C:/.*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?$"})
+            if($main.Count-ne 1){throw "main compile count=$($main.Count)"}
+            $c=[string]$main[0]
+            $oldMain='src/yuzu_cmd/CMakeFiles/imp008b_e5_x18_runtime.dir/__/__/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant.cpp.obj'
+            $newMain='e2_runthread_private_stack_lease_sticky_v5/rasterizer_cached_retry.cpp.obj'
+            $c=$c.Replace($oldMain,$newMain)
+            $c=[regex]::Replace($c,'-MF\s+\S+\.obj\.d','-MF e2_runthread_private_stack_lease_sticky_v5\rasterizer_cached_retry.cpp.obj.d')
+            $e2Source=((Resolve-Path 'e2_pagetable_stack_query_v1/rasterizer_cached_retry_pagetable_stack.cpp').Path -replace '\\','/')
+            $c=[regex]::Replace($c,"-c\s+'?C:/[^']*?/probes/windows-arm64-nce-runthread-e5/x18_runtime_invariant\.cpp'?",'-c '+$e2Source)
+            $c=$c.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64').Replace('C:\msys64\clangarm64\bin\sccache.exe ','').Replace('C:/msys64/clangarm64/bin/sccache.exe ','')
+            $c=[regex]::Replace($c,"'(C:/[^']+)'",'$1')
+            & $env:ComSpec /D /S /C $c
+            if($LASTEXITCODE-ne 0){throw "main compile rc=$LASTEXITCODE"}
+
+            $links=@($cmds|Where-Object{$_ -match '-o bin\\imp008b_e5_x18_runtime\.exe'})
+            if($links.Count-ne 1){throw "link count=$($links.Count)"}
+            $l=[string]$links[0]
+            $l=$l.Replace($oldMain,$newMain).Replace('bin\imp008b_e5_x18_runtime.exe','bin\imp008e_e2_runthread_private_stack_lease_sticky_v5.exe').Replace('src\yuzu_cmd\libimp008b_e5_x18_runtime.a','src\yuzu_cmd\libimp008e_e2_runthread_private_stack_lease_sticky_v5.a').Replace('src/core/libcore.a',"$newArm generic_stacktop_ab/windows_nce_transition.cpp.obj src/core/libcore.a")
+            $l=$l.Replace('C:\actions-runner\_work\_temp\msys64\clangarm64','C:\msys64\clangarm64').Replace('C:/actions-runner/_work/_temp/msys64/clangarm64','C:/msys64/clangarm64')
+            & $env:ComSpec /D /S /C $l
+            if($LASTEXITCODE-ne 0){throw "link rc=$LASTEXITCODE"}
+          } finally { Pop-Location }
+          Write-Host 'IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_STICKY_V5_BUILD=PASS'
+
+      - name: Run sticky E2 exactly once
+        shell: powershell
+        run: |
+          $psi=New-Object Diagnostics.ProcessStartInfo
+          $psi.FileName=(Resolve-Path 'eden/build/bin/imp008e_e2_runthread_private_stack_lease_sticky_v5.exe').Path
+          $psi.WorkingDirectory=(Resolve-Path eden).Path
+          $psi.UseShellExecute=$false
+          $psi.RedirectStandardOutput=$true
+          $psi.RedirectStandardError=$true
+          $p=New-Object Diagnostics.Process
+          $p.StartInfo=$psi
+          [void]$p.Start()
+          $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()
+          $timeout=-not $p.WaitForExit(60000); if($timeout){$p.Kill();$p.WaitForExit()}
+          $out=$ot.Result; $err=$et.Result; $rc=if($timeout){124}else{$p.ExitCode}; $log=$out+$err
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path eden).Path 'imp008e-e2-runthread-private-stack-lease-sticky-v5.log'),$log)
+          Write-Host $out; Write-Host $err; Write-Host "IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_STICKY_V5_RC=$rc"
+
+      - name: Classify sticky lease result
+        shell: powershell
+        run: |
+          $log=Get-Content 'eden/imp008e-e2-runthread-private-stack-lease-sticky-v5.log' -Raw
+          Get-Content 'eden/imp008e-e2-runthread-private-stack-lease-sticky-v5.log' | Select-String -Pattern 'IMP008E_NCE_STACK_LEASE|IMP008E_E2_(DATA_AV_EXACT|PRODUCTION_RETRY_STATE|POST_RETURN_RW|SUPERVISOR_CALL_RETURN|SVC_NUMBER|REEXECUTED_VALUE_EXACT|POST_SVC_PC_EXACT|CONTEXT_COHERENT|PHYSICAL_X18_TEB_AFTER|GATE|FAIL)'
+          $begin=([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_BEGIN=PASS')).Count
+          $reuse=([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_REUSE=PASS')).Count
+          $end=([regex]::Matches($log,'IMP008E_NCE_STACK_LEASE_END=PASS')).Count
+          if($log.Contains('IMP008E_E2_GATE=PASS') -and $begin -eq 1 -and $reuse -ge 1 -and $end -eq 1){
+            Write-Host "IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_STICKY_V5=PASS BEGIN=$begin REUSE=$reuse END=$end"
+            exit 0
+          }
+          Write-Host "IMP008E_E2_RUNTHREAD_PRIVATE_STACK_LEASE_STICKY_V5=FAIL BEGIN=$begin REUSE=$reuse END=$end"
+          exit 1
