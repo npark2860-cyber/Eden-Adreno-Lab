@@ -26,7 +26,7 @@ runner = replace_once(
     runner,
     "logging-include",
     """#include \"core/arm/nce/windows_x18_fallback_runner.h\"\n\n#include \"core/arm/dynarmic/arm_dynarmic_64.h\"\n""",
-    """#include \"core/arm/nce/windows_x18_fallback_runner.h\"\n\n#include \"common/logging/log.h\"\n#include \"core/arm/dynarmic/arm_dynarmic_64.h\"\n""",
+    """#include \"core/arm/nce/windows_x18_fallback_runner.h\"\n\n#include \"common/logging.h\"\n#include \"core/arm/dynarmic/arm_dynarmic_64.h\"\n""",
 )
 runner = replace_once(
     runner,
