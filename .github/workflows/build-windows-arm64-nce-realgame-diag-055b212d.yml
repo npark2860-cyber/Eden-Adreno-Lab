@@ -1,4 +1,4 @@
-name: Build Windows ARM64 NCE real-game diagnostics V3 055b212d
+name: Build Windows ARM64 NCE real-game diagnostics V4 055b212d
 
 on:
   workflow_dispatch:
@@ -9,25 +9,27 @@ on:
       - .github/workflows/build-windows-arm64-nce-realgame-diag-055b212d.yml
       - .github/diagnostics/apply-windows-nce-realgame-telemetry.py
       - .github/diagnostics/apply-windows-nce-stacktop-transition-ab.py
+      - .github/diagnostics/apply-windows-nce-transition-breadcrumb-v4.py
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: build-windows-nce-realgame-diag-v3-055b212d
+  group: build-windows-nce-realgame-diag-v4-055b212d
   cancel-in-progress: false
 
 env:
   SOURCE_SHA: 055b212df86dbfc18257b127ee5a0cbfda8ff861
   CI_REF: afead830f3a444427f9fdfd841218f932465c03a
-  TEST_NAME: realgame-diag-v3-055b212d
+  TEST_NAME: realgame-diag-v4-055b212d
   SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-telemetry.py
   TRANSITION_SCRIPT_PATH: .github/diagnostics/apply-windows-nce-stacktop-transition-ab.py
+  BREADCRUMB_SCRIPT_PATH: .github/diagnostics/apply-windows-nce-transition-breadcrumb-v4.py
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE real-game diagnostic V3 package
+    name: Windows ARM64 NCE real-game diagnostic V4 package
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -47,7 +49,7 @@ jobs:
         with:
           repository: npark2860-cyber/Eden-Adreno-Lab
           ref: ${{ github.sha }}
-          path: build/validation/${{ github.sha }}/realgame-diag-v3-055b212d/control
+          path: build/validation/${{ github.sha }}/realgame-diag-v4-055b212d/control
           fetch-depth: 0
 
       - name: Checkout exact frozen production source
@@ -55,11 +57,11 @@ jobs:
         with:
           repository: npark2860-cyber/Eden-Adreno-Lab
           ref: 055b212df86dbfc18257b127ee5a0cbfda8ff861
-          path: build/validation/${{ github.sha }}/realgame-diag-v3-055b212d/source
+          path: build/validation/${{ github.sha }}/realgame-diag-v4-055b212d/source
           fetch-depth: 0
           submodules: recursive
 
-      - name: Verify Git-object provenance and apply telemetry V3 transforms
+      - name: Verify Git-object provenance and apply telemetry V4 transforms
         shell: bash
         run: |
           set -euo pipefail
@@ -75,11 +77,13 @@ jobs:
 
           git -C "$CONTROL" show "$GITHUB_SHA:$SCRIPT_PATH" > "$PROV/apply-windows-nce-realgame-telemetry.py.git-object"
           git -C "$CONTROL" show "$GITHUB_SHA:$TRANSITION_SCRIPT_PATH" > "$PROV/apply-windows-nce-stacktop-transition-ab.py.git-object"
+          git -C "$CONTROL" show "$GITHUB_SHA:$BREADCRUMB_SCRIPT_PATH" > "$PROV/apply-windows-nce-transition-breadcrumb-v4.py.git-object"
           git -C "$SOURCE" show "$SOURCE_SHA:src/core/arm/nce/arm_nce_windows.cpp" > "$PROV/arm_nce_windows.cpp.base.git-object"
           git -C "$SOURCE" show "$SOURCE_SHA:src/core/arm/nce/windows_nce_transition.cpp" > "$PROV/windows_nce_transition.cpp.base.git-object"
 
           python "$PROV/apply-windows-nce-realgame-telemetry.py.git-object" "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           python "$PROV/apply-windows-nce-stacktop-transition-ab.py.git-object" "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
+          python "$PROV/apply-windows-nce-transition-breadcrumb-v4.py.git-object" "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
 
           git -C "$SOURCE" diff --check
           grep -Fq 'NCE_REALGAME_DIAG_FASTMEM' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
@@ -89,21 +93,26 @@ jobs:
           grep -Fq 'NCE_REALGAME_DIAG_RETURN' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'REALGAME_DIAG_TRANSFORM_V2=PASS' "$PROV/apply-windows-nce-realgame-telemetry.py.git-object"
           grep -Fq 'REALGAME_STACKTOP_TRANSITION_AB=PASS' "$PROV/apply-windows-nce-stacktop-transition-ab.py.git-object"
+          grep -Fq 'REALGAME_TRANSITION_BREADCRUMB_V4=PASS' "$PROV/apply-windows-nce-transition-breadcrumb-v4.py.git-object"
           grep -Fq 'guest->sp > allocation_end' "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
+          grep -Fq 'eden_nce_v4_breadcrumb.log' "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
+          grep -Fq 'GUEST_STACK_BRIDGE_REACHED' "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
+          grep -Fq 'BEFORE_BRIDGE_NTCONTINUE' "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
+          grep -Fq 'BEFORE_GUEST_NTCONTINUE' "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
 
-          git -C "$SOURCE" diff -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/arm_nce_windows.cpp.telemetry-v3.diff"
-          git -C "$SOURCE" diff -- src/core/arm/nce/windows_nce_transition.cpp > "$PROV/windows_nce_transition.cpp.stacktop-ab.diff"
+          git -C "$SOURCE" diff -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/arm_nce_windows.cpp.telemetry-v4.diff"
+          git -C "$SOURCE" diff -- src/core/arm/nce/windows_nce_transition.cpp > "$PROV/windows_nce_transition.cpp.stacktop-breadcrumb-v4.diff"
 
-          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus telemetry/stack-top Git-object transforms\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\nTRANSITION_SCRIPT_PATH=%s\n' \
-            "$SOURCE_SHA" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' "$GITHUB_SHA" "$TEST_NAME" "$SCRIPT_PATH" "$TRANSITION_SCRIPT_PATH" > "$PROV/BUILD_INFO.txt"
-          echo 'REALGAME_DIAG_V3_GIT_OBJECT_GUARD=PASS'
+          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_REPOSITORY=%s\nSOURCE_MODE=frozen Git object plus telemetry/stack-top/crash-breadcrumb Git-object transforms\nISOLATION_DIR=build/validation/%s/%s\nSCRIPT_PATH=%s\nTRANSITION_SCRIPT_PATH=%s\nBREADCRUMB_SCRIPT_PATH=%s\nBREADCRUMB_FILE=%%TEMP%%\\eden_nce_v4_breadcrumb.log\n' \
+            "$SOURCE_SHA" "$GITHUB_SHA" 'npark2860-cyber/Eden-Adreno-Lab' "$GITHUB_SHA" "$TEST_NAME" "$SCRIPT_PATH" "$TRANSITION_SCRIPT_PATH" "$BREADCRUMB_SCRIPT_PATH" > "$PROV/BUILD_INFO.txt"
+          echo 'REALGAME_DIAG_V4_GIT_OBJECT_GUARD=PASS'
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
         with:
           repository: Eden-CI/Workflow
           ref: afead830f3a444427f9fdfd841218f932465c03a
-          path: build/validation/${{ github.sha }}/realgame-diag-v3-055b212d/ci
+          path: build/validation/${{ github.sha }}/realgame-diag-v4-055b212d/ci
 
       - name: Install fixed Eden CI scripts
         shell: bash
@@ -127,9 +136,9 @@ jobs:
             enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
             libwebp:p libtiff:p brotli:p
 
-      - name: Configure diagnostic V3 Windows ARM64 NCE build
+      - name: Configure diagnostic V4 Windows ARM64 NCE build
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-diag-v3-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/realgame-diag-v4-055b212d/source
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
@@ -137,32 +146,32 @@ jobs:
           ./.ci/build/configure.sh -DCCACHE_PATH=sccache
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           printf 'CONFIGURE_COMMAND=./.ci/build/configure.sh -DCCACHE_PATH=sccache\nNCE_COMPILE_GUARD=HAS_NCE=1\n' >> ../provenance/BUILD_INFO.txt
-          echo 'REALGAME_DIAG_V3_CONFIGURE=PASS'
+          echo 'REALGAME_DIAG_V4_CONFIGURE=PASS'
 
-      - name: Build full Windows ARM64 Eden diagnostic V3 package
+      - name: Build full Windows ARM64 Eden diagnostic V4 package
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-diag-v3-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/realgame-diag-v4-055b212d/source
         run: |
           set -euo pipefail
           cmake --build build
           test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
           printf 'BUILD_COMMAND=cmake --build build\n' >> ../provenance/BUILD_INFO.txt
-          echo 'REALGAME_DIAG_V3_BUILD=PASS'
+          echo 'REALGAME_DIAG_V4_BUILD=PASS'
 
-      - name: Package Windows ARM64 Eden diagnostics V3
+      - name: Package Windows ARM64 Eden diagnostics V4
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-diag-v3-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/realgame-diag-v4-055b212d/source
         env:
-          ARTIFACT_REF: nce-realgame-diag-v3-055b212d
+          ARTIFACT_REF: nce-realgame-diag-v4-055b212d
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
-          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-realgame-diag-v3-055b212d\n' >> ../provenance/BUILD_INFO.txt
-          echo 'REALGAME_DIAG_V3_PACKAGE=PASS'
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-realgame-diag-v4-055b212d\n' >> ../provenance/BUILD_INFO.txt
+          echo 'REALGAME_DIAG_V4_PACKAGE=PASS'
 
-      - name: Prepare diagnostic V3 upload
+      - name: Prepare diagnostic V4 upload
         shell: pwsh
         run: |
           $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
@@ -176,17 +185,18 @@ jobs:
           Copy-Item (Join-Path $prov 'BUILD_INFO.txt') $upload -Force
           Copy-Item (Join-Path $prov 'apply-windows-nce-realgame-telemetry.py.git-object') $upload -Force
           Copy-Item (Join-Path $prov 'apply-windows-nce-stacktop-transition-ab.py.git-object') $upload -Force
-          Copy-Item (Join-Path $prov 'arm_nce_windows.cpp.telemetry-v3.diff') $upload -Force
-          Copy-Item (Join-Path $prov 'windows_nce_transition.cpp.stacktop-ab.diff') $upload -Force
+          Copy-Item (Join-Path $prov 'apply-windows-nce-transition-breadcrumb-v4.py.git-object') $upload -Force
+          Copy-Item (Join-Path $prov 'arm_nce_windows.cpp.telemetry-v4.diff') $upload -Force
+          Copy-Item (Join-Path $prov 'windows_nce_transition.cpp.stacktop-breadcrumb-v4.diff') $upload -Force
           $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
           "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
           "PACKAGE_SHA256=$hash" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
           Get-Content (Join-Path $upload 'BUILD_INFO.txt')
 
-      - name: Upload real-game diagnostic V3 package
+      - name: Upload real-game diagnostic V4 package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-REALGAME-DIAG-V3-055b212d
-          path: build/validation/${{ github.sha }}/realgame-diag-v3-055b212d/upload/*
+          name: Eden-Windows-ARM64-NCE-REALGAME-DIAG-V4-055b212d
+          path: build/validation/${{ github.sha }}/realgame-diag-v4-055b212d/upload/*
           if-no-files-found: error
           retention-days: 14
