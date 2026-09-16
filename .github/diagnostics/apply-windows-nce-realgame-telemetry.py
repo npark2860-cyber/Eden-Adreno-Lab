@@ -14,6 +14,12 @@ def replace_once(label: str, old: str, new: str) -> None:
 
 
 replace_once(
+    "teb-stack-top-boundary-fix",
+    """    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {\n""",
+    """    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {\n""",
+)
+
+replace_once(
     "telemetry-globals",
     """std::once_flag g_windows_veh_once;\nPVOID g_windows_veh_handle{};\n\nstruct WindowsTebStackBounds {\n""",
     """std::once_flag g_windows_veh_once;\nPVOID g_windows_veh_handle{};\n\nstruct WindowsNceFaultTelemetry {\n    bool pending{};\n    DWORD exception_code{};\n    ULONG_PTR access_type{};\n    u64 fault_address{};\n    u64 pc{};\n    u64 sp{};\n};\n\nthread_local WindowsNceFaultTelemetry g_windows_nce_fault_telemetry{};\nthread_local u32 g_windows_nce_fault_log_count{};\nthread_local u32 g_windows_nce_stack_log_count{};\nthread_local u32 g_windows_nce_teb_log_count{};\nthread_local u32 g_windows_nce_return_log_count{};\nthread_local bool g_windows_nce_fastmem_logged{};\nconstexpr u32 WindowsNceFaultLogLimit = 16;\nconstexpr u32 WindowsNceStackLogLimit = 8;\nconstexpr u32 WindowsNceTebLogLimit = 8;\nconstexpr u32 WindowsNceReturnLogLimit = 8;\n\nstruct WindowsTebStackBounds {\n""",
