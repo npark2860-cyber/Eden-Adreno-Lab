@@ -20,7 +20,7 @@ concurrency:
 env:
   SOURCE_SHA: 055b212df86dbfc18257b127ee5a0cbfda8ff861
   CI_REF: afead830f3a444427f9fdfd841218f932465c03a
-  TEST_NAME: realgame-v14-private-ldp-causality-055b212d
+  TEST_NAME: v14
   V6_SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-v6-minimal.py
   V7_SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-v7-veh-lease.py
   V8_SCRIPT_PATH: .github/diagnostics/apply-windows-nce-realgame-v8-post-stacklimit.py
@@ -55,7 +55,7 @@ jobs:
         with:
           repository: npark2860-cyber/Eden-Adreno-Lab
           ref: ${{ github.sha }}
-          path: build/validation/${{ github.sha }}/realgame-v14-private-ldp-causality-055b212d/control
+          path: build/validation/${{ github.sha }}/v14/control
           fetch-depth: 0
 
       - name: Checkout exact frozen production source
@@ -63,7 +63,7 @@ jobs:
         with:
           repository: npark2860-cyber/Eden-Adreno-Lab
           ref: 055b212df86dbfc18257b127ee5a0cbfda8ff861
-          path: build/validation/${{ github.sha }}/realgame-v14-private-ldp-causality-055b212d/source
+          path: build/validation/${{ github.sha }}/v14/source
           fetch-depth: 0
           submodules: recursive
 
@@ -148,7 +148,7 @@ jobs:
         with:
           repository: Eden-CI/Workflow
           ref: afead830f3a444427f9fdfd841218f932465c03a
-          path: build/validation/${{ github.sha }}/realgame-v14-private-ldp-causality-055b212d/ci
+          path: build/validation/${{ github.sha }}/v14/ci
 
       - name: Install fixed Eden CI scripts
         shell: bash
@@ -174,7 +174,7 @@ jobs:
 
       - name: Configure V14 Windows ARM64 NCE build
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-v14-private-ldp-causality-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/v14/source
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
@@ -186,7 +186,7 @@ jobs:
 
       - name: Build full Windows ARM64 Eden V14 package
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-v14-private-ldp-causality-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/v14/source
         run: |
           set -euo pipefail
           cmake --build build
@@ -196,7 +196,7 @@ jobs:
 
       - name: Package Windows ARM64 Eden V14
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/realgame-v14-private-ldp-causality-055b212d/source
+        working-directory: build/validation/${{ github.sha }}/v14/source
         env:
           ARTIFACT_REF: nce-realgame-v14-private-ldp-causality-055b212d
           MSYS_TOOLCHAIN: CLANGARM64
@@ -228,6 +228,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: Eden-Windows-ARM64-NCE-REALGAME-V14-PRIVATE-LDP-CAUSALITY-055b212d
-          path: build/validation/${{ github.sha }}/realgame-v14-private-ldp-causality-055b212d/upload/*
+          path: build/validation/${{ github.sha }}/v14/upload/*
           if-no-files-found: error
           retention-days: 14
