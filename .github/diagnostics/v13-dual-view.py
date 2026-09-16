@@ -16,7 +16,7 @@ runner = replace_once(
     runner,
     "windows-header",
     """#include \"core/arm/nce/windows_x18_fallback_runner.h\"\n\n#include <unordered_map>\n""",
-    """#include \"core/arm/nce/windows_x18_fallback_runner.h\"\n\n#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n\n#include <unordered_map>\n""",
+    """#include \"core/arm/nce/windows_x18_fallback_runner.h\"\n\n#ifndef WIN32_LEAN_AND_MEAN\n#define WIN32_LEAN_AND_MEAN\n#endif\n#include <windows.h>\n\n#include <unordered_map>\n""",
 )
 runner = replace_once(
     runner,
