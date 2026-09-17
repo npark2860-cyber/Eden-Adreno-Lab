@@ -1,4 +1,4 @@
-# V34_TRIGGER_ONCE
+# V34_CANONICAL_SINGLE_RUN
 name: Build Windows ARM64 NCE real-game V34 after-x17 055b212d
 
 on:
@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: build-windows-nce-realgame-v34-after-x17-055b212d
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   SOURCE_SHA: 055b212df86dbfc18257b127ee5a0cbfda8ff861
