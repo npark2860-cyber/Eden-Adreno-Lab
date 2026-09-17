@@ -1,3 +1,4 @@
+# V34_TRIGGER_ONCE
 name: Build Windows ARM64 NCE real-game V34 after-x17 055b212d
 
 on:
