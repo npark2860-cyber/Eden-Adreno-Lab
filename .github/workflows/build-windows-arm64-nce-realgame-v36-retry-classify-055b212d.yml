@@ -1,0 +1,208 @@
+name: Build Windows ARM64 NCE real-game V36 retry classify 055b212d
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - diag/windows-nce-realgame-v36-retry-classify-055b212d
+    paths:
+      - .github/workflows/build-windows-arm64-nce-realgame-v36-retry-classify-055b212d.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-windows-nce-realgame-v36-retry-classify-055b212d
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 055b212df86dbfc18257b127ee5a0cbfda8ff861
+  CI_REF: afead830f3a444427f9fdfd841218f932465c03a
+  TEST_NAME: v36
+  V16_SCRIPT_PATH: .github/diagnostics/v16-fallback-stack-sync.py
+  V18_SCRIPT_PATH: .github/diagnostics/v18-placeholder-topology.py
+  V26_SCRIPT_PATH: .github/diagnostics/v26-teb-stack-top.py
+  V27_SCRIPT_PATH: .github/diagnostics/v27-transition-stack-top.py
+  V36_SCRIPT_PATH: .github/diagnostics/v36-retry-classify.py
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE real-game V36 retry classify package
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout V36 control Git object
+        uses: actions/checkout@v7
+        with:
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          ref: ${{ github.sha }}
+          path: build/validation/${{ github.sha }}/v36/control
+          fetch-depth: 0
+
+      - name: Checkout exact frozen production source
+        uses: actions/checkout@v7
+        with:
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          ref: 055b212df86dbfc18257b127ee5a0cbfda8ff861
+          path: build/validation/${{ github.sha }}/v36/source
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify Git-object provenance and apply V36 retry classifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          CONTROL="$ROOT/control"
+          SOURCE="$ROOT/source"
+          PROV="$ROOT/provenance"
+          mkdir -p "$PROV"
+
+          test "$(git -C "$CONTROL" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$SOURCE" rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no)"
+
+          for p in "$V16_SCRIPT_PATH" "$V18_SCRIPT_PATH" "$V26_SCRIPT_PATH" "$V27_SCRIPT_PATH" "$V36_SCRIPT_PATH"; do
+            git -C "$CONTROL" show "$GITHUB_SHA:$p" > "$PROV/$(basename "$p").git-object"
+          done
+
+          for p in src/common/host_memory.cpp src/common/host_memory.h src/common/host_memory_windows_lease.h src/core/arm/nce/arm_nce_windows.cpp src/core/arm/nce/guest_context.h src/core/arm/nce/windows_nce_transition.cpp; do
+            git -C "$SOURCE" show "$SOURCE_SHA:$p" > "$PROV/$(basename "$p").base.git-object"
+          done
+
+          python "$PROV/$(basename "$V16_SCRIPT_PATH").git-object" \
+            "$SOURCE/src/common/host_memory.h" \
+            "$SOURCE/src/common/host_memory_windows_lease.h" \
+            "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          python "$PROV/$(basename "$V18_SCRIPT_PATH").git-object" \
+            "$SOURCE/src/common/host_memory.cpp"
+          python "$PROV/$(basename "$V26_SCRIPT_PATH").git-object" \
+            "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          python "$PROV/$(basename "$V27_SCRIPT_PATH").git-object" \
+            "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
+          python "$PROV/$(basename "$V36_SCRIPT_PATH").git-object" \
+            "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+
+          git -C "$SOURCE" diff --check
+          grep -Fq 'NCE_V16_FALLBACK_STACK_SYNC' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'NCE_V18_SPLIT_NOOP_EXACT_PLACEHOLDER' "$SOURCE/src/common/host_memory.cpp"
+          grep -Fq 'guest_sp_value > allocation_end' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'guest->sp <= allocation_base || guest->sp > allocation_end' "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
+          grep -Fq 'V36_ENTER' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'V36_RETURN' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'V36_PENDING' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'V36_FALLBACK' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'eden_nce_v36_retry_classify.log' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+
+          if grep -R -Fq 'V35_BRANCH_AUDIT' "$SOURCE/src" || \
+             grep -R -Fq 'WindowsNceV34AfterX17Return' "$SOURCE/src"; then
+            echo 'Unexpected prior diagnostic mutation in V36 source' >&2
+            exit 1
+          fi
+
+          git -C "$SOURCE" diff -- src/common/host_memory.cpp > "$PROV/host_memory.cpp.v36.diff"
+          git -C "$SOURCE" diff -- src/common/host_memory.h > "$PROV/host_memory.h.v36.diff"
+          git -C "$SOURCE" diff -- src/common/host_memory_windows_lease.h > "$PROV/host_memory_windows_lease.h.v36.diff"
+          git -C "$SOURCE" diff -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/arm_nce_windows.cpp.v36.diff"
+          git -C "$SOURCE" diff -- src/core/arm/nce/windows_nce_transition.cpp > "$PROV/windows_nce_transition.cpp.v36.diff"
+
+          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_MODE=frozen production Git object + V16 + V18 + V26 + V27 behavior + V36 host-side retry classification only; production guest/trampoline code unchanged\nV36_TARGET_PC_ALLOCATION_OFFSET=0x1F03764\nV36_TARGET_TRAMPOLINE_ALLOCATION_OFFSET=0x1F25BC\nISOLATION_DIR=build/validation/%s/%s\nV36_CWD_FILE=eden_nce_v36_retry_classify.log\nV36_TEMP_FILE=%%TEMP%%\\eden_nce_v36_retry_classify.log\n' \
+            "$SOURCE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
+          echo 'REALGAME_V36_RETRY_CLASSIFY_GUARD=PASS'
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: build/validation/${{ github.sha }}/v36/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure V36 Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v36/source
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          printf 'CONFIGURE_COMMAND=./.ci/build/configure.sh -DCCACHE_PATH=sccache\nNCE_COMPILE_GUARD=HAS_NCE=1\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Build full Windows ARM64 Eden V36 package
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v36/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          printf 'BUILD_COMMAND=cmake --build build\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Package Windows ARM64 Eden V36
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v36/source
+        env:
+          ARTIFACT_REF: nce-realgame-v36-retry-classify-055b212d
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-realgame-v36-retry-classify-055b212d\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Prepare V36 upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged Eden artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+          $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
+          "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
+          "PACKAGE_SHA256=$hash" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
+
+      - name: Upload real-game V36 package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-REALGAME-V36-RETRY-CLASSIFY-055b212d
+          path: build/validation/${{ github.sha }}/v36/upload/*
+          if-no-files-found: error
+          retention-days: 14
