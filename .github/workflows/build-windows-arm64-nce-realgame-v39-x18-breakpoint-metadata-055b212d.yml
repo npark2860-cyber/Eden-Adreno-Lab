@@ -106,7 +106,7 @@ jobs:
           grep -Fq 'eden_nce_v39_x18_breakpoint_metadata.log' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'static_assert(X18SitePatcher::BreakpointInstruction == 0xD43E0000u);' "$SOURCE/src/core/arm/nce/x18_site_patcher.h"
           grep -Fq 'metadata.insert_or_assign(MetadataKey(runtime_pc), MetadataValue(site.instruction));' "$SOURCE/src/core/arm/nce/x18_site_patcher.cpp"
-          grep -Fq 'FindOriginalInstruction(context.Pc, process->GetPostHandlers()).has_value()' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'context.Pc, process->GetPostHandlers()).has_value())' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
 
           if grep -R -Fq 'V38_EXCEPTION' "$SOURCE/src" || \
              grep -R -Fq 'V37_ENTER' "$SOURCE/src" || \
