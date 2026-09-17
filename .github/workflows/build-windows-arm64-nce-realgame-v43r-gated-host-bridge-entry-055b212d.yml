@@ -104,10 +104,7 @@ jobs:
           grep -Fq 'WindowsNceV43ProbeBridge PROC' "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"
           grep -Fq 'b       WindowsNceHostStackBridge' "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"
           grep -Fq 'WindowsNceHostStackBridge PROC' "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"
-          if grep -Fq $'WindowsNceHostStackBridge PROC\n        brk     #61507' "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"; then
-            echo 'Global HostStackBridge BRK must not remain in V43R' >&2
-            exit 1
-          fi
+          python -c "from pathlib import Path; import sys; s=Path(sys.argv[1]).read_text(encoding='utf-8'); assert 'WindowsNceHostStackBridge PROC\\n        brk     #61507' not in s, 'Global HostStackBridge BRK must not remain in V43R'" "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"
 
           git -C "$SOURCE" diff -- src/common/host_memory.cpp > "$PROV/host_memory.cpp.v43r.diff"
           git -C "$SOURCE" diff -- src/common/host_memory.h > "$PROV/host_memory.h.v43r.diff"
