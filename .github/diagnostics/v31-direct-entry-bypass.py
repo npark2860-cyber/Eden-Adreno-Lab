@@ -119,8 +119,8 @@ cpp = replace_once(
 hdr = replace_once(
     hdr,
     "probe-return-declaration",
-    """extern \"C\" std::uint64_t WindowsNceEnterGuest(GuestContext* guest,\n                                               const void* entry_trampoline) noexcept;\n\n// Windows ARM64 arbitrary-PC entry.\n""",
-    """extern \"C\" std::uint64_t WindowsNceEnterGuest(GuestContext* guest,\n                                               const void* entry_trampoline) noexcept;\n\n// V31 diagnostic-only target. WindowsNceEnterGuest branches here only for the selected terminal\n// post-handler target. Guest register/SP restoration has already completed; this bridge restores\n// the saved host ABI continuation and returns without executing the generated post-entry code.\nextern \"C\" std::uint64_t WindowsNceV31ProbeReturn() noexcept;\n\n// Windows ARM64 arbitrary-PC entry.\n""",
+    """extern \"C\" std::uint64_t WindowsNceEnterGuest(GuestContext* guest,\n                                               const void* entry_trampoline) noexcept;\n""",
+    """extern \"C\" std::uint64_t WindowsNceEnterGuest(GuestContext* guest,\n                                               const void* entry_trampoline) noexcept;\n\n// V31 diagnostic-only target. WindowsNceEnterGuest branches here only for the selected terminal\n// post-handler target. Guest register/SP restoration has already completed; this bridge restores\n// the saved host ABI continuation and returns without executing the generated post-entry code.\nextern \"C\" std::uint64_t WindowsNceV31ProbeReturn() noexcept;\n""",
 )
 
 asm = replace_once(
