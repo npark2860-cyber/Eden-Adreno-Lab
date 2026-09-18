@@ -651,7 +651,27 @@ void ArmNce::SignalInterrupt(Kernel::KThread* thread) {
             UnlockThreadParameters(params);
             return;
         }
+
+        // The captured target is executing on the host stack. PhysicalCore::Interrupt() owns
+        // PhysicalCore::m_guard while calling us, so retaining the parameter lock and retrying
+        // forever can deadlock a target that has already left RunThread and is waiting for that
+        // same core guard in PhysicalCore::ExitContext(). Release ownership long enough for the
+        // target to retire the host window, then perform a single non-blocking reacquire. If the
+        // target has finished its RunThread epoch, return so Interrupt() can release m_guard.
+        UnlockThreadParameters(params);
         std::this_thread::yield();
+
+        expected = SpinLockUnlocked;
+        if (!params->lock.compare_exchange_strong(expected, SpinLockLocked,
+                                                  std::memory_order_acquire,
+                                                  std::memory_order_relaxed)) {
+            return;
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (!params->is_running) {
+            UnlockThreadParameters(params);
+            return;
+        }
     }
 }
 
