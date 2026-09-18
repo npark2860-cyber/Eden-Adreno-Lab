@@ -85,7 +85,10 @@ struct WindowsTebStackBounds {
     }
 
     const auto guest_sp_value = static_cast<std::uintptr_t>(guest_sp);
-    if (guest_sp_value <= allocation_base || guest_sp_value >= allocation_end) {
+    // A downward-growing stack may begin with SP exactly at StackBase, which is one-past
+    // the highest address in the allocation. VirtualQuery above intentionally probes SP - 1,
+    // so accept guest_sp == allocation_end while still rejecting values above the allocation.
+    if (guest_sp_value <= allocation_base || guest_sp_value > allocation_end) {
         return false;
     }
 
@@ -294,7 +297,8 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         const bool redirected = NCE::WindowsX18FallbackTrap::TryRedirect(
             exception, *guest, process->GetPostHandlers());
         if (redirected) {
-            return EXCEPTION_CONTINUE_EXECUTION;
+            context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
+            NCE::WindowsNceTransition::ContinueContext(context);
         }
         params->lock.store(SpinLockUnlocked, std::memory_order_release);
         return EXCEPTION_CONTINUE_SEARCH;
@@ -446,8 +450,35 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             break;
         }
 
+        // While the native guest stack is temporarily MEM_PRIVATE, Dynarmic fallback still
+        // observes Core::Memory's section-backed storage. Synchronize the leased stack at this
+        // engine boundary so both execution engines observe one coherent guest state.
+        if (private_stack_lease.has_value() && !private_stack_lease->SyncToBacking()) {
+            LOG_ERROR(Core_ARM, "V16 failed to synchronize private NCE stack to backing");
+            hr = HaltReason::PrefetchAbort;
+            break;
+        }
+
         const auto fallback = m_windows_x18_runner->Dispatch(
             static_cast<u64>(hr), thread, m_guest_ctx, post_handlers);
+
+        if (fallback.handled && private_stack_lease.has_value() &&
+            !private_stack_lease->SyncFromBacking()) {
+            LOG_ERROR(Core_ARM, "V16 failed to synchronize fallback stack writes to private view");
+            hr = HaltReason::PrefetchAbort;
+            break;
+        }
+
+        if (fallback.handled && private_stack_lease.has_value()) {
+            static thread_local bool v16_sync_logged = false;
+            if (!v16_sync_logged) {
+                LOG_INFO(Core_ARM,
+                         "NCE_V16_FALLBACK_STACK_SYNC pc={:#018x} sp={:#018x}",
+                         m_guest_ctx.pc, m_guest_ctx.sp);
+                v16_sync_logged = true;
+            }
+        }
+
         if (!fallback.handled) {
             break;
         }

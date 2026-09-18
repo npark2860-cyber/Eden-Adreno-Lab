@@ -61,6 +61,8 @@ public:
 
         [[nodiscard]] bool Restore() noexcept;
         [[nodiscard]] bool ContainsAddress(u64 address) const noexcept;
+        [[nodiscard]] bool SyncToBacking() noexcept;
+        [[nodiscard]] bool SyncFromBacking() noexcept;
 
     private:
         friend class HostMemory;

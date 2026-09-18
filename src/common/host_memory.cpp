@@ -450,16 +450,91 @@ private:
     }
 
     void Split(size_t virtual_offset, size_t length) {
-        if (!VirtualFreeEx(process, reinterpret_cast<LPVOID>(virtual_base + virtual_offset), length,
+        auto* const address = virtual_base + virtual_offset;
+        MEMORY_BASIC_INFORMATION region{};
+        const SIZE_T queried = VirtualQuery(address, &region, sizeof(region));
+
+        // A private HostMemory lease returns to an exact preserved placeholder before Restore()
+        // remaps the section-backed view. In that state there is nothing left to split.
+        if (queried != 0 && region.State == MEM_RESERVE && region.BaseAddress == address &&
+            static_cast<size_t>(region.RegionSize) == length) {
+            LOG_INFO(HW_Memory,
+                     "NCE_V18_SPLIT_NOOP_EXACT_PLACEHOLDER addr={:#018x} length={:#x} type={:#x}",
+                     reinterpret_cast<std::uintptr_t>(address), length,
+                     static_cast<unsigned long>(region.Type));
+            return;
+        }
+
+        if (!VirtualFreeEx(process, reinterpret_cast<LPVOID>(address), length,
                            MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
-            LOG_CRITICAL(HW_Memory, "Failed to split placeholder");
+            const DWORD error = GetLastError();
+            LOG_CRITICAL(HW_Memory,
+                         "NCE_V18_SPLIT_FAIL addr={:#018x} length={:#x} error={} query={} "
+                         "state={:#x} type={:#x} region_base={:#018x} region_size={:#x}",
+                         reinterpret_cast<std::uintptr_t>(address), length, error, queried,
+                         queried != 0 ? static_cast<unsigned long>(region.State) : 0UL,
+                         queried != 0 ? static_cast<unsigned long>(region.Type) : 0UL,
+                         queried != 0 ? reinterpret_cast<std::uintptr_t>(region.BaseAddress) : 0ULL,
+                         queried != 0 ? static_cast<size_t>(region.RegionSize) : 0ULL);
         }
     }
 
     void Coalesce(size_t virtual_offset, size_t length) {
-        if (!VirtualFreeEx(process, reinterpret_cast<LPVOID>(virtual_base + virtual_offset), length,
+        auto* const address = virtual_base + virtual_offset;
+        const auto begin = reinterpret_cast<std::uintptr_t>(address);
+        const auto end = begin + length;
+        if (end < begin) {
+            LOG_CRITICAL(HW_Memory,
+                         "NCE_V18_COALESCE_RANGE_OVERFLOW addr={:#018x} length={:#x}", begin,
+                         length);
+            return;
+        }
+
+        // MEM_COALESCE_PLACEHOLDERS is valid only when the complete requested range consists of
+        // exact adjacent placeholders. Private NCE leases deliberately occupy holes in that
+        // topology, so defer coalescing while any part of the range is committed/non-placeholder.
+        auto cursor = begin;
+        size_t region_count = 0;
+        while (cursor < end) {
+            MEMORY_BASIC_INFORMATION region{};
+            const SIZE_T queried =
+                VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region));
+            if (queried == 0) {
+                LOG_CRITICAL(HW_Memory,
+                             "NCE_V18_COALESCE_QUERY_FAIL addr={:#018x} length={:#x} cursor={:#018x} error={}",
+                             begin, length, cursor, GetLastError());
+                return;
+            }
+
+            const auto region_begin = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
+            const auto region_end = region_begin + static_cast<std::uintptr_t>(region.RegionSize);
+            if (region_end <= region_begin || region_begin != cursor || region_end > end ||
+                region.State != MEM_RESERVE) {
+                LOG_INFO(HW_Memory,
+                         "NCE_V18_COALESCE_DEFER addr={:#018x} length={:#x} cursor={:#018x} "
+                         "state={:#x} type={:#x} region_base={:#018x} region_size={:#x}",
+                         begin, length, cursor, static_cast<unsigned long>(region.State),
+                         static_cast<unsigned long>(region.Type), region_begin,
+                         static_cast<size_t>(region.RegionSize));
+                return;
+            }
+
+            cursor = region_end;
+            ++region_count;
+        }
+
+        if (region_count <= 1) {
+            LOG_INFO(HW_Memory,
+                     "NCE_V18_COALESCE_NOOP_SINGLE_PLACEHOLDER addr={:#018x} length={:#x}",
+                     begin, length);
+            return;
+        }
+
+        if (!VirtualFreeEx(process, reinterpret_cast<LPVOID>(address), length,
                            MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS)) {
-            LOG_CRITICAL(HW_Memory, "Failed to coalesce placeholders");
+            LOG_CRITICAL(HW_Memory,
+                         "NCE_V18_COALESCE_FAIL addr={:#018x} length={:#x} error={} regions={}",
+                         begin, length, GetLastError(), region_count);
         }
     }
 

@@ -146,7 +146,7 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
         allocation_end = region_end;
         cursor = region_end;
     }
-    if (guest->sp <= allocation_base || guest->sp >= allocation_end) {
+    if (guest->sp <= allocation_base || guest->sp > allocation_end) {
         std::abort();
     }
 

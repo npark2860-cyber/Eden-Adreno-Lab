@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -72,6 +73,24 @@ inline bool HostMemory::PrivateMappingLease::ContainsAddress(u64 address) const 
     const auto begin = reinterpret_cast<std::uintptr_t>(virtual_address);
     const auto end = begin + length;
     return end >= begin && address >= begin && address < end;
+}
+
+inline bool HostMemory::PrivateMappingLease::SyncToBacking() noexcept {
+    if (!active || owner == nullptr || virtual_address == nullptr || length == 0) {
+        return false;
+    }
+    std::memcpy(owner->BackingBasePointer() + host_offset, virtual_address, length);
+    std::atomic_thread_fence(std::memory_order_release);
+    return true;
+}
+
+inline bool HostMemory::PrivateMappingLease::SyncFromBacking() noexcept {
+    if (!active || owner == nullptr || virtual_address == nullptr || length == 0) {
+        return false;
+    }
+    std::atomic_thread_fence(std::memory_order_acquire);
+    std::memcpy(virtual_address, owner->BackingBasePointer() + host_offset, length);
+    return true;
 }
 
 inline bool HostMemory::PrivateMappingLease::Restore() noexcept {
