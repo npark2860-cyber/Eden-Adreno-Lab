@@ -1,0 +1,4 @@
+V50 cache NtContinue build trigger
+candidate=1b8eee8d8951d43d98761d979f7ea83bb903bd2c
+fix=119b0effe235eacc53713940bc42c0bd02c6815d
+evidence=WinDbg second-chance C0000005 in ntdll loader while ContinueContext resolved NtContinue on guest SP
