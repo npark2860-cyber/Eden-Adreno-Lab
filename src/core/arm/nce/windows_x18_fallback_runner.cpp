@@ -5,6 +5,7 @@
 
 #include <windows.h>
 
+#include "common/assert.h"
 #include "common/logging/log.h"
 
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
