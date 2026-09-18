@@ -1,0 +1,172 @@
+name: Build Windows ARM64 NCE V54 HostMemory lease diagnostics
+
+on:
+  push:
+    branches:
+      - diag/windows-nce-v54-hostmemory-lease-353c5ca7
+    paths:
+      - .github/diagnostics/v54-hostmemory-lease-trigger.txt
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-windows-nce-v54-hostmemory-lease
+  cancel-in-progress: false
+
+env:
+  V53_BASE_SHA: 353c5ca7923a12b202ce98c1cbca833b9dd8ae4d
+  CI_REF: afead830f3a444427f9fdfd841218f932465c03a
+  TEST_NAME: v54-hostmemory-lease
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE V54 HostMemory lease diagnostics
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout exact V54 Git object
+        uses: actions/checkout@v7
+        with:
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          ref: ${{ github.sha }}
+          path: build/validation/${{ github.sha }}/v54-hostmemory-lease/source
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify V54 provenance and diagnostic-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          SOURCE="$ROOT/source"
+          PROV="$ROOT/provenance"
+          mkdir -p "$PROV"
+
+          test "$(git -C "$SOURCE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$SOURCE" merge-base --is-ancestor "$V53_BASE_SHA" "$GITHUB_SHA"
+          test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no)"
+          git -C "$SOURCE" diff --check "$V53_BASE_SHA" "$GITHUB_SHA"
+
+          CHANGED="$(git -C "$SOURCE" diff --name-only "$V53_BASE_SHA" "$GITHUB_SHA")"
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/common/host_memory_windows_lease\.h|\.github/workflows/build-windows-arm64-nce-v54-hostmemory-lease-353c5ca7\.yml|\.github/diagnostics/v54-hostmemory-lease-trigger\.txt)$' || true)"
+          test -z "$UNEXPECTED"
+
+          test -z "$(git -C "$SOURCE" diff "$V53_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp src/core/arm/nce/windows_nce_transition.h src/core/arm/nce/windows_nce_transition.cpp src/core/arm/nce/windows_nce_entry.asm src/core/arm/nce/windows_cross_thread_break.h src/common/host_memory.cpp src/common/host_memory.h)"
+
+          LEASE="$SOURCE/src/common/host_memory_windows_lease.h"
+          grep -Fq 'NCE_V54_LEASE_FAIL stage={}' "$LEASE"
+          grep -Fq '"S01_INPUT"' "$LEASE"
+          grep -Fq '"S02_INITIAL_QUERY"' "$LEASE"
+          grep -Fq '"S03_RANGE_OVERFLOW"' "$LEASE"
+          grep -Fq '"S04_REGION_QUERY"' "$LEASE"
+          grep -Fq '"S05_REGION_NONADVANCE"' "$LEASE"
+          grep -Fq '"S06_KERNELBASE"' "$LEASE"
+          grep -Fq '"S07_VIRTUALALLOC2_RESOLVE"' "$LEASE"
+          grep -Fq '"S08_FIRST_REPLACEMENT_CLEANUP"' "$LEASE"
+          grep -Fq '"S09_PRESERVE_PLACEHOLDER"' "$LEASE"
+          grep -Fq '"S10_SECOND_REPLACEMENT_CLEANUP"' "$LEASE"
+          grep -Fq '"S11_SECOND_REPLACEMENT"' "$LEASE"
+          grep -Fq '"S12_FINAL_PRIVATE"' "$LEASE"
+
+          git -C "$SOURCE" diff "$V53_BASE_SHA" "$GITHUB_SHA" -- src/common/host_memory_windows_lease.h > "$PROV/V54_HOSTMEMORY_LEASE_DIAGNOSTIC.diff"
+
+          printf 'V53_BASE_SHA=%s\nV54_SHA=%s\nSOURCE_MODE=exact tested V53 + diagnostic-only HostMemory private lease failure staging\nEVIDENCE=V53 runtime reached EnsureWindowsGuestStackLease private HostMemory acquisition failure\nISOLATION_DIR=build/validation/%s/%s\n' \
+            "$V53_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: build/validation/${{ github.sha }}/v54-hostmemory-lease/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure V54 Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v54-hostmemory-lease/source
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          printf 'CONFIGURE_COMMAND=./.ci/build/configure.sh -DCCACHE_PATH=sccache\nNCE_COMPILE_GUARD=HAS_NCE=1\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Build full Windows ARM64 Eden V54
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v54-hostmemory-lease/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          printf 'BUILD_COMMAND=cmake --build build\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Package Windows ARM64 Eden V54
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v54-hostmemory-lease/source
+        env:
+          ARTIFACT_REF: nce-v54-hostmemory-lease-353c5ca7
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v54-hostmemory-lease-353c5ca7\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Prepare V54 upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged Eden artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+          $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
+          "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
+          "PACKAGE_SHA256=$hash" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
+
+      - name: Upload V54 package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-V54-HOSTMEMORY-LEASE-353c5ca7
+          path: build/validation/${{ github.sha }}/v54-hostmemory-lease/upload/*
+          if-no-files-found: error
+          retention-days: 14
