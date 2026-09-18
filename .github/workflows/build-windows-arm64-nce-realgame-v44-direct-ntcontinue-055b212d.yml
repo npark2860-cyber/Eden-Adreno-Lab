@@ -26,6 +26,7 @@ env:
   V27_SCRIPT_PATH: .github/diagnostics/v27-transition-stack-top.py
   V43_SCRIPT_PATH: .github/diagnostics/v43-host-bridge-entry.py
   V43R_SCRIPT_PATH: .github/diagnostics/v43r-gate-host-bridge-probe.py
+  V44_SCRIPT_PATH: .github/diagnostics/v44-direct-ntcontinue.py
 
 jobs:
   build-package:
