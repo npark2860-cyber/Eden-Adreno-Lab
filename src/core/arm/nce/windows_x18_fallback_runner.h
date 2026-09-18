@@ -8,7 +8,9 @@
 #endif
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <mutex>
 
 #include "common/common_types.h"
 #include "core/arm/nce/x18_fallback.h"
@@ -56,6 +58,17 @@ public:
 private:
     std::unique_ptr<DynarmicExclusiveMonitor> m_exclusive_monitor;
     std::unique_ptr<ArmDynarmic64> m_backend;
+    std::size_t m_core_index{};
+
+    // V56 diagnostic only: detect whether the selective Dynarmic fallback backend is entered again
+    // before a previous one-instruction Step has retired. The mutex protects only this metadata and
+    // is never held across Dynarmic execution, so it does not serialize or hide a real re-entry.
+    std::mutex m_v56_diag_mutex;
+    u32 m_v56_active_dispatches{};
+    u32 m_v56_owner_host_tid{};
+    std::uintptr_t m_v56_owner_kthread{};
+    u64 m_v56_owner_pc{};
+    u64 m_v56_owner_sp{};
 };
 
 } // namespace NCE
