@@ -7,3 +7,6 @@ diagnostic=log runner/backend/core/current+owner host TID/KThread/PC/SP on overl
 
 retry_after_compile_fix=c5b8674f0edd8ebc9ec305933d2edcd36fd5fe53
 fix=replace nonexistent common/logging/log.h with common/logging.h
+
+retry_after_msys2_cache_fix=26092d94756d316f90306a3e2351a8736824fbde
+fix=setup-msys2 cache false to avoid paccache exit 127
