@@ -407,6 +407,16 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     std::optional<Common::HostMemory::PrivateMappingLease> private_stack_lease;
 
     for (;;) {
+        // SignalInterrupt may defer delivery when another host-side NCE path already owns the
+        // parameters lock. Honor that pending break before this lock-owning path can re-enter
+        // native guest execution.
+        const auto pending_reason =
+            static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0, std::memory_order_acq_rel));
+        if (True(pending_reason)) {
+            hr = pending_reason;
+            break;
+        }
+
         NCE::CurrentNceContext::Install(thread_params);
 
         if (!EnsureWindowsGuestStackLease(m_system, process, m_guest_ctx.sp,
@@ -582,7 +592,17 @@ void ArmNce::SignalInterrupt(Kernel::KThread* thread) {
                                  std::memory_order_acq_rel);
 
     auto* const params = &thread->GetNativeExecutionParameters();
-    LockThreadParameters(params);
+
+    // Windows can request an interrupt from a different Boost.Context fiber on the same core
+    // thread. If the NCE parameters are already locked, blocking here can deadlock against an
+    // inactive lock-owning fiber. Leave BreakLoop pending and let that owner observe it at the
+    // RunThread guest re-entry seam instead.
+    u32 expected = SpinLockUnlocked;
+    if (!params->lock.compare_exchange_strong(expected, SpinLockLocked,
+                                              std::memory_order_acquire,
+                                              std::memory_order_relaxed)) {
+        return;
+    }
     std::atomic_thread_fence(std::memory_order_acquire);
 
     if (!params->is_running) {
