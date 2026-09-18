@@ -5,7 +5,7 @@ on:
     branches:
       - diag/windows-nce-realgame-v45-standard-breakpoint-055b212d
     paths:
-      - .github/workflows/build-windows-arm64-nce-realgame-v43r-gated-host-bridge-entry-055b212d.yml
+      - .github/workflows/build-windows-arm64-nce-realgame-v45-standard-breakpoint-055b212d.yml
   workflow_dispatch:
 
 permissions:
@@ -103,7 +103,11 @@ jobs:
           grep -Fq 'NCE_V18_SPLIT_NOOP_EXACT_PLACEHOLDER' "$SOURCE/src/common/host_memory.cpp"
           grep -Fq 'guest_sp_value > allocation_end' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'guest->sp <= allocation_base || guest->sp > allocation_end' "$SOURCE/src/core/arm/nce/windows_nce_transition.cpp"
-          grep -Fq 'V43_BRIDGE_ENTRY' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"\n          grep -Fq 'WindowsNceV43BridgeBreakpointImmediate = 0xF000' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"\n          grep -Fq 'eden_nce_v45_standard_breakpoint.log' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"\n          grep -Fq 'brk     #61440' "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"\n          if grep -Fq 'V44_DIRECT_NTCONTINUE' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"; then echo 'V44 direct NtContinue must not be present in V45' >&2; exit 1; fi
+          grep -Fq 'V43_BRIDGE_ENTRY' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'WindowsNceV43BridgeBreakpointImmediate = 0xF000' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'eden_nce_v45_standard_breakpoint.log' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'brk     #61440' "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"
+          if grep -Fq 'V44_DIRECT_NTCONTINUE' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"; then echo 'V44 direct NtContinue must not be present in V45' >&2; exit 1; fi
           grep -Fq 'context.Pc = reinterpret_cast<u64>(&WindowsNceV43ProbeBridge)' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'WindowsNceV43ProbeBridge PROC' "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"
           grep -Fq 'b       WindowsNceHostStackBridge' "$SOURCE/src/core/arm/nce/windows_nce_entry.asm"
@@ -117,7 +121,7 @@ jobs:
           git -C "$SOURCE" diff -- src/core/arm/nce/windows_nce_transition.cpp > "$PROV/windows_nce_transition.cpp.v45.diff"
           git -C "$SOURCE" diff -- src/core/arm/nce/windows_nce_entry.asm > "$PROV/windows_nce_entry.asm.v45.diff"
 
-          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_MODE=frozen production Git object + V16 + V18 + V26 + V27 + V43/V43R gated probe + V45 standard Windows ARM64 BRK #0xF000; normal VEH return retained; production HostStackBridge untouched\nV43_TARGET_PC_ALLOCATION_OFFSET=0x1F03764\nV43_TARGET_TRAMPOLINE_ALLOCATION_OFFSET=0x1F25BC\nV45_BRIDGE_BRK_IMMEDIATE=0xF000\nISOLATION_DIR=build/validation/%s/%s\nV45_CWD_FILE=eden_nce_v45_standard_breakpoint.log\nV43R_TEMP_FILE=%%TEMP%%\\eden_nce_v43_host_bridge_entry.log\n' "$SOURCE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
+          printf 'SOURCE_SHA=%s\nDIAG_COMMIT_SHA=%s\nSOURCE_MODE=frozen production Git object + V16 + V18 + V26 + V27 + V43/V43R gated probe + V45 standard Windows ARM64 BRK #0xF000; normal VEH return retained; production HostStackBridge untouched\nV43_TARGET_PC_ALLOCATION_OFFSET=0x1F03764\nV43_TARGET_TRAMPOLINE_ALLOCATION_OFFSET=0x1F25BC\nV45_BRIDGE_BRK_IMMEDIATE=0xF000\nISOLATION_DIR=build/validation/%s/%s\nV45_CWD_FILE=eden_nce_v45_standard_breakpoint.log\nV45_TEMP_FILE=%%TEMP%%\\eden_nce_v45_standard_breakpoint.log\n' "$SOURCE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
           echo 'REALGAME_V45_STANDARD_BREAKPOINT_GUARD=PASS'
 
       - name: Checkout fixed Eden CI workflow
