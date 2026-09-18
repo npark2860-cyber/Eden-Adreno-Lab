@@ -47,47 +47,203 @@ static_assert(offsetof(NativeExecutionParameters, magic) == TpidrEl0TlsMagic);
 std::once_flag g_windows_veh_once;
 PVOID g_windows_veh_handle{};
 
-std::atomic<u64> g_windows_v47_event_id{0};
+constexpr DWORD V48DbgPrintAnsi = 0x40010006u;
+constexpr DWORD V48DbgPrintWide = 0x4001000Au;
 
-void WriteWindowsNceV47Line(const char* tag, u64 a = 0, u64 b = 0, u64 c = 0, u64 d = 0,
-                            u64 e = 0, u64 f = 0) noexcept {
+HANDLE OpenWindowsNceV48Log() noexcept {
     char temp_path[MAX_PATH + 1]{};
     const DWORD temp_length = GetTempPathA(MAX_PATH, temp_path);
     if (temp_length == 0 || temp_length >= MAX_PATH) {
-        return;
+        return INVALID_HANDLE_VALUE;
     }
 
     char path[MAX_PATH + 64]{};
-    const int path_length = std::snprintf(path, sizeof(path), "%s%s", temp_path,
-                                          "eden_nce_v47_generic_boundary.log");
+    const int path_length =
+        std::snprintf(path, sizeof(path), "%s%s", temp_path, "eden_nce_v48_debug_output.log");
     if (path_length <= 0 || static_cast<size_t>(path_length) >= sizeof(path)) {
+        return INVALID_HANDLE_VALUE;
+    }
+
+    return CreateFileA(path, FILE_APPEND_DATA,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+void WriteWindowsNceV48Text(HANDLE file, const char* text, size_t size) noexcept {
+    if (file == INVALID_HANDLE_VALUE || text == nullptr || size == 0) {
+        return;
+    }
+    DWORD written{};
+    (void)WriteFile(file, text, static_cast<DWORD>(size), &written, nullptr);
+}
+
+void WriteWindowsNceV48Ready() noexcept {
+    HANDLE file = OpenWindowsNceV48Log();
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    char line[160]{};
+    const int length = std::snprintf(line, sizeof(line),
+                                     "V48_READY pid=%lu tid=%lu candidate=1b8eee8d8951d43d98761d979f7ea83bb903bd2c\r\n",
+                                     static_cast<unsigned long>(GetCurrentProcessId()),
+                                     static_cast<unsigned long>(GetCurrentThreadId()));
+    if (length > 0) {
+        WriteWindowsNceV48Text(file, line, static_cast<size_t>(length));
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
+void WriteWindowsNceV48EscapedBytes(HANDLE file, const char* label, const unsigned char* bytes,
+                                    size_t size) noexcept {
+    char line[6144]{};
+    size_t out = 0;
+    const int prefix = std::snprintf(line, sizeof(line), "%s text=", label);
+    if (prefix <= 0) {
+        return;
+    }
+    out = static_cast<size_t>(prefix);
+
+    for (size_t i = 0; i < size && out + 5 < sizeof(line); ++i) {
+        const unsigned char ch = bytes[i];
+        if (ch == 0) {
+            break;
+        }
+        if (ch == '\\' || ch == '"') {
+            line[out++] = '\\';
+            line[out++] = static_cast<char>(ch);
+        } else if (ch == '\r') {
+            line[out++] = '\\';
+            line[out++] = 'r';
+        } else if (ch == '\n') {
+            line[out++] = '\\';
+            line[out++] = 'n';
+        } else if (ch == '\t') {
+            line[out++] = '\\';
+            line[out++] = 't';
+        } else if (ch >= 0x20 && ch <= 0x7e) {
+            line[out++] = static_cast<char>(ch);
+        } else {
+            const int n = std::snprintf(line + out, sizeof(line) - out, "\\x%02X",
+                                        static_cast<unsigned int>(ch));
+            if (n <= 0) {
+                break;
+            }
+            out += static_cast<size_t>(n);
+        }
+    }
+
+    if (out + 2 < sizeof(line)) {
+        line[out++] = '\r';
+        line[out++] = '\n';
+    }
+    WriteWindowsNceV48Text(file, line, out);
+}
+
+void CaptureWindowsNceV48DebugOutput(const EXCEPTION_RECORD& record,
+                                     const ARM64_NT_CONTEXT& context,
+                                     const GuestContext* guest) noexcept {
+    if (record.ExceptionCode != V48DbgPrintAnsi && record.ExceptionCode != V48DbgPrintWide) {
         return;
     }
 
-    HANDLE file = CreateFileA(path, FILE_APPEND_DATA,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE file = OpenWindowsNceV48Log();
     if (file == INVALID_HANDLE_VALUE) {
         return;
     }
 
-    const u64 event_id = g_windows_v47_event_id.fetch_add(1, std::memory_order_relaxed) + 1;
-    char line[512]{};
-    const int line_length = std::snprintf(
-        line, sizeof(line),
-        "event=%llu tid=%lu %s a=0x%016llX b=0x%016llX c=0x%016llX d=0x%016llX "
-        "e=0x%016llX f=0x%016llX\r\n",
-        static_cast<unsigned long long>(event_id), static_cast<unsigned long>(GetCurrentThreadId()),
-        tag, static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
-        static_cast<unsigned long long>(c), static_cast<unsigned long long>(d),
-        static_cast<unsigned long long>(e), static_cast<unsigned long long>(f));
-    if (line_length > 0) {
-        const DWORD bytes = static_cast<DWORD>(
-            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
-        DWORD written{};
-        (void)WriteFile(file, line, bytes, &written, nullptr);
-        (void)FlushFileBuffers(file);
+    const ULONG count = record.NumberParameters;
+    const ULONG_PTR i0 = count > 0 ? record.ExceptionInformation[0] : 0;
+    const ULONG_PTR i1 = count > 1 ? record.ExceptionInformation[1] : 0;
+    const ULONG_PTR i2 = count > 2 ? record.ExceptionInformation[2] : 0;
+    const ULONG_PTR i3 = count > 3 ? record.ExceptionInformation[3] : 0;
+
+    char header[768]{};
+    const int header_length = std::snprintf(
+        header, sizeof(header),
+        "V48_DEBUG_EXCEPTION code=0x%08lX tid=%lu address=0x%016llX pc=0x%016llX "
+        "sp=0x%016llX x18=0x%016llX guest_pc=0x%016llX params=%lu "
+        "i0=0x%016llX i1=0x%016llX i2=0x%016llX i3=0x%016llX\r\n",
+        static_cast<unsigned long>(record.ExceptionCode),
+        static_cast<unsigned long>(GetCurrentThreadId()),
+        static_cast<unsigned long long>(reinterpret_cast<u64>(record.ExceptionAddress)),
+        static_cast<unsigned long long>(context.Pc),
+        static_cast<unsigned long long>(context.Sp),
+        static_cast<unsigned long long>(context.X[18]),
+        static_cast<unsigned long long>(guest != nullptr ? guest->pc : 0),
+        static_cast<unsigned long>(count),
+        static_cast<unsigned long long>(i0),
+        static_cast<unsigned long long>(i1),
+        static_cast<unsigned long long>(i2),
+        static_cast<unsigned long long>(i3));
+    if (header_length > 0) {
+        WriteWindowsNceV48Text(file, header, static_cast<size_t>(header_length));
     }
+
+    if (record.ExceptionCode == V48DbgPrintAnsi && count >= 2 && i1 != 0) {
+        unsigned char buffer[2048]{};
+        const SIZE_T wanted = i0 != 0 && i0 < sizeof(buffer) ? static_cast<SIZE_T>(i0)
+                                                             : sizeof(buffer) - 1;
+        SIZE_T actual{};
+        if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(i1), buffer,
+                              wanted, &actual) != FALSE) {
+            WriteWindowsNceV48EscapedBytes(file, "V48_ANSI", buffer,
+                                           static_cast<size_t>(actual));
+        }
+    }
+
+    if (record.ExceptionCode == V48DbgPrintWide && count >= 2 && i1 != 0) {
+        wchar_t wide_buffer[1024]{};
+        const SIZE_T chars = i0 != 0 && i0 < 1024 ? static_cast<SIZE_T>(i0) : 1023;
+        SIZE_T actual_bytes{};
+        if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(i1), wide_buffer,
+                              chars * sizeof(wchar_t), &actual_bytes) != FALSE) {
+            char ascii[4096]{};
+            size_t out = 0;
+            const size_t actual_chars = static_cast<size_t>(actual_bytes / sizeof(wchar_t));
+            for (size_t i = 0; i < actual_chars && out + 8 < sizeof(ascii); ++i) {
+                const unsigned int ch = static_cast<unsigned int>(wide_buffer[i]);
+                if (ch == 0) {
+                    break;
+                }
+                if (ch == '\r') {
+                    ascii[out++] = '\\';
+                    ascii[out++] = 'r';
+                } else if (ch == '\n') {
+                    ascii[out++] = '\\';
+                    ascii[out++] = 'n';
+                } else if (ch == '\t') {
+                    ascii[out++] = '\\';
+                    ascii[out++] = 't';
+                } else if (ch >= 0x20 && ch <= 0x7e) {
+                    ascii[out++] = static_cast<char>(ch);
+                } else {
+                    const int n = std::snprintf(ascii + out, sizeof(ascii) - out, "\\u%04X", ch);
+                    if (n <= 0) {
+                        break;
+                    }
+                    out += static_cast<size_t>(n);
+                }
+            }
+            WriteWindowsNceV48EscapedBytes(
+                file, "V48_WIDE_ASCII", reinterpret_cast<const unsigned char*>(ascii), out);
+        }
+
+        if (count >= 4 && i3 != 0) {
+            unsigned char ansi_buffer[2048]{};
+            const SIZE_T wanted = i2 != 0 && i2 < sizeof(ansi_buffer)
+                                      ? static_cast<SIZE_T>(i2)
+                                      : sizeof(ansi_buffer) - 1;
+            SIZE_T actual{};
+            if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(i3),
+                                  ansi_buffer, wanted, &actual) != FALSE) {
+                WriteWindowsNceV48EscapedBytes(file, "V48_WIDE_COMPAT_ANSI", ansi_buffer,
+                                               static_cast<size_t>(actual));
+            }
+        }
+    }
+
+    (void)FlushFileBuffers(file);
     CloseHandle(file);
 }
 
@@ -316,17 +472,7 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
 
     auto& context = *reinterpret_cast<ARM64_NT_CONTEXT*>(exception->ContextRecord);
     auto* const guest = NCE::WindowsExceptionContext::CurrentGuestContext();
-    const u64 exception_code = static_cast<u64>(exception->ExceptionRecord->ExceptionCode);
-    const u64 exception_address =
-        reinterpret_cast<u64>(exception->ExceptionRecord->ExceptionAddress);
-
-    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
-        exception->ExceptionRecord->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION ||
-        exception->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
-        WriteWindowsNceV47Line("V47_GLOBAL_EXCEPTION", exception_code, exception_address,
-                               context.Pc, context.Sp, context.X[18],
-                               guest != nullptr ? guest->pc : 0);
-    }
+    CaptureWindowsNceV48DebugOutput(*exception->ExceptionRecord, context, guest);
 
     if (guest == nullptr || guest->parent == nullptr || guest->parent->m_running_thread == nullptr) {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -337,8 +483,6 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
     // The Windows transition and arbitrary-PC restore helpers execute on the original host stack.
     // Exceptions there belong to Windows/host code and must remain chainable.
     if (nce->m_windows_break != nullptr && nce->m_windows_break->IsHostStackPointer(context.Sp)) {
-        WriteWindowsNceV47Line("V47_HOSTSTACK_SEARCH", exception_code, exception_address,
-                               context.Pc, context.Sp, context.X[18], guest->pc);
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -352,21 +496,13 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
     if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&
         NCE::WindowsX18FallbackTrap::FindOriginalInstruction(
             context.Pc, process->GetPostHandlers()).has_value()) {
-        WriteWindowsNceV47Line("V47_X18_TRAP", context.Pc, context.Sp, context.X[18], guest->pc,
-                               guest->sp, params->lock.load(std::memory_order_relaxed));
         params->lock.store(SpinLockLocked, std::memory_order_release);
         const bool redirected = NCE::WindowsX18FallbackTrap::TryRedirect(
             exception, *guest, process->GetPostHandlers());
         if (redirected) {
             context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
-            WriteWindowsNceV47Line("V47_X18_REDIRECT", context.Pc, context.Sp, context.X[18],
-                                   guest->pc, guest->sp,
-                                   params->lock.load(std::memory_order_relaxed));
             NCE::WindowsNceTransition::ContinueContext(context);
         }
-        WriteWindowsNceV47Line("V47_X18_REDIRECT_FAIL", context.Pc, context.Sp, context.X[18],
-                               guest->pc, guest->sp,
-                               params->lock.load(std::memory_order_relaxed));
         params->lock.store(SpinLockUnlocked, std::memory_order_release);
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -380,15 +516,11 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         params->lock.store(SpinLockLocked, std::memory_order_release);
         NCE::WindowsNceTransition::RedirectToHost(
             context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
-        WriteWindowsNceV47Line("V47_AV_REDIRECT", exception_code, fault_address, context.Pc,
-                               context.Sp, context.X[18], guest->pc);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
     // IMP-008A does not claim complete game fault compatibility. Unknown host/guest exception
     // classes remain chainable instead of being swallowed by the NCE VEH.
-    WriteWindowsNceV47Line("V47_UNCLAIMED", exception_code, exception_address, context.Pc,
-                           context.Sp, context.X[18], guest->pc);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -414,6 +546,7 @@ void ArmNce::Initialize() {
         if (g_windows_veh_handle == nullptr) {
             LOG_CRITICAL(Core_ARM, "Failed to install Windows NCE vectored exception handler");
         }
+        WriteWindowsNceV48Ready();
     });
 }
 
@@ -500,11 +633,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         RestoreHostTebStackBounds(teb_stack_bounds);
         NCE::CurrentNceContext::Clear();
 
-        if (static_cast<u64>(hr) == NCE::WindowsX18FallbackTrap::ReturnMarker) {
-            WriteWindowsNceV47Line("V47_X18_RETURN", static_cast<u64>(hr), m_guest_ctx.pc,
-                                   m_guest_ctx.sp);
-        }
-
         if (m_windows_pending_nce_fault) {
             const u64 pending_fault_address = m_windows_pending_nce_fault_address;
             const u64 pending_fault_page = m_windows_pending_nce_fault_page;
@@ -537,13 +665,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
         const auto fallback = m_windows_x18_runner->Dispatch(
             static_cast<u64>(hr), thread, m_guest_ctx, post_handlers);
-
-        if (fallback.handled) {
-            WriteWindowsNceV47Line("V47_X18_DISPATCH", fallback.handled,
-                                   fallback.metadata_found, fallback.step.completed,
-                                   static_cast<u64>(fallback.step.halt_reason), m_guest_ctx.pc,
-                                   m_guest_ctx.sp);
-        }
 
         if (fallback.handled && private_stack_lease.has_value() &&
             !private_stack_lease->SyncFromBacking()) {
