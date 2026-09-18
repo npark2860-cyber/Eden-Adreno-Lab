@@ -4,6 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
@@ -362,8 +366,34 @@ HaltReason ArmDynarmic64::RunThread(Kernel::KThread* thread) {
 }
 
 HaltReason ArmDynarmic64::StepThread(Kernel::KThread* thread) {
+#if defined(_WIN32)
+    const bool v57_is_executing_on_entry = m_jit->IsExecuting();
+    LOG_CRITICAL(
+        Core_ARM,
+        "NCE_V57_DYNARMIC_STEP_ENTER backend=0x{:016X} jit=0x{:016X} core={} host_tid={} "
+        "kthread=0x{:016X} is_executing={} pc=0x{:016X} sp=0x{:016X}",
+        reinterpret_cast<std::uintptr_t>(this),
+        reinterpret_cast<std::uintptr_t>(std::addressof(*m_jit)), m_core_index,
+        static_cast<u32>(GetCurrentThreadId()), reinterpret_cast<std::uintptr_t>(thread),
+        v57_is_executing_on_entry, m_jit->GetPC(), m_jit->GetSP());
+#endif
+
     m_jit->ClearExclusiveState();
-    return TranslateHaltReason(m_jit->Step());
+    const auto dynarmic_reason = m_jit->Step();
+
+#if defined(_WIN32)
+    LOG_CRITICAL(
+        Core_ARM,
+        "NCE_V57_DYNARMIC_STEP_RETURN backend=0x{:016X} jit=0x{:016X} core={} host_tid={} "
+        "kthread=0x{:016X} is_executing={} pc=0x{:016X} sp=0x{:016X} raw_hr=0x{:X}",
+        reinterpret_cast<std::uintptr_t>(this),
+        reinterpret_cast<std::uintptr_t>(std::addressof(*m_jit)), m_core_index,
+        static_cast<u32>(GetCurrentThreadId()), reinterpret_cast<std::uintptr_t>(thread),
+        m_jit->IsExecuting(), m_jit->GetPC(), m_jit->GetSP(),
+        static_cast<u64>(dynarmic_reason));
+#endif
+
+    return TranslateHaltReason(dynarmic_reason);
 }
 
 u32 ArmDynarmic64::GetSvcNumber() const {
