@@ -336,7 +336,7 @@ void ArmNce::Initialize() {
         LOG_CRITICAL(Core_ARM, "Failed to resolve Windows NCE NtContinue transition");
     }
 
-    if (m_windows_break != nullptr && !m_windows_break->IsBound()) {
+    if (m_windows_break != nullptr) {
         if (!m_windows_break->BindCurrentThread()) {
             LOG_CRITICAL(Core_ARM, "Failed to bind Windows NCE cross-thread break target");
         }
