@@ -112,6 +112,10 @@ public:
     }
 
 private:
+#ifdef _WIN32
+    void UnmapForPrivateLease(size_t virtual_offset, size_t length);
+#endif
+
     size_t backing_size{};
     size_t virtual_size{};
 
