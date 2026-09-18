@@ -179,7 +179,10 @@ inline std::optional<HostMemory::PrivateMappingLease> HostMemory::AcquireDirectM
         return std::nullopt;
     }
 
-    Unmap(reinterpret_cast<size_t>(virtual_address_), length_, false);
+    // Keep the exact placeholder boundary created by unmapping this section view. Generic
+    // HostMemory::Unmap() may coalesce adjacent placeholders, but MEM_REPLACE_PLACEHOLDER requires
+    // BaseAddress and Size to exactly match the placeholder being replaced.
+    UnmapForPrivateLease(reinterpret_cast<size_t>(virtual_address_), length_);
 
     auto restore_mapped_view = [&] {
         Map(reinterpret_cast<size_t>(virtual_address_), host_offset_, length_, perms_, false);
