@@ -259,7 +259,7 @@ public:
         }
     }
 
-    void Unmap(size_t virtual_offset, size_t length) {
+    void Unmap(size_t virtual_offset, size_t length, bool allow_coalesce) {
         AdjustMap(&virtual_offset, &length);
         if (length == 0) {
             return;
@@ -267,8 +267,10 @@ public:
 
         std::scoped_lock lock{placeholder_mutex};
 
-        // Unmap until there are no more placeholders
-        while (UnmapOnePlaceholder(virtual_offset, length)) {
+        // Unmap until there are no more placeholders. Private NCE leases must preserve the exact
+        // placeholder boundary produced by UnmapViewOfFile2 so MEM_REPLACE_PLACEHOLDER can replace
+        // the same address/size immediately afterwards.
+        while (UnmapOnePlaceholder(virtual_offset, length, allow_coalesce)) {
         }
     }
 
@@ -362,7 +364,7 @@ private:
 
     /// Unmap one placeholder in the given range (partial unmaps are supported)
     /// Return true when there are no more placeholders to unmap
-    bool UnmapOnePlaceholder(size_t virtual_offset, size_t length) {
+    bool UnmapOnePlaceholder(size_t virtual_offset, size_t length, bool allow_coalesce) {
         const auto it = placeholders.find({virtual_offset, virtual_offset + length});
         const auto begin = placeholders.begin();
         const auto end = placeholders.end();
@@ -404,21 +406,23 @@ private:
         }
         // End panic region
 
-        size_t coalesce_begin = unmap_begin;
-        if (!split_left) {
-            // Try to coalesce pages to the left
-            coalesce_begin = it == begin ? 0 : std::prev(it)->upper();
-            if (coalesce_begin != placeholder_begin) {
-                Coalesce(coalesce_begin, unmap_end - coalesce_begin);
+        if (allow_coalesce) {
+            size_t coalesce_begin = unmap_begin;
+            if (!split_left) {
+                // Try to coalesce pages to the left
+                coalesce_begin = it == begin ? 0 : std::prev(it)->upper();
+                if (coalesce_begin != placeholder_begin) {
+                    Coalesce(coalesce_begin, unmap_end - coalesce_begin);
+                }
             }
-        }
-        if (!split_right) {
-            // Try to coalesce pages to the right
-            const auto next = std::next(it);
-            const size_t next_begin = next == end ? virtual_size : next->lower();
-            if (placeholder_end != next_begin) {
-                // We can coalesce to the right
-                Coalesce(coalesce_begin, next_begin - coalesce_begin);
+            if (!split_right) {
+                // Try to coalesce pages to the right
+                const auto next = std::next(it);
+                const size_t next_begin = next == end ? virtual_size : next->lower();
+                if (placeholder_end != next_begin) {
+                    // We can coalesce to the right
+                    Coalesce(coalesce_begin, next_begin - coalesce_begin);
+                }
             }
         }
         // Remove and reinsert placeholder trackers
@@ -926,9 +930,23 @@ void HostMemory::Unmap(size_t virtual_offset, size_t length, bool separate_heap)
     if (length == 0 || !virtual_base || !impl) {
         return;
     }
-    impl->Unmap(virtual_offset + virtual_base_offset, length);
+    impl->Unmap(virtual_offset + virtual_base_offset, length, true);
 #endif
 }
+
+#ifdef _WIN32
+void HostMemory::UnmapForPrivateLease(size_t virtual_offset, size_t length) {
+#if !(defined(__OPENORBIS__) || defined(__managarm__))
+    ASSERT(virtual_offset % PageAlignment == 0);
+    ASSERT(length % PageAlignment == 0);
+    ASSERT(virtual_offset + length <= virtual_size);
+    if (length == 0 || !virtual_base || !impl) {
+        return;
+    }
+    impl->Unmap(virtual_offset + virtual_base_offset, length, false);
+#endif
+}
+#endif
 
 void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission perm) {
 #if !(defined(__OPENORBIS__) || defined(__managarm__))
