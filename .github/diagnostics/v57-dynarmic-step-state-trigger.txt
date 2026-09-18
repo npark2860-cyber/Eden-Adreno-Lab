@@ -1,0 +1,7 @@
+V57 Dynarmic step-state diagnostic trigger
+
+base=0f1bab96ef35b424d2c4b32f33d18e7ba43ffbc8
+source=72a6d4422542e535fbad99fddf02f85cdfb67452
+workflow=99c77245aa68a9f80ed45c8e634a0402b050f7ba
+evidence=V56 runtime had zero NCE_V56_X18_REENTRY markers and terminated abruptly after the third x18 fallback
+diagnostic=record StepThread enter/return plus Dynarmic Jit::IsExecuting() state
