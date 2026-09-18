@@ -1,0 +1,6 @@
+V55 preserve exact HostMemory lease placeholder build trigger
+base=353c5ca7923a12b202ce98c1cbca833b9dd8ae4d
+source=14797f61aa2c0c0aa028f3e777ae0a46176e64cf
+workflow=126aabe3429264cf46d983212cb00941fd188655
+evidence=V54 S09_PRESERVE_PLACEHOLDER at va 0x20BC616000, len 0x1000, ERROR_INVALID_ADDRESS 487 after generic Unmap coalesced lease placeholder
+fix=lease-only HostMemory unmap preserves exact placeholder boundary by disabling coalesce
