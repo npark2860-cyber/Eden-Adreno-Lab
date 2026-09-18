@@ -314,6 +314,5 @@ inline std::optional<HostMemory::PrivateMappingLease> HostMemory::AcquireDirectM
     return PrivateMappingLease{this, static_cast<u8*>(virtual_address_), host_offset_, length_,
                                perms_};
 }
-}
 
 } // namespace Common
