@@ -61,7 +61,7 @@ jobs:
           git -C "$SOURCE" diff --check "$V56_BASE_SHA" "$GITHUB_SHA"
 
           CHANGED="$(git -C "$SOURCE" diff --name-only "$V56_BASE_SHA" "$GITHUB_SHA")"
-          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/dynarmic/arm_dynarmic_64\.cpp|\.github/workflows/build-windows-arm64-nce-v57-dynarmic-step-state-0f1bab96\.yml|\.github/diagnostics/v57-dynarmic-step-state-trigger\.txt)
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/dynarmic/arm_dynarmic_64\.cpp|\.github/workflows/build-windows-arm64-nce-v57-dynarmic-step-state-0f1bab96\.yml|\.github/diagnostics/v57-dynarmic-step-state-trigger\.txt)$' || true)"
           test -z "$UNEXPECTED"
 
           test -z "$(git -C "$SOURCE" diff "$V56_BASE_SHA" "$GITHUB_SHA" -- \
@@ -97,7 +97,7 @@ jobs:
             src/core/arm/dynarmic/arm_dynarmic_64.cpp \
             > "$PROV/V57_DYNARMIC_STEP_STATE.diff"
 
-          printf 'V56_BASE_SHA=%s\nV57_SHA=%s\nSOURCE_MODE=exact tested V56 + Dynarmic Step execution-state diagnostics only\nEVIDENCE=V56 runtime has no reentry marker and terminates abruptly after the third x18 fallback\nISOLATION_DIR=build/validation/%s/%s\n' \
+          printf 'V56_BASE_SHA=%s\nV57_SHA=%s\nSOURCE_MODE=exact tested V56 + Dynarmic Step execution-state diagnostics only\nEVIDENCE=V56 runtime has no NCE_V56_X18_REENTRY marker and terminates abruptly after the third x18 fallback\nISOLATION_DIR=build/validation/%s/%s\n' \
             "$V56_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
@@ -154,137 +154,13 @@ jobs:
         shell: msys2 {0}
         working-directory: build/validation/${{ github.sha }}/v57-dynarmic-step-state/source
         env:
-          ARTIFACT_REF: nce-v57-dynarmic-step-state-a2e52dda
+          ARTIFACT_REF: nce-v57-dynarmic-step-state-0f1bab96
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
-          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v57-dynarmic-step-state-a2e52dda\n' >> ../provenance/BUILD_INFO.txt
-
-      - name: Prepare V57 upload
-        shell: pwsh
-        run: |
-          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
-          $source = Join-Path $root 'source'
-          $prov = Join-Path $root 'provenance'
-          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
-          if ($files.Count -ne 1) { throw "Expected exactly one packaged Eden artifact; found $($files.Count)" }
-          $upload = Join-Path $root 'upload'
-          New-Item -ItemType Directory -Force $upload | Out-Null
-          Copy-Item $files[0].FullName $upload -Force
-          Copy-Item (Join-Path $prov '*') $upload -Force
-          $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
-          "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
-          "PACKAGE_SHA256=$hash" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
-
-      - name: Upload V57 package
-        uses: actions/upload-artifact@v7
-        with:
-          name: Eden-Windows-ARM64-NCE-V57-DYNARMIC-STEP-STATE-0f1bab96
-          path: build/validation/${{ github.sha }}/v57-dynarmic-step-state/upload/*
-          if-no-files-found: error
-          retention-days: 14
- || true)"
-          test -z "$UNEXPECTED"
-
-          test -z "$(git -C "$SOURCE" diff "$V56_BASE_SHA" "$GITHUB_SHA" -- \
-            src/core/arm/nce/arm_nce_windows.cpp \
-            src/common/host_memory.cpp \
-            src/common/host_memory.h \
-            src/common/host_memory_windows_lease.h \
-            src/core/arm/nce/windows_nce_transition.cpp \
-            src/core/arm/nce/windows_nce_transition.h \
-            src/core/arm/nce/windows_nce_entry.asm \
-            src/core/arm/nce/windows_cross_thread_break.h \
-            src/core/arm/nce/windows_x18_fallback_runner.cpp \
-            src/core/arm/nce/windows_x18_fallback_runner.h)"
-
-          grep -Fq 'NCE_V57_DYNARMIC_STEP_ENTER' "$SOURCE/src/core/arm/dynarmic/arm_dynarmic_64.cpp"
-          grep -Fq 'NCE_V57_DYNARMIC_STEP_RETURN' "$SOURCE/src/core/arm/dynarmic/arm_dynarmic_64.cpp"
-          grep -Fq 'm_jit->IsExecuting()' "$SOURCE/src/core/arm/dynarmic/arm_dynarmic_64.cpp"
-          grep -Fq 'GetCurrentThreadId()' "$SOURCE/src/core/arm/dynarmic/arm_dynarmic_64.cpp"
-          grep -Fq 'NCE_V56_X18_REENTRY' "$SOURCE/src/core/arm/nce/windows_x18_fallback_runner.cpp"
-
-          python - "$SOURCE/src/core/arm/dynarmic/arm_dynarmic_64.cpp" <<'PY'
-          from pathlib import Path
-          import sys
-          cpp = Path(sys.argv[1]).read_text(encoding="utf-8")
-          assert "NCE_V57_DYNARMIC_STEP_ENTER" in cpp
-          assert "NCE_V57_DYNARMIC_STEP_RETURN" in cpp
-          assert "m_jit->IsExecuting()" in cpp
-          assert "GetCurrentThreadId()" in cpp
-          assert "const auto dynarmic_reason = m_jit->Step();" in cpp
-          PY
-
-          git -C "$SOURCE" diff "$V56_BASE_SHA" "$GITHUB_SHA" -- \
-            src/core/arm/dynarmic/arm_dynarmic_64.cpp \
-            > "$PROV/V57_DYNARMIC_STEP_STATE.diff"
-
-          printf 'V56_BASE_SHA=%s\nV57_SHA=%s\nSOURCE_MODE=exact tested V56 + Dynarmic Step execution-state diagnostics only\nEVIDENCE=V56 runtime has no reentry marker and terminates abruptly after the third x18 fallback\nISOLATION_DIR=build/validation/%s/%s\n' \
-            "$V56_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
-
-      - name: Checkout fixed Eden CI workflow
-        uses: actions/checkout@v7
-        with:
-          repository: Eden-CI/Workflow
-          ref: afead830f3a444427f9fdfd841218f932465c03a
-          path: build/validation/${{ github.sha }}/v57-dynarmic-step-state/ci
-
-      - name: Install fixed Eden CI scripts
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
-          rm -rf "$ROOT/source/.ci"
-          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
-          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
-
-      - name: Set up CLANGARM64 toolchain
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: CLANGARM64
-          update: true
-          cache: false
-          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
-          pacboy: >-
-            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
-            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
-            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
-            libwebp:p libtiff:p brotli:p
-
-      - name: Configure V57 Windows ARM64 NCE build
-        shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/v57-dynarmic-step-state/source
-        env:
-          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
-        run: |
-          set -euo pipefail
-          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
-          grep -Fq 'HAS_NCE=1' build/compile_commands.json
-          printf 'CONFIGURE_COMMAND=./.ci/build/configure.sh -DCCACHE_PATH=sccache\nNCE_COMPILE_GUARD=HAS_NCE=1\n' >> ../provenance/BUILD_INFO.txt
-
-      - name: Build full Windows ARM64 Eden V57
-        shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/v57-dynarmic-step-state/source
-        run: |
-          set -euo pipefail
-          cmake --build build
-          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
-          printf 'BUILD_COMMAND=cmake --build build\n' >> ../provenance/BUILD_INFO.txt
-
-      - name: Package Windows ARM64 Eden V57
-        shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/v57-dynarmic-step-state/source
-        env:
-          ARTIFACT_REF: nce-v57-dynarmic-step-state-a2e52dda
-          MSYS_TOOLCHAIN: CLANGARM64
-        run: |
-          set -euo pipefail
-          ./.ci/package/windows.sh
-          test -d artifacts
-          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v57-dynarmic-step-state-a2e52dda\n' >> ../provenance/BUILD_INFO.txt
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v57-dynarmic-step-state-0f1bab96\n' >> ../provenance/BUILD_INFO.txt
 
       - name: Prepare V57 upload
         shell: pwsh
