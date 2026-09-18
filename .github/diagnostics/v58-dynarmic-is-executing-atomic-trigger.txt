@@ -1,0 +1,7 @@
+V58 Dynarmic is_executing atomic production-candidate trigger
+
+base=a2e52dda896cd38562275850e0621721cb22e1af
+source=5a063eca430b0e9d3c6a2efef74a5a7c943729b6
+workflow=e2f0e9b84e2c3f3351e4376b0149644356271956
+evidence=V55 reproduced ARM64 Dynarmic ASSERT(!is_executing); V56/V57 added synchronization and did not reproduce
+change=plain bool is_executing -> std::atomic_bool with atomic exchange/store/load
