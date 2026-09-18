@@ -3,7 +3,7 @@ name: Build Windows ARM64 NCE V56 x18 reentry diagnostics
 on:
   push:
     branches:
-      - fix/windows-nce-v56-x18-reentry-353c5ca7
+      - diag/windows-nce-v56-x18-reentry-a2e52dda
     paths:
       - .github/diagnostics/v56-x18-reentry-trigger.txt
 
@@ -37,7 +37,7 @@ jobs:
       RELEASE_PGO_REPO: Eden-CI/PGO
 
     steps:
-      - name: Checkout exact V55 Git object
+      - name: Checkout exact V56 Git object
         uses: actions/checkout@v7
         with:
           repository: npark2860-cyber/Eden-Adreno-Lab
@@ -46,7 +46,7 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Verify V55 provenance and single-variable scope
+      - name: Verify V56 provenance and diagnostic-only scope
         shell: bash
         run: |
           set -euo pipefail
@@ -64,27 +64,39 @@ jobs:
           UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/windows_x18_fallback_runner\.cpp|src/core/arm/nce/windows_x18_fallback_runner\.h|\.github/workflows/build-windows-arm64-nce-v56-x18-reentry-a2e52dda\.yml|\.github/diagnostics/v56-x18-reentry-trigger\.txt)$' || true)"
           test -z "$UNEXPECTED"
 
-          test -z "$(git -C "$SOURCE" diff "$V55_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp src/common/host_memory.cpp src/common/host_memory.h src/common/host_memory_windows_lease.h src/core/arm/nce/windows_nce_transition.cpp src/core/arm/nce/windows_nce_transition.h src/core/arm/nce/windows_nce_entry.asm src/core/arm/nce/windows_cross_thread_break.h)"
+          test -z "$(git -C "$SOURCE" diff "$V55_BASE_SHA" "$GITHUB_SHA" -- \
+            src/core/arm/nce/arm_nce_windows.cpp \
+            src/common/host_memory.cpp \
+            src/common/host_memory.h \
+            src/common/host_memory_windows_lease.h \
+            src/core/arm/nce/windows_nce_transition.cpp \
+            src/core/arm/nce/windows_nce_transition.h \
+            src/core/arm/nce/windows_nce_entry.asm \
+            src/core/arm/nce/windows_cross_thread_break.h)"
 
           grep -Fq 'NCE_V56_X18_REENTRY' "$SOURCE/src/core/arm/nce/windows_x18_fallback_runner.cpp"
           grep -Fq 'm_v56_active_dispatches' "$SOURCE/src/core/arm/nce/windows_x18_fallback_runner.h"
           grep -Fq 'GetCurrentThreadId()' "$SOURCE/src/core/arm/nce/windows_x18_fallback_runner.cpp"
+          grep -Fq 'std::scoped_lock lk{m_v56_diag_mutex};' "$SOURCE/src/core/arm/nce/windows_x18_fallback_runner.cpp"
 
-          python - "$SOURCE/src/common/host_memory.cpp" "$SOURCE/src/common/host_memory_windows_lease.h" <<'PY'
+          python - "$SOURCE/src/core/arm/nce/windows_x18_fallback_runner.cpp" "$SOURCE/src/core/arm/nce/windows_x18_fallback_runner.h" <<'PY'
           from pathlib import Path
           import sys
           cpp = Path(sys.argv[1]).read_text(encoding="utf-8")
-          lease = Path(sys.argv[2]).read_text(encoding="utf-8")
-          assert "if (allow_coalesce) {" in cpp
-          assert "impl->Unmap(virtual_offset + virtual_base_offset, length, true);" in cpp
-          assert "impl->Unmap(virtual_offset + virtual_base_offset, length, false);" in cpp
-          assert "UnmapForPrivateLease(reinterpret_cast<size_t>(virtual_address_), length_);" in lease
-          assert "Unmap(reinterpret_cast<size_t>(virtual_address_), length_, false);" not in lease
+          hdr = Path(sys.argv[2]).read_text(encoding="utf-8")
+          assert "NCE_V56_X18_REENTRY" in cpp
+          assert "GetCurrentThreadId()" in cpp
+          assert "m_v56_active_dispatches" in hdr
+          assert "m_v56_diag_mutex" in hdr
+          assert "X18Fallback::Step(*m_backend, thread, guest, *instruction)" in cpp
           PY
 
-          git -C "$SOURCE" diff "$V55_BASE_SHA" "$GITHUB_SHA" -- src/common/host_memory.cpp src/common/host_memory.h src/common/host_memory_windows_lease.h > "$PROV/V55_PRESERVE_LEASE_PLACEHOLDER.diff"
+          git -C "$SOURCE" diff "$V55_BASE_SHA" "$GITHUB_SHA" -- \
+            src/core/arm/nce/windows_x18_fallback_runner.cpp \
+            src/core/arm/nce/windows_x18_fallback_runner.h \
+            > "$PROV/V56_X18_REENTRY.diff"
 
-          printf 'V55_BASE_SHA=%s\nV56_SHA=%s\nSOURCE_MODE=exact tested V55 + x18 runner reentry diagnostics only\nEVIDENCE=V55 crashes at Dynarmic A64 Step ASSERT(!is_executing) after x18 fallback\nISOLATION_DIR=build/validation/%s/%s\n' \
+          printf 'V55_BASE_SHA=%s\nV56_SHA=%s\nSOURCE_MODE=exact tested V55 + x18 runner reentry diagnostics only\nEVIDENCE=V55 reaches Dynarmic A64 Step ASSERT(!is_executing) after successful HostMemory lease fix\nISOLATION_DIR=build/validation/%s/%s\n' \
             "$V55_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
@@ -116,7 +128,7 @@ jobs:
             enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
             libwebp:p libtiff:p brotli:p
 
-      - name: Configure V55 Windows ARM64 NCE build
+      - name: Configure V56 Windows ARM64 NCE build
         shell: msys2 {0}
         working-directory: build/validation/${{ github.sha }}/v56-x18-reentry/source
         env:
@@ -127,7 +139,7 @@ jobs:
           grep -Fq 'HAS_NCE=1' build/compile_commands.json
           printf 'CONFIGURE_COMMAND=./.ci/build/configure.sh -DCCACHE_PATH=sccache\nNCE_COMPILE_GUARD=HAS_NCE=1\n' >> ../provenance/BUILD_INFO.txt
 
-      - name: Build full Windows ARM64 Eden V55
+      - name: Build full Windows ARM64 Eden V56
         shell: msys2 {0}
         working-directory: build/validation/${{ github.sha }}/v56-x18-reentry/source
         run: |
@@ -136,19 +148,19 @@ jobs:
           test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
           printf 'BUILD_COMMAND=cmake --build build\n' >> ../provenance/BUILD_INFO.txt
 
-      - name: Package Windows ARM64 Eden V55
+      - name: Package Windows ARM64 Eden V56
         shell: msys2 {0}
         working-directory: build/validation/${{ github.sha }}/v56-x18-reentry/source
         env:
-          ARTIFACT_REF: nce-v56-x18-reentry-353c5ca7
+          ARTIFACT_REF: nce-v56-x18-reentry-a2e52dda
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
-          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v56-x18-reentry-353c5ca7\n' >> ../provenance/BUILD_INFO.txt
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v56-x18-reentry-a2e52dda\n' >> ../provenance/BUILD_INFO.txt
 
-      - name: Prepare V55 upload
+      - name: Prepare V56 upload
         shell: pwsh
         run: |
           $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
@@ -164,7 +176,7 @@ jobs:
           "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
           "PACKAGE_SHA256=$hash" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
 
-      - name: Upload V55 package
+      - name: Upload V56 package
         uses: actions/upload-artifact@v7
         with:
           name: Eden-Windows-ARM64-NCE-V56-X18-REENTRY-a2e52dda
