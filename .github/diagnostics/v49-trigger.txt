@@ -1,0 +1,2 @@
+V49 exit watchdog build trigger
+candidate=1b8eee8d8951d43d98761d979f7ea83bb903bd2c
