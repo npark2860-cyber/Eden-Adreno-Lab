@@ -16,13 +16,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  V53_BASE_SHA: 27ff651469a45b95d3e66c978aa96a7ebf6b484f
+  V52_BASE_SHA: 27ff651469a45b95d3e66c978aa96a7ebf6b484f
   CI_REF: afead830f3a444427f9fdfd841218f932465c03a
   TEST_NAME: v53-host-window-yield
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE V53 defer busy interrupt
+    name: Windows ARM64 NCE V53 host window yield
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -55,15 +55,15 @@ jobs:
           PROV="$ROOT/provenance"
           mkdir -p "$PROV"
           test "$(git -C "$SOURCE" rev-parse HEAD)" = "$GITHUB_SHA"
-          git -C "$SOURCE" merge-base --is-ancestor "$V53_BASE_SHA" "$GITHUB_SHA"
+          git -C "$SOURCE" merge-base --is-ancestor "$V52_BASE_SHA" "$GITHUB_SHA"
           test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no)"
-          git -C "$SOURCE" diff --check "$V53_BASE_SHA" "$GITHUB_SHA"
+          git -C "$SOURCE" diff --check "$V52_BASE_SHA" "$GITHUB_SHA"
 
-          CHANGED="$(git -C "$SOURCE" diff --name-only "$V53_BASE_SHA" "$GITHUB_SHA")"
+          CHANGED="$(git -C "$SOURCE" diff --name-only "$V52_BASE_SHA" "$GITHUB_SHA")"
           UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/arm_nce_windows\.cpp|\.github/workflows/build-windows-arm64-nce-v53-host-window-yield-27ff6514\.yml|\.github/diagnostics/v53-host-window-yield-trigger\.txt)$' || true)"
           test -z "$UNEXPECTED"
 
-          test -z "$(git -C "$SOURCE" diff "$V53_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/windows_nce_transition.h src/core/arm/nce/windows_nce_transition.cpp src/common/host_memory.cpp src/common/host_memory.h src/common/host_memory_windows_lease.h src/core/arm/nce/windows_nce_entry.asm src/core/arm/nce/windows_cross_thread_break.h)"
+          test -z "$(git -C "$SOURCE" diff "$V52_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/windows_nce_transition.h src/core/arm/nce/windows_nce_transition.cpp src/common/host_memory.cpp src/common/host_memory.h src/common/host_memory_windows_lease.h src/core/arm/nce/windows_nce_entry.asm src/core/arm/nce/windows_cross_thread_break.h)"
 
           grep -Fq 'compare_exchange_strong(expected, SpinLockLocked' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'The captured target is executing on the host stack.' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
@@ -86,10 +86,10 @@ jobs:
           assert "if (!params->is_running)" in host
           PY
 
-          git -C "$SOURCE" diff "$V53_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/V53_HOST_WINDOW_YIELD.diff"
+          git -C "$SOURCE" diff "$V52_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/V53_HOST_WINDOW_YIELD.diff"
 
-          printf 'V53_BASE_SHA=%s\nV53_SHA=%s\nSOURCE_MODE=exact tested V52 + host-window lock release/nonblocking reacquire only\nEVIDENCE=V52 deadlock: PhysicalCore::Interrupt holds m_guard while SignalInterrupt retries host_window; target waits m_guard in ExitContext\nISOLATION_DIR=build/validation/%s/%s\n' \
-            "$V53_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
+          printf 'V52_BASE_SHA=%s\nV53_SHA=%s\nSOURCE_MODE=exact tested V52 + host-window lock release/nonblocking reacquire only\nEVIDENCE=V52 deadlock: PhysicalCore::Interrupt holds m_guard while SignalInterrupt retries host_window; target waits m_guard in ExitContext\nISOLATION_DIR=build/validation/%s/%s\n' \
+            "$V52_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
