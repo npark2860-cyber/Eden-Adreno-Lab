@@ -3,26 +3,26 @@ name: Build Windows ARM64 NCE V53 host window yield
 on:
   push:
     branches:
-      - fix/windows-nce-v53-defer-busy-interrupt-27ff6514
+      - fix/windows-nce-v53-host-window-yield-27ff6514
     paths:
-      - .github/diagnostics/v53-defer-busy-interrupt-trigger.txt
+      - .github/diagnostics/v53-host-window-yield-trigger.txt
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: build-windows-nce-v53-defer-busy-interrupt
+  group: build-windows-nce-v53-host-window-yield
   cancel-in-progress: false
 
 env:
-  V51_BASE_SHA: 27ff651469a45b95d3e66c978aa96a7ebf6b484f
+  V53_BASE_SHA: 27ff651469a45b95d3e66c978aa96a7ebf6b484f
   CI_REF: afead830f3a444427f9fdfd841218f932465c03a
-  TEST_NAME: v53-defer-busy-interrupt
+  TEST_NAME: v53-host-window-yield
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE V53 host window yield
+    name: Windows ARM64 NCE V53 defer busy interrupt
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -42,7 +42,7 @@ jobs:
         with:
           repository: npark2860-cyber/Eden-Adreno-Lab
           ref: ${{ github.sha }}
-          path: build/validation/${{ github.sha }}/v53-defer-busy-interrupt/source
+          path: build/validation/${{ github.sha }}/v53-host-window-yield/source
           fetch-depth: 0
           submodules: recursive
 
@@ -55,18 +55,18 @@ jobs:
           PROV="$ROOT/provenance"
           mkdir -p "$PROV"
           test "$(git -C "$SOURCE" rev-parse HEAD)" = "$GITHUB_SHA"
-          git -C "$SOURCE" merge-base --is-ancestor "$V51_BASE_SHA" "$GITHUB_SHA"
+          git -C "$SOURCE" merge-base --is-ancestor "$V53_BASE_SHA" "$GITHUB_SHA"
           test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no)"
-          git -C "$SOURCE" diff --check "$V51_BASE_SHA" "$GITHUB_SHA"
+          git -C "$SOURCE" diff --check "$V53_BASE_SHA" "$GITHUB_SHA"
 
-          CHANGED="$(git -C "$SOURCE" diff --name-only "$V51_BASE_SHA" "$GITHUB_SHA")"
-          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/arm_nce_windows\.cpp|\.github/workflows/build-windows-arm64-nce-v53-defer-busy-interrupt-27ff6514\.yml|\.github/diagnostics/v53-defer-busy-interrupt-trigger\.txt)$' || true)"
+          CHANGED="$(git -C "$SOURCE" diff --name-only "$V53_BASE_SHA" "$GITHUB_SHA")"
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/arm_nce_windows\.cpp|\.github/workflows/build-windows-arm64-nce-v53-host-window-yield-27ff6514\.yml|\.github/diagnostics/v53-host-window-yield-trigger\.txt)$' || true)"
           test -z "$UNEXPECTED"
 
-          test -z "$(git -C "$SOURCE" diff "$V51_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/windows_nce_transition.h src/core/arm/nce/windows_nce_transition.cpp src/common/host_memory.cpp src/common/host_memory.h src/common/host_memory_windows_lease.h src/core/arm/nce/windows_nce_entry.asm src/core/arm/nce/windows_cross_thread_break.h)"
+          test -z "$(git -C "$SOURCE" diff "$V53_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/windows_nce_transition.h src/core/arm/nce/windows_nce_transition.cpp src/common/host_memory.cpp src/common/host_memory.h src/common/host_memory_windows_lease.h src/core/arm/nce/windows_nce_entry.asm src/core/arm/nce/windows_cross_thread_break.h)"
 
-          grep -Fq 'The captured target is executing on the host stack.' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'compare_exchange_strong(expected, SpinLockLocked' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
+          grep -Fq 'The captured target is executing on the host stack.' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
           grep -Fq 'if (!params->is_running)' "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp"
 
           python - "$SOURCE/src/core/arm/nce/arm_nce_windows.cpp" <<'PY'
@@ -77,24 +77,26 @@ jobs:
           sig_end = s.index("void ArmNce::ClearInstructionCache", sig_begin)
           sig = s[sig_begin:sig_end]
           assert "LockThreadParameters(params);" not in sig.split("for (;;)")[0]
-          host = sig[sig.index("if (!state.host_window)"):sig.index("void ArmNce::ClearInstructionCache") if "void ArmNce::ClearInstructionCache" in sig else len(sig)]
+          assert "compare_exchange_strong(expected, SpinLockLocked" in sig
+          host_begin = sig.index("if (!state.host_window)")
+          host = sig[host_begin:]
           assert "UnlockThreadParameters(params);" in host
           assert "std::this_thread::yield();" in host
           assert "compare_exchange_strong(expected, SpinLockLocked" in host
           assert "if (!params->is_running)" in host
           PY
 
-          git -C "$SOURCE" diff "$V51_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/V53_DEFER_BUSY_INTERRUPT.diff"
+          git -C "$SOURCE" diff "$V53_BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp > "$PROV/V53_HOST_WINDOW_YIELD.diff"
 
-          printf 'V51_BASE_SHA=%s\nV53_SHA=%s\nSOURCE_MODE=exact tested V52 + host-window lock release/nonblocking reacquire only\nEVIDENCE=V52 deadlock: PhysicalCore::Interrupt holds m_guard while SignalInterrupt retries host_window; target waits m_guard in ExitContext\nISOLATION_DIR=build/validation/%s/%s\n' \
-            "$V51_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
+          printf 'V53_BASE_SHA=%s\nV53_SHA=%s\nSOURCE_MODE=exact tested V52 + host-window lock release/nonblocking reacquire only\nEVIDENCE=V52 deadlock: PhysicalCore::Interrupt holds m_guard while SignalInterrupt retries host_window; target waits m_guard in ExitContext\nISOLATION_DIR=build/validation/%s/%s\n' \
+            "$V53_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
         with:
           repository: Eden-CI/Workflow
           ref: afead830f3a444427f9fdfd841218f932465c03a
-          path: build/validation/${{ github.sha }}/v53-defer-busy-interrupt/ci
+          path: build/validation/${{ github.sha }}/v53-host-window-yield/ci
 
       - name: Install fixed Eden CI scripts
         shell: bash
@@ -120,7 +122,7 @@ jobs:
 
       - name: Configure V53 Windows ARM64 NCE build
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/v53-defer-busy-interrupt/source
+        working-directory: build/validation/${{ github.sha }}/v53-host-window-yield/source
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
@@ -131,7 +133,7 @@ jobs:
 
       - name: Build full Windows ARM64 Eden V53
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/v53-defer-busy-interrupt/source
+        working-directory: build/validation/${{ github.sha }}/v53-host-window-yield/source
         run: |
           set -euo pipefail
           cmake --build build
@@ -140,15 +142,15 @@ jobs:
 
       - name: Package Windows ARM64 Eden V53
         shell: msys2 {0}
-        working-directory: build/validation/${{ github.sha }}/v53-defer-busy-interrupt/source
+        working-directory: build/validation/${{ github.sha }}/v53-host-window-yield/source
         env:
-          ARTIFACT_REF: nce-v53-defer-busy-interrupt-27ff6514
+          ARTIFACT_REF: nce-v53-host-window-yield-27ff6514
           MSYS_TOOLCHAIN: CLANGARM64
         run: |
           set -euo pipefail
           ./.ci/package/windows.sh
           test -d artifacts
-          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v53-defer-busy-interrupt-27ff6514\n' >> ../provenance/BUILD_INFO.txt
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v53-host-window-yield-27ff6514\n' >> ../provenance/BUILD_INFO.txt
 
       - name: Prepare V53 upload
         shell: pwsh
@@ -170,6 +172,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: Eden-Windows-ARM64-NCE-V53-HOST-WINDOW-YIELD-27ff6514
-          path: build/validation/${{ github.sha }}/v53-defer-busy-interrupt/upload/*
+          path: build/validation/${{ github.sha }}/v53-host-window-yield/upload/*
           if-no-files-found: error
           retention-days: 14
