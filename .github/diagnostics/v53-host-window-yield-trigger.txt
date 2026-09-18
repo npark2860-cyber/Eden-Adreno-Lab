@@ -1,0 +1,5 @@
+V53 host-window yield build trigger
+base=27ff651469a45b95d3e66c978aa96a7ebf6b484f
+fix=331ce9bd00041b6a3b025a07b8feb282a7f83ae9
+workflow_fix=8c5e57398404c7ece81227beab963f28ef0591b4
+evidence=PhysicalCore::Interrupt holds m_guard while Windows SignalInterrupt retries host_window; target exits NCE and waits on the same m_guard in ExitContext
