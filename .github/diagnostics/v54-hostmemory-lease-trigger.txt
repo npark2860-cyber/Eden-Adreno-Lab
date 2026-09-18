@@ -1,0 +1,6 @@
+V54 HostMemory private lease diagnostic build trigger
+base=353c5ca7923a12b202ce98c1cbca833b9dd8ae4d
+diagnostic=22d3b67a67ef9ad18a323e8f0de640d4137736b9
+workflow=7662e84a88b5432d9afe375d9515836a8f12bb39
+scope=diagnostic-only stage-coded failure logging in AcquireDirectMappedPrivateLease
+evidence=V53 runtime logged EnsureWindowsGuestStackLease private HostMemory lease acquisition failure
