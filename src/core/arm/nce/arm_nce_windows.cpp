@@ -332,6 +332,10 @@ ArmNce::ArmNce(System& system, bool uses_wall_clock, std::size_t core_index)
 ArmNce::~ArmNce() = default;
 
 void ArmNce::Initialize() {
+    if (!NCE::WindowsNceTransition::Initialize()) {
+        LOG_CRITICAL(Core_ARM, "Failed to resolve Windows NCE NtContinue transition");
+    }
+
     if (m_windows_break != nullptr && !m_windows_break->IsBound()) {
         if (!m_windows_break->BindCurrentThread()) {
             LOG_CRITICAL(Core_ARM, "Failed to bind Windows NCE cross-thread break target");

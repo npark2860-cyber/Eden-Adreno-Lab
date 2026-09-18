@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/arm_nce_asm_definitions.h"
@@ -20,6 +21,17 @@ extern "C" void WindowsNceHostStackBridge() noexcept;
 
 namespace {
 constexpr std::uint32_t NzcvMask = 0xF0000000U;
+
+using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
+std::once_flag g_nt_continue_once;
+NtContinueFn g_nt_continue{};
+
+void ResolveNtContinue() noexcept {
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    g_nt_continue =
+        ntdll != nullptr ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
+                         : nullptr;
+}
 
 void TraceVirtualMapping(const char* name, std::uint64_t address) noexcept {
     MEMORY_BASIC_INFORMATION mbi{};
@@ -46,16 +58,14 @@ static_assert(offsetof(HostContext, host_saved_regs) == HostContextRegs);
 static_assert(offsetof(HostContext, host_saved_vregs) == HostContextVregs);
 static_assert(offsetof(HostContext, host_sp) == HostContextSpTpidrEl0);
 
+bool WindowsNceTransition::Initialize() noexcept {
+    std::call_once(g_nt_continue_once, ResolveNtContinue);
+    return g_nt_continue != nullptr;
+}
+
 [[noreturn]] void WindowsNceTransition::ContinueContext(ARM64_NT_CONTEXT& context) noexcept {
-    using NtContinueFn = LONG(NTAPI*)(PCONTEXT, BOOLEAN);
-    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    const auto nt_continue = ntdll != nullptr
-                                 ? reinterpret_cast<NtContinueFn>(GetProcAddress(ntdll, "NtContinue"))
-                                 : nullptr;
+    const auto nt_continue = g_nt_continue;
     if (nt_continue == nullptr) {
-        std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RESOLVE_ERROR=%lu\n",
-                     static_cast<unsigned long>(GetLastError()));
-        std::fflush(stderr);
         std::abort();
     }
 

@@ -30,8 +30,13 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
 
 class WindowsNceTransition {
 public:
-    // Resume exactly the supplied Windows ARM64 context through ntdll!NtContinue. A successful
-    // call never returns. Resolution failure or an unexpected NtContinue return is fatal because
+    // Resolve ntdll!NtContinue while still on an ordinary Windows host stack. Exception-handler
+    // resume paths can run with a guest SP, so they must not enter the loader to resolve it.
+    [[nodiscard]] static bool Initialize() noexcept;
+
+    // Resume exactly the supplied Windows ARM64 context through the pre-resolved ntdll!NtContinue.
+    // A successful call never returns. Missing initialization or an unexpected NtContinue return
+    // is fatal because
     // there is no safe partially-completed context transition to resume from.
     [[noreturn]] static void ContinueContext(ARM64_NT_CONTEXT& context) noexcept;
 
