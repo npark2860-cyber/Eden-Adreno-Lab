@@ -6,7 +6,7 @@
 #include <windows.h>
 
 #include "common/assert.h"
-#include "common/logging/log.h"
+#include "common/logging.h"
 
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
