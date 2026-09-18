@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -31,22 +32,20 @@ struct Jit::Impl final {
             , core(conf) {}
 
     HaltReason Run() {
-        ASSERT(!is_executing);
+        ASSERT(!is_executing.exchange(true, std::memory_order_acq_rel));
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
-        is_executing = true;
         HaltReason hr = core.Run(current_address_space, current_state, &halt_reason);
         PerformRequestedCacheInvalidation(hr);
-        is_executing = false;
+        is_executing.store(false, std::memory_order_release);
         return hr;
     }
 
     HaltReason Step() {
-        ASSERT(!is_executing);
+        ASSERT(!is_executing.exchange(true, std::memory_order_acq_rel));
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
-        is_executing = true;
         HaltReason hr = core.Step(current_address_space, current_state, &halt_reason);
         PerformRequestedCacheInvalidation(hr);
-        is_executing = false;
+        is_executing.store(false, std::memory_order_release);
         return hr;
     }
 
@@ -176,7 +175,7 @@ private:
     std::mutex invalidation_mutex;
     boost::icl::interval_set<u64> invalid_cache_ranges;
     bool invalidate_entire_cache = false;
-    bool is_executing = false;
+    std::atomic_bool is_executing{false};
 };
 
 Jit::Jit(UserConfig conf)
