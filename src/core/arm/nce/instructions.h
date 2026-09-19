@@ -117,6 +117,24 @@ static_assert(MSR(0xD51BD040).Verify());
 static_assert(MSR(0xD51BD040).GetSystemReg() == TpidrEl0);
 static_assert(MSR(0xD51BD040).GetRt() == 0x0);
 
+// https://developer.arm.com/documentation/ddi0596/latest/Base-Instructions/DC-CIVAC--Data-Cache-Clean-and-Invalidate-by-VA-to-PoC-
+union DCCIVAC {
+    constexpr explicit DCCIVAC(u32 raw_) : raw{raw_} {}
+
+    constexpr bool Verify() const {
+        return (raw & 0xFFFFFFE0U) == 0xD50B7E20U;
+    }
+
+    constexpr u32 GetRt() const {
+        return raw & 0x1FU;
+    }
+
+    u32 raw;
+};
+static_assert(sizeof(DCCIVAC) == sizeof(u32));
+static_assert(DCCIVAC(0xD50B7E2A).Verify());
+static_assert(DCCIVAC(0xD50B7E2A).GetRt() == 0xA);
+
 // https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/LDXR--Load-Exclusive-Register-
 // https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/LDXP--Load-Exclusive-Pair-of-Registers-
 // https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/STXR--Store-Exclusive-Register-
