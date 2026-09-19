@@ -315,6 +315,21 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
             continue;
         }
 
+#if defined(_WIN32)
+        // Windows ARM64 does not expose CTR_EL0 to user mode. Match Dynarmic's guest-visible
+        // CTR_EL0 value instead of executing the guest MRS natively and taking STATUS_ILLEGAL_INSTRUCTION.
+        if (auto mrs = MRS{inst}; mrs.Verify() && mrs.GetSystemReg() == CtrEl0) {
+            bool pre_buffer = false;
+            const auto ret = AddRelocations(pre_buffer);
+            if (pre_buffer) {
+                WriteCtrEl0Handler(ret, oaknut::XReg{static_cast<int>(mrs.GetRt())}, c_pre);
+            } else {
+                WriteCtrEl0Handler(ret, oaknut::XReg{static_cast<int>(mrs.GetRt())}, c);
+            }
+            continue;
+        }
+#endif
+
         // MRS Xn, CNTPCT_EL0
         if (auto mrs = MRS{inst}; mrs.Verify() && mrs.GetSystemReg() == CntpctEl0) {
             bool pre_buffer = false;
@@ -916,6 +931,36 @@ void Patcher::WriteMsrHandler(ModuleDestLabel module_dest, oaknut::XReg src_reg,
     cg.LDR(scratch_reg, SP, POST_INDEXED, 16);
 
     // Jump back to the instruction after the emulated MSR.
+    if (&cg == &c_pre)
+        this->BranchToModulePre(module_dest);
+    else
+        this->BranchToModule(module_dest);
+}
+
+void Patcher::WriteCtrEl0Handler(ModuleDestLabel module_dest, oaknut::XReg dest_reg,
+                                  oaknut::VectorCodeGenerator& cg) {
+    // Keep NCE fallback state coherent with Dynarmic::A64::UserConfig::ctr_el0.
+    static constexpr u64 GuestCtrEl0 = 0x8444C004;
+
+#if defined(_WIN32)
+    if (dest_reg.index() == GuestX18Register) {
+        // Architectural x18 is virtual guest state on Windows; never overwrite the live TEB.
+        cg.STP(X0, X1, SP, PRE_INDEXED, -16);
+        WriteWindowsCurrentNceParametersLookup(cg, X0);
+        cg.LDR(X0, X0, offsetof(NativeExecutionParameters, native_context));
+        cg.MOV(X1, GuestCtrEl0);
+        cg.STR(X1, X0,
+               offsetof(GuestContext, cpu_registers) + sizeof(u64) * GuestX18Register);
+        cg.LDP(X0, X1, SP, POST_INDEXED, 16);
+    } else if (dest_reg.index() != 31) {
+        cg.MOV(dest_reg, GuestCtrEl0);
+    }
+#else
+    if (dest_reg.index() != 31) {
+        cg.MOV(dest_reg, GuestCtrEl0);
+    }
+#endif
+
     if (&cg == &c_pre)
         this->BranchToModulePre(module_dest);
     else
