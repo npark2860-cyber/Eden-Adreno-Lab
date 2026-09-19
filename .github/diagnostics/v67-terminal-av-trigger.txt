@@ -1,0 +1,4 @@
+V67 terminal access-violation observer build trigger.
+Exact tested V66 base: 51789fcdf414a3f6f9d632bb2c4a843eb322aa39
+Source diagnostic commit: e307ef0e3264c387aeac3295bdfbec62cb733656
+Latest V66 long-lived watchdog exit: 0xC0000005; no new V65 illegal-instruction event.
