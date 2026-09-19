@@ -1,0 +1,7 @@
+V60 JIT owner diagnostic trigger
+
+base=fb3d278617f69dd00671fbf3e5d56bdc1366ec73
+source=cf6d0a35e5ba5b35bb3bec38ed32ad8df4e30117
+workflow=ed51cfd1e3cffff9c4991a8d941220cc6611c430
+evidence=V59 produced both crash-without-marker and infinite Split spin without runner overlap marker
+diagnostic=JIT-local owner TID/fiber relaxed stores; log only on actual is_executing exchange failure
