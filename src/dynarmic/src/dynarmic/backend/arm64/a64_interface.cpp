@@ -10,9 +10,16 @@
 #include <memory>
 #include <mutex>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include <boost/icl/interval_set.hpp>
 #include "common/assert.h"
 #include "common/common_types.h"
+#if defined(_WIN32)
+#include "common/logging.h"
+#endif
 
 #include "dynarmic/backend/arm64/a64_address_space.h"
 #include "dynarmic/backend/arm64/a64_core.h"
@@ -32,7 +39,27 @@ struct Jit::Impl final {
             , core(conf) {}
 
     HaltReason Run() {
-        ASSERT(!is_executing.exchange(true, std::memory_order_acq_rel));
+        const bool v60_already_executing =
+            is_executing.exchange(true, std::memory_order_acq_rel);
+#if defined(_WIN32)
+        const u32 v60_current_tid = static_cast<u32>(GetCurrentThreadId());
+        const std::uintptr_t v60_current_fiber =
+            IsThreadAFiber() ? reinterpret_cast<std::uintptr_t>(GetCurrentFiber()) : 0;
+        if (v60_already_executing) {
+            LOG_CRITICAL(
+                Core_ARM,
+                "NCE_V60_JIT_OVERLAP op=Run jit_impl=0x{:016X} current_tid={} owner_tid={} "
+                "current_fiber=0x{:016X} owner_fiber=0x{:016X} pc=0x{:016X} sp=0x{:016X}",
+                reinterpret_cast<std::uintptr_t>(this), v60_current_tid,
+                v60_owner_tid.load(std::memory_order_relaxed), v60_current_fiber,
+                v60_owner_fiber.load(std::memory_order_relaxed), current_state.pc,
+                current_state.sp);
+        } else {
+            v60_owner_tid.store(v60_current_tid, std::memory_order_relaxed);
+            v60_owner_fiber.store(v60_current_fiber, std::memory_order_relaxed);
+        }
+#endif
+        ASSERT(!v60_already_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
         HaltReason hr = core.Run(current_address_space, current_state, &halt_reason);
         PerformRequestedCacheInvalidation(hr);
@@ -41,7 +68,27 @@ struct Jit::Impl final {
     }
 
     HaltReason Step() {
-        ASSERT(!is_executing.exchange(true, std::memory_order_acq_rel));
+        const bool v60_already_executing =
+            is_executing.exchange(true, std::memory_order_acq_rel);
+#if defined(_WIN32)
+        const u32 v60_current_tid = static_cast<u32>(GetCurrentThreadId());
+        const std::uintptr_t v60_current_fiber =
+            IsThreadAFiber() ? reinterpret_cast<std::uintptr_t>(GetCurrentFiber()) : 0;
+        if (v60_already_executing) {
+            LOG_CRITICAL(
+                Core_ARM,
+                "NCE_V60_JIT_OVERLAP op=Step jit_impl=0x{:016X} current_tid={} owner_tid={} "
+                "current_fiber=0x{:016X} owner_fiber=0x{:016X} pc=0x{:016X} sp=0x{:016X}",
+                reinterpret_cast<std::uintptr_t>(this), v60_current_tid,
+                v60_owner_tid.load(std::memory_order_relaxed), v60_current_fiber,
+                v60_owner_fiber.load(std::memory_order_relaxed), current_state.pc,
+                current_state.sp);
+        } else {
+            v60_owner_tid.store(v60_current_tid, std::memory_order_relaxed);
+            v60_owner_fiber.store(v60_current_fiber, std::memory_order_relaxed);
+        }
+#endif
+        ASSERT(!v60_already_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&halt_reason)));
         HaltReason hr = core.Step(current_address_space, current_state, &halt_reason);
         PerformRequestedCacheInvalidation(hr);
@@ -176,6 +223,10 @@ private:
     boost::icl::interval_set<u64> invalid_cache_ranges;
     bool invalidate_entire_cache = false;
     std::atomic_bool is_executing{false};
+#if defined(_WIN32)
+    std::atomic<u32> v60_owner_tid{};
+    std::atomic<std::uintptr_t> v60_owner_fiber{};
+#endif
 };
 
 Jit::Jit(UserConfig conf)
