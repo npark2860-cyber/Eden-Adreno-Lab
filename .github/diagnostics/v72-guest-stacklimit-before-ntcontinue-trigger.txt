@@ -1,0 +1,4 @@
+V72 guest StackLimit before NtContinue validation trigger
+base=f7907319a344a6b49e914830c7a91ce3df2ecafc
+source_fix=a6d1a8b49e53ee57d2f1873e6c775ecc87c033eb
+evidence=V71 Run3 PID 25952 C0000409 param0=0xD FAST_FAIL_INVALID_SET_OF_CONTEXT; mixed guest StackBase and host StackLimit in TEB at failure
