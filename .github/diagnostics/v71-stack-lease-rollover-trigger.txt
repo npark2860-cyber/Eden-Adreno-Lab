@@ -1,0 +1,4 @@
+V71 stack lease rollover validation trigger
+base=c49942e825128baa2526fe88c2ace2b26f350d46
+source_fix=43d414ebd247e10ffcd6870eea487cde17d3ad14
+evidence=WER PID 26000 C0000409 subcode 7; active lease 0x208EB10000+0x30000 while guest SP 0x20870C6D20
