@@ -1,0 +1,4 @@
+V73 AV direct NtContinue validation trigger
+base=4d2d3546b822d323aee99660a70022607a6f176f
+source_fix=48c6e2e2825d8019ceedaf98e515b39575e5af59
+evidence=V72 PID25528+PID2952 reproduce C0000005 execute AV at 0 with PC=0 SP=0 TEB bounds=0 LR=eden+0xCF96BC, matching zero-scratch HostStackBridge outcome
