@@ -165,6 +165,15 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     bridge_context.X0 = reinterpret_cast<std::uint64_t>(&context);
     bridge_context.X[1] = static_cast<std::uint64_t>(allocation_end);
     bridge_context.X[2] = static_cast<std::uint64_t>(allocation_base);
+
+    // The first NtContinue installs guest SP before WindowsNceGuestStackBridge can run. At that
+    // validation point StackBase is already guest-owned, so leaving the old host StackLimit in the
+    // TEB creates an inverted/mixed stack interval and Windows ARM64 can reject the CONTEXT with
+    // FAST_FAIL_INVALID_SET_OF_CONTEXT. Publish the guest limit only at this final host-side seam:
+    // all host-side probes above have already completed, and the bridge will re-publish both bounds.
+    reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackLimit =
+        reinterpret_cast<void*>(allocation_base);
+
     WindowsNceTransition::ContinueContext(bridge_context);
 }
 
