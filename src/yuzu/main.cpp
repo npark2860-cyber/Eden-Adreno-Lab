@@ -362,6 +362,123 @@ void InstallWindowsNceV65IllegalInstructionVeh() noexcept {
         nullptr);
 }
 
+
+PVOID g_windows_nce_v67_access_violation_veh{};
+
+void WriteWindowsNceV67AccessViolation(const char* tag,
+                                       EXCEPTION_POINTERS* exception_pointers) noexcept {
+    char temp_path[MAX_PATH + 1]{};
+    const DWORD temp_length = GetTempPathA(MAX_PATH, temp_path);
+    if (temp_length == 0 || temp_length >= MAX_PATH) {
+        return;
+    }
+
+    char path[MAX_PATH + 80]{};
+    const int path_length = std::snprintf(
+        path, sizeof(path), "%s%s", temp_path, "eden_nce_v67_access_violation.log");
+    if (path_length <= 0 || static_cast<size_t>(path_length) >= sizeof(path)) {
+        return;
+    }
+
+    HANDLE file = CreateFileA(path, FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    const EXCEPTION_RECORD* record =
+        exception_pointers != nullptr ? exception_pointers->ExceptionRecord : nullptr;
+    const CONTEXT* context =
+        exception_pointers != nullptr ? exception_pointers->ContextRecord : nullptr;
+
+    unsigned long exception_code = 0;
+    unsigned long exception_flags = 0;
+    unsigned long parameter_count = 0;
+    unsigned long long exception_address = 0;
+    unsigned long long access_type = ~0ULL;
+    unsigned long long fault_address = 0;
+    unsigned long long pc = 0;
+    unsigned long long sp = 0;
+    unsigned long long x18 = 0;
+    unsigned long long lr = 0;
+    unsigned long cpsr = 0;
+    unsigned long instruction = 0;
+    size_t instruction_bytes = 0;
+
+    if (record != nullptr) {
+        exception_code = static_cast<unsigned long>(record->ExceptionCode);
+        exception_flags = static_cast<unsigned long>(record->ExceptionFlags);
+        parameter_count = static_cast<unsigned long>(record->NumberParameters);
+        exception_address = static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(record->ExceptionAddress));
+        if (record->NumberParameters >= 2) {
+            access_type = static_cast<unsigned long long>(record->ExceptionInformation[0]);
+            fault_address = static_cast<unsigned long long>(record->ExceptionInformation[1]);
+        }
+
+        SIZE_T bytes_read{};
+        if (record->ExceptionAddress != nullptr &&
+            ReadProcessMemory(GetCurrentProcess(), record->ExceptionAddress, &instruction,
+                              sizeof(instruction), &bytes_read) != FALSE) {
+            instruction_bytes = static_cast<size_t>(bytes_read);
+        }
+    }
+
+#if defined(_M_ARM64)
+    if (context != nullptr) {
+        pc = static_cast<unsigned long long>(context->Pc);
+        sp = static_cast<unsigned long long>(context->Sp);
+        x18 = static_cast<unsigned long long>(context->X[18]);
+        lr = static_cast<unsigned long long>(context->X[30]);
+        cpsr = static_cast<unsigned long>(context->Cpsr);
+    }
+#endif
+
+    char line[1400]{};
+    const int line_length = std::snprintf(
+        line, sizeof(line),
+        "%s tick=%llu pid=%lu tid=%lu code=0x%08lX flags=0x%08lX "
+        "exception_address=0x%016llX parameters=%lu access_type=0x%016llX "
+        "fault_address=0x%016llX pc=0x%016llX sp=0x%016llX "
+        "x18=0x%016llX lr=0x%016llX cpsr=0x%08lX instruction=0x%08lX "
+        "instruction_bytes=%zu base=51789fcdf414a3f6f9d632bb2c4a843eb322aa39\r\n",
+        tag, static_cast<unsigned long long>(GetTickCount64()),
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()), exception_code, exception_flags,
+        exception_address, parameter_count, access_type, fault_address, pc, sp, x18, lr, cpsr,
+        instruction, instruction_bytes);
+    if (line_length > 0) {
+        DWORD written{};
+        const DWORD size = static_cast<DWORD>(
+            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
+        (void)WriteFile(file, line, size, &written, nullptr);
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
+LONG CALLBACK WindowsNceV67AccessViolationVeh(EXCEPTION_POINTERS* exception_pointers) noexcept {
+    if (exception_pointers == nullptr || exception_pointers->ExceptionRecord == nullptr ||
+        exception_pointers->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    WriteWindowsNceV67AccessViolation("V67_ACCESS_VIOLATION", exception_pointers);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void InstallWindowsNceV67AccessViolationVeh() noexcept {
+    // Install at the tail. The NCE VEH is registered later at the head, so guest AVs that NCE
+    // successfully handles never reach this observer; only AVs that escape earlier handlers do.
+    g_windows_nce_v67_access_violation_veh =
+        AddVectoredExceptionHandler(0, &WindowsNceV67AccessViolationVeh);
+    WriteWindowsNceV67AccessViolation(
+        g_windows_nce_v67_access_violation_veh != nullptr ? "V67_VEH_READY"
+                                                          : "V67_VEH_INSTALL_FAIL",
+        nullptr);
+}
+
 } // namespace
 
 static void OverrideWindowsFont() {
@@ -528,6 +645,7 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
     SetUnhandledExceptionFilter(WindowsNceV64UnhandledExceptionFilter);
     InstallWindowsNceV65IllegalInstructionVeh();
+    InstallWindowsNceV67AccessViolationVeh();
     OverrideWindowsFont();
 #endif
 
