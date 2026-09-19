@@ -363,9 +363,9 @@ void InstallWindowsNceV65IllegalInstructionVeh() noexcept {
 }
 
 
-PVOID g_windows_nce_v69_breakpoint_veh{};
+PVOID g_windows_nce_v70_breakpoint_veh{};
 
-void WriteWindowsNceV69Breakpoint(const char* tag,
+void WriteWindowsNceV70Breakpoint(const char* tag,
                                   EXCEPTION_POINTERS* exception_pointers) noexcept {
     char temp_path[MAX_PATH + 1]{};
     const DWORD temp_length = GetTempPathA(MAX_PATH, temp_path);
@@ -373,10 +373,10 @@ void WriteWindowsNceV69Breakpoint(const char* tag,
         return;
     }
 
-    char path[MAX_PATH + 80]{};
+    char path[MAX_PATH + 96]{};
     const int path_length =
         std::snprintf(path, sizeof(path), "%s%s", temp_path,
-                      "eden_nce_v69_breakpoint.log");
+                      "eden_nce_v70_host_bridge_origin.log");
     if (path_length <= 0 || static_cast<size_t>(path_length) >= sizeof(path)) {
         return;
     }
@@ -397,17 +397,28 @@ void WriteWindowsNceV69Breakpoint(const char* tag,
     unsigned long exception_flags = 0;
     unsigned long parameter_count = 0;
     unsigned long long exception_address = 0;
+    unsigned long long exception_info0 = 0;
+    unsigned long context_flags = 0;
     unsigned long long pc = 0;
     unsigned long long sp = 0;
+    unsigned long long x0 = 0;
+    unsigned long long x1 = 0;
+    unsigned long long x2 = 0;
+    unsigned long long x3 = 0;
+    unsigned long long x16 = 0;
     unsigned long long x18 = 0;
     unsigned long long lr = 0;
     unsigned long cpsr = 0;
-    unsigned long instruction_at_exception = 0;
-    unsigned long instruction_at_pc = 0;
-    unsigned long instruction_before_pc = 0;
-    size_t exception_bytes = 0;
+    unsigned long inst_minus4 = 0;
+    unsigned long inst_pc = 0;
+    unsigned long inst_plus4 = 0;
+    unsigned long inst_plus8 = 0;
+    unsigned long inst_plus12 = 0;
+    size_t minus4_bytes = 0;
     size_t pc_bytes = 0;
-    size_t previous_bytes = 0;
+    size_t plus4_bytes = 0;
+    size_t plus8_bytes = 0;
+    size_t plus12_bytes = 0;
 
     if (record != nullptr) {
         exception_code = static_cast<unsigned long>(record->ExceptionCode);
@@ -415,59 +426,66 @@ void WriteWindowsNceV69Breakpoint(const char* tag,
         parameter_count = static_cast<unsigned long>(record->NumberParameters);
         exception_address = static_cast<unsigned long long>(
             reinterpret_cast<std::uintptr_t>(record->ExceptionAddress));
-
-        SIZE_T bytes_read{};
-        if (record->ExceptionAddress != nullptr &&
-            ReadProcessMemory(GetCurrentProcess(), record->ExceptionAddress,
-                              &instruction_at_exception, sizeof(instruction_at_exception),
-                              &bytes_read) != FALSE) {
-            exception_bytes = static_cast<size_t>(bytes_read);
+        if (record->NumberParameters >= 1) {
+            exception_info0 = static_cast<unsigned long long>(record->ExceptionInformation[0]);
         }
     }
 
 #if defined(_M_ARM64)
     if (context != nullptr) {
+        context_flags = static_cast<unsigned long>(context->ContextFlags);
         pc = static_cast<unsigned long long>(context->Pc);
         sp = static_cast<unsigned long long>(context->Sp);
+        x0 = static_cast<unsigned long long>(context->X[0]);
+        x1 = static_cast<unsigned long long>(context->X[1]);
+        x2 = static_cast<unsigned long long>(context->X[2]);
+        x3 = static_cast<unsigned long long>(context->X[3]);
+        x16 = static_cast<unsigned long long>(context->X[16]);
         x18 = static_cast<unsigned long long>(context->X[18]);
         lr = static_cast<unsigned long long>(context->X[30]);
         cpsr = static_cast<unsigned long>(context->Cpsr);
 
-        SIZE_T bytes_read{};
-        const auto* pc_ptr = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(context->Pc));
-        if (pc_ptr != nullptr &&
-            ReadProcessMemory(GetCurrentProcess(), pc_ptr, &instruction_at_pc,
-                              sizeof(instruction_at_pc), &bytes_read) != FALSE) {
-            pc_bytes = static_cast<size_t>(bytes_read);
-        }
+        const auto read_word = [&](std::uint64_t address, unsigned long& value,
+                                   size_t& bytes) noexcept {
+            SIZE_T bytes_read{};
+            if (address != 0 &&
+                ReadProcessMemory(GetCurrentProcess(),
+                                  reinterpret_cast<const void*>(
+                                      static_cast<std::uintptr_t>(address)),
+                                  &value, sizeof(value), &bytes_read) != FALSE) {
+                bytes = static_cast<size_t>(bytes_read);
+            }
+        };
 
         if (context->Pc >= sizeof(u32)) {
-            bytes_read = 0;
-            const auto* previous_ptr = reinterpret_cast<const void*>(
-                static_cast<std::uintptr_t>(context->Pc - sizeof(u32)));
-            if (ReadProcessMemory(GetCurrentProcess(), previous_ptr, &instruction_before_pc,
-                                  sizeof(instruction_before_pc), &bytes_read) != FALSE) {
-                previous_bytes = static_cast<size_t>(bytes_read);
-            }
+            read_word(context->Pc - sizeof(u32), inst_minus4, minus4_bytes);
         }
+        read_word(context->Pc, inst_pc, pc_bytes);
+        read_word(context->Pc + sizeof(u32), inst_plus4, plus4_bytes);
+        read_word(context->Pc + sizeof(u32) * 2, inst_plus8, plus8_bytes);
+        read_word(context->Pc + sizeof(u32) * 3, inst_plus12, plus12_bytes);
     }
 #endif
 
-    char line[1500]{};
+    char line[2200]{};
     const int line_length = std::snprintf(
         line, sizeof(line),
         "%s tick=%llu pid=%lu tid=%lu code=0x%08lX flags=0x%08lX "
-        "exception_address=0x%016llX parameters=%lu pc=0x%016llX sp=0x%016llX "
-        "x18=0x%016llX lr=0x%016llX cpsr=0x%08lX "
-        "inst_exception=0x%08lX inst_exception_bytes=%zu "
-        "inst_pc=0x%08lX inst_pc_bytes=%zu inst_pc_minus4=0x%08lX "
-        "inst_pc_minus4_bytes=%zu x18_brk=0xD43E0000 "
-        "base=113bc247cc7c9022268e914fbdf9c55347e0f46f\r\n",
+        "exception_address=0x%016llX parameters=%lu info0=0x%016llX "
+        "context_flags=0x%08lX pc=0x%016llX sp=0x%016llX "
+        "x0=0x%016llX x1=0x%016llX x2=0x%016llX x3=0x%016llX "
+        "x16=0x%016llX x18=0x%016llX lr=0x%016llX cpsr=0x%08lX "
+        "inst_m4=0x%08lX/%zu inst_pc=0x%08lX/%zu "
+        "inst_p4=0x%08lX/%zu inst_p8=0x%08lX/%zu inst_p12=0x%08lX/%zu "
+        "xf18_return=0x5846313846414C4C breakloop=0x02000000 prefetch=0x20000000 "
+        "base=05d51f33fdd04f639f798bd244ba1a60e08a6d0a\r\n",
         tag, static_cast<unsigned long long>(GetTickCount64()),
         static_cast<unsigned long>(GetCurrentProcessId()),
         static_cast<unsigned long>(GetCurrentThreadId()), exception_code, exception_flags,
-        exception_address, parameter_count, pc, sp, x18, lr, cpsr, instruction_at_exception,
-        exception_bytes, instruction_at_pc, pc_bytes, instruction_before_pc, previous_bytes);
+        exception_address, parameter_count, exception_info0, context_flags, pc, sp,
+        x0, x1, x2, x3, x16, x18, lr, cpsr,
+        inst_minus4, minus4_bytes, inst_pc, pc_bytes,
+        inst_plus4, plus4_bytes, inst_plus8, plus8_bytes, inst_plus12, plus12_bytes);
 
     if (line_length > 0) {
         DWORD written{};
@@ -479,24 +497,24 @@ void WriteWindowsNceV69Breakpoint(const char* tag,
     CloseHandle(file);
 }
 
-LONG CALLBACK WindowsNceV69BreakpointVeh(EXCEPTION_POINTERS* exception_pointers) noexcept {
+LONG CALLBACK WindowsNceV70BreakpointVeh(EXCEPTION_POINTERS* exception_pointers) noexcept {
     if (exception_pointers == nullptr || exception_pointers->ExceptionRecord == nullptr ||
         exception_pointers->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    WriteWindowsNceV69Breakpoint("V69_BREAKPOINT", exception_pointers);
+    WriteWindowsNceV70Breakpoint("V70_BREAKPOINT", exception_pointers);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-void InstallWindowsNceV69BreakpointVeh() noexcept {
-    // Tail observer: the NCE VEH is installed later at the head, so recognized x18 BRK #0xF000
-    // traps are consumed before this observer. Only breakpoints that escape NCE reach V69.
-    g_windows_nce_v69_breakpoint_veh =
-        AddVectoredExceptionHandler(0, &WindowsNceV69BreakpointVeh);
-    WriteWindowsNceV69Breakpoint(
-        g_windows_nce_v69_breakpoint_veh != nullptr ? "V69_VEH_READY"
-                                                    : "V69_VEH_INSTALL_FAIL",
+void InstallWindowsNceV70BreakpointVeh() noexcept {
+    // Tail observer: NCE still gets first chance. V70 only expands the escaping breakpoint
+    // context so the host/guest bridge and RedirectToHost return-value origin can be classified.
+    g_windows_nce_v70_breakpoint_veh =
+        AddVectoredExceptionHandler(0, &WindowsNceV70BreakpointVeh);
+    WriteWindowsNceV70Breakpoint(
+        g_windows_nce_v70_breakpoint_veh != nullptr ? "V70_VEH_READY"
+                                                    : "V70_VEH_INSTALL_FAIL",
         nullptr);
 }
 
@@ -666,7 +684,7 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
     SetUnhandledExceptionFilter(WindowsNceV64UnhandledExceptionFilter);
     InstallWindowsNceV65IllegalInstructionVeh();
-    InstallWindowsNceV69BreakpointVeh();
+    InstallWindowsNceV70BreakpointVeh();
     OverrideWindowsFont();
 #endif
 
