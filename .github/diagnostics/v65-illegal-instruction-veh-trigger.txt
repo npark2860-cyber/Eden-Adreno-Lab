@@ -1,0 +1,3 @@
+V65 illegal-instruction-only vectored exception diagnostic build trigger.
+Exact tested V64 base: 893afde63dd5e9be74fb91e18aa3e6fa634eb7bb
+Source diagnostic commit: 9179ff928bab91d3a8ea3291b987cf7b2011f2aa
