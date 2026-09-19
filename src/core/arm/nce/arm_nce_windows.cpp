@@ -326,7 +326,15 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         params->lock.store(SpinLockLocked, std::memory_order_release);
         NCE::WindowsNceTransition::RedirectToHost(
             context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
-        return EXCEPTION_CONTINUE_EXECUTION;
+
+        // The x18 breakpoint path already uses the proven direct NtContinue transition after
+        // RedirectToHost. Do the same for AV recovery instead of returning the mutated CONTEXT to
+        // the Windows exception dispatcher. V72 natural dumps showed a reproducible second
+        // execute-AV at PC=SP=0 with TEB StackBase/StackLimit=0, exactly matching
+        // WindowsNceHostStackBridge executing after its volatile x1/x2/x3/x16 scratch values were
+        // lost. Direct NtContinue keeps the redirected register contract intact through resume.
+        context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
+        NCE::WindowsNceTransition::ContinueContext(context);
     }
 
     // IMP-008A does not claim complete game fault compatibility. Unknown host/guest exception
