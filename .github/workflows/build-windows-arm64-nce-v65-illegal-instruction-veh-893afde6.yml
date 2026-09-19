@@ -1,0 +1,175 @@
+name: Build Windows ARM64 NCE V65 illegal-instruction VEH 893afde6
+
+on:
+  push:
+    branches:
+      - diag/windows-nce-v65-illegal-instruction-veh-893afde6
+    paths:
+      - .github/diagnostics/v65-illegal-instruction-veh-trigger.txt
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-windows-nce-v65-illegal-instruction-veh-893afde6
+  cancel-in-progress: false
+
+env:
+  V64_BASE_SHA: 893afde63dd5e9be74fb91e18aa3e6fa634eb7bb
+  CI_REF: afead830f3a444427f9fdfd841218f932465c03a
+  TEST_NAME: v65-illegal-instruction-veh
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE V65 illegal-instruction VEH
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout exact V65 Git object
+        uses: actions/checkout@v7
+        with:
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          ref: ${{ github.sha }}
+          path: build/validation/${{ github.sha }}/v65-illegal-instruction-veh/source
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify V65 provenance and illegal-instruction-VEH-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          SOURCE="$ROOT/source"
+          PROV="$ROOT/provenance"
+          mkdir -p "$PROV"
+
+          test "$(git -C "$SOURCE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$SOURCE" merge-base --is-ancestor "$V64_BASE_SHA" "$GITHUB_SHA"
+          test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no)"
+          git -C "$SOURCE" diff --check "$V64_BASE_SHA" "$GITHUB_SHA"
+
+          CHANGED="$(git -C "$SOURCE" diff --name-only "$V64_BASE_SHA" "$GITHUB_SHA")"
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/yuzu/main\.cpp|\.github/workflows/build-windows-arm64-nce-v65-illegal-instruction-veh-893afde6\.yml|\.github/diagnostics/v65-illegal-instruction-veh-trigger\.txt)$' || true)"
+          test -z "$UNEXPECTED"
+
+          test -z "$(git -C "$SOURCE" diff "$V64_BASE_SHA" "$GITHUB_SHA" -- \
+            src/core/arm/nce \
+            src/common/host_memory.cpp \
+            src/common/host_memory.h \
+            src/common/host_memory_windows_lease.h \
+            src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp \
+            src/core/hle/kernel/physical_core.cpp \
+            src/core/hle/kernel/physical_core.h)"
+
+          grep -Fq 'V63_WATCHDOG_EXIT' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'V64_UNHANDLED' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'V65_ILLEGAL_INSTRUCTION' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'V65_VEH_READY' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'EXCEPTION_ILLEGAL_INSTRUCTION' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'AddVectoredExceptionHandler(1, &WindowsNceV65IllegalInstructionVeh)' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'eden_nce_v65_illegal_instruction.log' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'ReadProcessMemory(GetCurrentProcess()' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'return EXCEPTION_CONTINUE_SEARCH;' "$SOURCE/src/yuzu/main.cpp"
+          grep -Fq 'context->X[18]' "$SOURCE/src/yuzu/main.cpp"
+
+          git -C "$SOURCE" diff "$V64_BASE_SHA" "$GITHUB_SHA" -- src/yuzu/main.cpp > "$PROV/V65_ILLEGAL_INSTRUCTION_VEH.diff"
+          printf 'V64_BASE_SHA=%s\nV65_SHA=%s\nSOURCE_MODE=exact tested V64 + illegal-instruction-only vectored logger\nV63_WATCHDOG_FILE=%%TEMP%%\\eden_nce_v63_exit_watchdog.log\nV64_EXCEPTION_FILE=%%TEMP%%\\eden_nce_v64_unhandled.log\nV65_EXCEPTION_FILE=%%TEMP%%\\eden_nce_v65_illegal_instruction.log\nEVIDENCE=V64 runtime watchdog exit=0xC000001D while V64 unhandled-filter file was absent; existing NCE VEH handles BREAKPOINT/ACCESS_VIOLATION but chains unknown exception classes\nISOLATION_DIR=build/validation/%s/%s\n' \
+            "$V64_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: build/validation/${{ github.sha }}/v65-illegal-instruction-veh/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure V65 Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v65-illegal-instruction-veh/source
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          printf 'CONFIGURE_COMMAND=./.ci/build/configure.sh -DCCACHE_PATH=sccache\nNCE_COMPILE_GUARD=HAS_NCE=1\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Build full Windows ARM64 Eden V65
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v65-illegal-instruction-veh/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          printf 'BUILD_COMMAND=cmake --build build\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Package Windows ARM64 Eden V65
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v65-illegal-instruction-veh/source
+        env:
+          ARTIFACT_REF: nce-v65-illegal-instruction-veh-893afde6
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v65-illegal-instruction-veh-893afde6\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Prepare V65 upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged Eden artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+          $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
+          "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
+          "PACKAGE_SHA256=$hash" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
+
+      - name: Upload V65 package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-V65-ILLEGAL-INSTRUCTION-VEH-893afde6
+          path: build/validation/${{ github.sha }}/v65-illegal-instruction-veh/upload/*
+          if-no-files-found: error
+          retention-days: 14
