@@ -134,7 +134,7 @@ struct Jit::Impl final {
     }
 
     bool IsExecuting() const {
-        return is_executing;
+        return is_executing.load(std::memory_order_acquire);
     }
 
     std::string Disassemble() const {
