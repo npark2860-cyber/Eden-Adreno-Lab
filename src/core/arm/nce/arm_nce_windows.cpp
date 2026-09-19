@@ -406,6 +406,9 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     const auto& post_handlers = process->GetPostHandlers();
     std::optional<Common::HostMemory::PrivateMappingLease> private_stack_lease;
 
+    bool v62r_trace_active = false;
+    std::uint8_t v62r_trace_stage = 0;
+
     for (;;) {
         // SignalInterrupt may defer delivery when another host-side NCE path already owns the
         // parameters lock. Honor that pending break before this lock-owning path can re-enter
@@ -433,15 +436,40 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             break;
         }
 
-        if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
+        const auto post_handler = post_handlers.find(m_guest_ctx.pc);
+        if (v62r_trace_active && v62r_trace_stage == 1) {
+            LOG_INFO(Core_ARM,
+                     "NCE_V62R_BEFORE_NATIVE core={} tid={} thread=0x{:016X} path={} "
+                     "pc=0x{:016X} sp=0x{:016X}",
+                     m_core_index, static_cast<u32>(GetCurrentThreadId()),
+                     reinterpret_cast<std::uintptr_t>(thread),
+                     post_handler != post_handlers.end() ? "post_handler" : "context",
+                     m_guest_ctx.pc, m_guest_ctx.sp);
+            v62r_trace_stage = 2;
+        }
+
+        if (post_handler != post_handlers.end()) {
             hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
-                &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
+                &m_guest_ctx, reinterpret_cast<const void*>(post_handler->second)));
         } else {
             hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
         }
 
         RestoreHostTebStackBounds(teb_stack_bounds);
         NCE::CurrentNceContext::Clear();
+
+        if (v62r_trace_active && v62r_trace_stage == 2) {
+            LOG_INFO(
+                Core_ARM,
+                "NCE_V62R_AFTER_NATIVE core={} tid={} thread=0x{:016X} raw_hr=0x{:016X} "
+                "pc=0x{:016X} sp=0x{:016X} pending_fault={} fault_address=0x{:016X} "
+                "fault_page=0x{:016X}",
+                m_core_index, static_cast<u32>(GetCurrentThreadId()),
+                reinterpret_cast<std::uintptr_t>(thread), static_cast<u64>(hr), m_guest_ctx.pc,
+                m_guest_ctx.sp, m_windows_pending_nce_fault, m_windows_pending_nce_fault_address,
+                m_windows_pending_nce_fault_page);
+            v62r_trace_stage = 3;
+        }
 
         if (m_windows_pending_nce_fault) {
             const u64 pending_fault_address = m_windows_pending_nce_fault_address;
@@ -489,6 +517,17 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
                 LOG_INFO(Core_ARM,
                          "NCE_V16_FALLBACK_STACK_SYNC pc={:#018x} sp={:#018x}",
                          m_guest_ctx.pc, m_guest_ctx.sp);
+                LOG_INFO(
+                    Core_ARM,
+                    "NCE_V62R_FALLBACK_RETURN core={} tid={} thread=0x{:016X} "
+                    "transition_hr=0x{:016X} metadata={} step_completed={} "
+                    "fallback_hr=0x{:016X} pc=0x{:016X} sp=0x{:016X}",
+                    m_core_index, static_cast<u32>(GetCurrentThreadId()),
+                    reinterpret_cast<std::uintptr_t>(thread), static_cast<u64>(hr),
+                    fallback.metadata_found, fallback.step.completed,
+                    static_cast<u64>(fallback.step.halt_reason), m_guest_ctx.pc, m_guest_ctx.sp);
+                v62r_trace_active = true;
+                v62r_trace_stage = 1;
                 v16_sync_logged = true;
             }
         }
@@ -512,6 +551,16 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
         // A normal one-instruction x18 fallback updated GuestContext::pc. Re-enter the native NCE
         // path using the same post-handler/arbitrary-PC selection contract as ordinary RunThread.
+    }
+
+    if (v62r_trace_active) {
+        LOG_INFO(Core_ARM,
+                 "NCE_V62R_BEFORE_EXIT_RESTORE core={} tid={} thread=0x{:016X} stage={} "
+                 "final_hr=0x{:016X} pc=0x{:016X} sp=0x{:016X} lease_present={}",
+                 m_core_index, static_cast<u32>(GetCurrentThreadId()),
+                 reinterpret_cast<std::uintptr_t>(thread), static_cast<u32>(v62r_trace_stage),
+                 static_cast<u64>(hr), m_guest_ctx.pc, m_guest_ctx.sp,
+                 private_stack_lease.has_value());
     }
 
     // The private replacement belongs to the complete RunThread epoch. Internal NCE fault/retry
