@@ -383,8 +383,26 @@ void ArmNce::UnlockThread(Kernel::KThread* thread) {
 HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     HaltReason hr = static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0));
     if (True(hr)) {
+        static thread_local u64 v61_early_count = 0;
+        ++v61_early_count;
+        if (v61_early_count <= 16 || (v61_early_count & (v61_early_count - 1)) == 0) {
+            LOG_INFO(Core_ARM,
+                     "NCE_V61_RUNTHREAD_EARLY count={} core={} thread=0x{:016X} "
+                     "hr=0x{:016X} pc=0x{:016X} sp=0x{:016X}",
+                     v61_early_count, m_core_index, reinterpret_cast<std::uintptr_t>(thread),
+                     static_cast<u64>(hr), m_guest_ctx.pc, m_guest_ctx.sp);
+        }
         return hr;
     }
+
+    const u64 v61_entry_pc = m_guest_ctx.pc;
+    const u64 v61_entry_sp = m_guest_ctx.sp;
+    u32 v61_exit_site = 0;
+    u64 v61_transition_hr = 0;
+    bool v61_fallback_handled = false;
+    bool v61_fallback_metadata = false;
+    bool v61_fallback_completed = false;
+    u64 v61_fallback_hr = 0;
 
     auto* const thread_params = &thread->GetNativeExecutionParameters();
     auto* const process = thread->GetOwnerProcess();
@@ -407,6 +425,12 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     std::optional<Common::HostMemory::PrivateMappingLease> private_stack_lease;
 
     for (;;) {
+        v61_transition_hr = 0;
+        v61_fallback_handled = false;
+        v61_fallback_metadata = false;
+        v61_fallback_completed = false;
+        v61_fallback_hr = 0;
+
         // SignalInterrupt may defer delivery when another host-side NCE path already owns the
         // parameters lock. Honor that pending break before this lock-owning path can re-enter
         // native guest execution.
@@ -414,6 +438,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             static_cast<HaltReason>(m_guest_ctx.esr_el1.exchange(0, std::memory_order_acq_rel));
         if (True(pending_reason)) {
             hr = pending_reason;
+            v61_exit_site = 1;
             break;
         }
 
@@ -423,6 +448,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
                                           private_stack_lease)) {
             NCE::CurrentNceContext::Clear();
             hr = HaltReason::PrefetchAbort;
+            v61_exit_site = 2;
             break;
         }
 
@@ -430,6 +456,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
             NCE::CurrentNceContext::Clear();
             hr = HaltReason::PrefetchAbort;
+            v61_exit_site = 3;
             break;
         }
 
@@ -442,6 +469,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
         RestoreHostTebStackBounds(teb_stack_bounds);
         NCE::CurrentNceContext::Clear();
+        v61_transition_hr = static_cast<u64>(hr);
 
         if (m_windows_pending_nce_fault) {
             const u64 pending_fault_address = m_windows_pending_nce_fault_address;
@@ -461,6 +489,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             }
 
             hr = HaltReason::PrefetchAbort;
+            v61_exit_site = 4;
             break;
         }
 
@@ -470,16 +499,22 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         if (private_stack_lease.has_value() && !private_stack_lease->SyncToBacking()) {
             LOG_ERROR(Core_ARM, "V16 failed to synchronize private NCE stack to backing");
             hr = HaltReason::PrefetchAbort;
+            v61_exit_site = 5;
             break;
         }
 
         const auto fallback = m_windows_x18_runner->Dispatch(
             static_cast<u64>(hr), thread, m_guest_ctx, post_handlers);
+        v61_fallback_handled = fallback.handled;
+        v61_fallback_metadata = fallback.metadata_found;
+        v61_fallback_completed = fallback.step.completed;
+        v61_fallback_hr = static_cast<u64>(fallback.step.halt_reason);
 
         if (fallback.handled && private_stack_lease.has_value() &&
             !private_stack_lease->SyncFromBacking()) {
             LOG_ERROR(Core_ARM, "V16 failed to synchronize fallback stack writes to private view");
             hr = HaltReason::PrefetchAbort;
+            v61_exit_site = 6;
             break;
         }
 
@@ -494,6 +529,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         }
 
         if (!fallback.handled) {
+            v61_exit_site = 7;
             break;
         }
 
@@ -502,11 +538,13 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             if (!True(hr)) {
                 hr = HaltReason::PrefetchAbort;
             }
+            v61_exit_site = 8;
             break;
         }
 
         if (True(fallback.step.halt_reason)) {
             hr = fallback.step.halt_reason;
+            v61_exit_site = 9;
             break;
         }
 
@@ -519,6 +557,22 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     if (private_stack_lease.has_value() && !private_stack_lease->Restore()) {
         LOG_ERROR(Core_ARM, "Failed to restore Windows NCE private stack lease");
         hr = HaltReason::PrefetchAbort;
+        v61_exit_site = 10;
+    }
+
+    static thread_local u64 v61_exit_count = 0;
+    ++v61_exit_count;
+    if (v61_exit_count <= 32 || (v61_exit_count & (v61_exit_count - 1)) == 0) {
+        LOG_INFO(
+            Core_ARM,
+            "NCE_V61_RUNTHREAD_EXIT count={} core={} thread=0x{:016X} site={} "
+            "hr=0x{:016X} transition_hr=0x{:016X} fallback_handled={} "
+            "fallback_metadata={} fallback_completed={} fallback_hr=0x{:016X} "
+            "entry_pc=0x{:016X} exit_pc=0x{:016X} entry_sp=0x{:016X} exit_sp=0x{:016X}",
+            v61_exit_count, m_core_index, reinterpret_cast<std::uintptr_t>(thread), v61_exit_site,
+            static_cast<u64>(hr), v61_transition_hr, v61_fallback_handled,
+            v61_fallback_metadata, v61_fallback_completed, v61_fallback_hr, v61_entry_pc,
+            m_guest_ctx.pc, v61_entry_sp, m_guest_ctx.sp);
     }
 
     std::atomic_thread_fence(std::memory_order_acquire);
