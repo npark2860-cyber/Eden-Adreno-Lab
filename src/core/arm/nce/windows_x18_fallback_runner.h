@@ -7,6 +7,7 @@
 #error windows_x18_fallback_runner.h is only available on Windows.
 #endif
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 
@@ -56,6 +57,12 @@ public:
 private:
     std::unique_ptr<DynarmicExclusiveMonitor> m_exclusive_monitor;
     std::unique_ptr<ArmDynarmic64> m_backend;
+    std::size_t m_core_index{};
+
+    // V59 diagnostic: lock-free owner tag for the selective x18 fallback backend.
+    // This never blocks or serializes execution. A failed CAS means a real overlapping
+    // Dispatch reached the same per-core runner before the prior Dispatch retired.
+    std::atomic<u32> m_v59_owner_host_tid{};
 };
 
 } // namespace NCE
