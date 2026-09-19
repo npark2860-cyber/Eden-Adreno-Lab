@@ -1,0 +1,5 @@
+V69 Windows ARM64 NCE terminal-breakpoint observer build trigger.
+Exact tested V68 base: 113bc247cc7c9022268e914fbdf9c55347e0f46f
+Source observer commit: 27360a15d37ffaa8244c9a1f50b6df582a5bd5c3
+Observed V68 terminal code: 0x80000003 (Breakpoint) after CTR_EL0 and DC CIVAC fixes.
+Known x18 fallback trap word: 0xD43E0000 (BRK #0xF000).
