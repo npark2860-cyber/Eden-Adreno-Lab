@@ -1,0 +1,189 @@
+name: Build Windows ARM64 NCE V60 JIT owner diagnostics
+
+on:
+  push:
+    branches:
+      - diag/windows-nce-v60-jit-owner-fb3d2786
+    paths:
+      - .github/diagnostics/v60-jit-owner-trigger.txt
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-windows-nce-v60-jit-owner
+  cancel-in-progress: false
+
+env:
+  V58_BASE_SHA: fb3d278617f69dd00671fbf3e5d56bdc1366ec73
+  CI_REF: afead830f3a444427f9fdfd841218f932465c03a
+  TEST_NAME: v60-jit-owner
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE V60 JIT owner diagnostics
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout exact V60 Git object
+        uses: actions/checkout@v7
+        with:
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          ref: ${{ github.sha }}
+          path: build/validation/${{ github.sha }}/v60-jit-owner/source
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify V60 provenance and diagnostic-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          SOURCE="$ROOT/source"
+          PROV="$ROOT/provenance"
+          mkdir -p "$PROV"
+
+          test "$(git -C "$SOURCE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$SOURCE" merge-base --is-ancestor "$V58_BASE_SHA" "$GITHUB_SHA"
+          test -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no)"
+          git -C "$SOURCE" diff --check "$V58_BASE_SHA" "$GITHUB_SHA"
+
+          CHANGED="$(git -C "$SOURCE" diff --name-only "$V58_BASE_SHA" "$GITHUB_SHA")"
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/dynarmic/src/dynarmic/backend/arm64/a64_interface\.cpp|\.github/workflows/build-windows-arm64-nce-v60-jit-owner-fb3d2786\.yml|\.github/diagnostics/v60-jit-owner-trigger\.txt)$' || true)"
+          test -z "$UNEXPECTED"
+
+          test -z "$(git -C "$SOURCE" diff "$V58_BASE_SHA" "$GITHUB_SHA" -- \
+            src/core/arm/nce/windows_x18_fallback_runner.cpp \
+            src/core/arm/nce/windows_x18_fallback_runner.h \
+            src/core/arm/nce/arm_nce_windows.cpp \
+            src/common/host_memory.cpp \
+            src/common/host_memory.h \
+            src/common/host_memory_windows_lease.h \
+            src/core/arm/nce/windows_nce_transition.cpp \
+            src/core/arm/nce/windows_nce_transition.h \
+            src/core/arm/nce/windows_nce_entry.asm \
+            src/core/arm/nce/windows_cross_thread_break.h)"
+
+          grep -Fq 'std::atomic_bool is_executing{false};' "$SOURCE/src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp"
+          grep -Fq 'NCE_V60_JIT_OVERLAP op=Run' "$SOURCE/src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp"
+          grep -Fq 'NCE_V60_JIT_OVERLAP op=Step' "$SOURCE/src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp"
+          grep -Fq 'v60_owner_tid.store(v60_current_tid, std::memory_order_relaxed)' "$SOURCE/src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp"
+          grep -Fq 'v60_owner_fiber.store(v60_current_fiber, std::memory_order_relaxed)' "$SOURCE/src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp"
+          grep -Fq 'ASSERT(!v60_already_executing);' "$SOURCE/src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp"
+
+          python - "$SOURCE/src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp" <<'PY'
+          from pathlib import Path
+          import sys
+          cpp = Path(sys.argv[1]).read_text(encoding="utf-8")
+          assert cpp.count("NCE_V60_JIT_OVERLAP") == 2
+          assert cpp.count("is_executing.exchange(true, std::memory_order_acq_rel)") == 2
+          assert cpp.count("ASSERT(!v60_already_executing);") == 2
+          assert "std::scoped_lock" not in cpp
+          assert "std::mutex v60" not in cpp
+          assert "compare_exchange" not in cpp
+          PY
+
+          git -C "$SOURCE" diff "$V58_BASE_SHA" "$GITHUB_SHA" -- \
+            src/dynarmic/src/dynarmic/backend/arm64/a64_interface.cpp \
+            > "$PROV/V60_JIT_OWNER.diff"
+
+          printf 'V58_BASE_SHA=%s\nV60_SHA=%s\nSOURCE_MODE=exact tested V58 + JIT-local relaxed owner TID/fiber diagnostic only\nEVIDENCE=V59 runner-level CAS produced no overlap marker and perturbed V58 failure timing; probe moved to the actual exchange-failure seam\nISOLATION_DIR=build/validation/%s/%s\n' \
+            "$V58_BASE_SHA" "$GITHUB_SHA" "$GITHUB_SHA" "$TEST_NAME" > "$PROV/BUILD_INFO.txt"
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: afead830f3a444427f9fdfd841218f932465c03a
+          path: build/validation/${{ github.sha }}/v60-jit-owner/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure V60 Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v60-jit-owner/source
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+          printf 'CONFIGURE_COMMAND=./.ci/build/configure.sh -DCCACHE_PATH=sccache\nNCE_COMPILE_GUARD=HAS_NCE=1\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Build full Windows ARM64 Eden V60
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v60-jit-owner/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+          test -f build/bin/eden.exe || test -f build/bin/yuzu.exe
+          printf 'BUILD_COMMAND=cmake --build build\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Package Windows ARM64 Eden V60
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/v60-jit-owner/source
+        env:
+          ARTIFACT_REF: nce-v60-jit-owner-fb3d2786
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+          test -d artifacts
+          printf 'PACKAGE_COMMAND=./.ci/package/windows.sh\nARTIFACT_REF=nce-v60-jit-owner-fb3d2786\n' >> ../provenance/BUILD_INFO.txt
+
+      - name: Prepare V60 upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged Eden artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+          $hash = (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash
+          "PACKAGE_FILE=$($files[0].Name)" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
+          "PACKAGE_SHA256=$hash" | Add-Content (Join-Path $upload 'BUILD_INFO.txt')
+
+      - name: Upload V60 package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-V60-JIT-OWNER-fb3d2786
+          path: build/validation/${{ github.sha }}/v60-jit-owner/upload/*
+          if-no-files-found: error
+          retention-days: 14
