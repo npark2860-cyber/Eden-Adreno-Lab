@@ -330,6 +330,23 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
         }
 #endif
 
+#if defined(_WIN32)
+        // Windows ARM64 does not permit guest DC CIVAC in user mode. Eden's current Dynarmic
+        // configuration leaves hook_data_cache_operations disabled, so ordinary data-cache
+        // maintenance instructions have no emulator-visible side effect there. Match that guest
+        // contract by skipping only the observed DC CIVAC instruction on Windows NCE.
+        if (DCCIVAC{inst}.Verify()) {
+            bool pre_buffer = false;
+            const auto ret = AddRelocations(pre_buffer);
+            if (pre_buffer) {
+                BranchToModulePre(ret);
+            } else {
+                BranchToModule(ret);
+            }
+            continue;
+        }
+#endif
+
         // MRS Xn, CNTPCT_EL0
         if (auto mrs = MRS{inst}; mrs.Verify() && mrs.GetSystemReg() == CntpctEl0) {
             bool pre_buffer = false;
