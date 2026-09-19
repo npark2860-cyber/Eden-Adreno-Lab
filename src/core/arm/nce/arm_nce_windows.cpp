@@ -141,12 +141,25 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     }
 
     if (stack_lease.has_value()) {
-        if (!guest_sp_is_stack || stack_mbi.Type != MEM_PRIVATE ||
-            !stack_lease->ContainsAddress(guest_sp - 1)) {
-            LOG_ERROR(Core_ARM, "Windows NCE active private stack lease no longer owns guest SP");
+        const bool active_lease_owns_sp = stack_lease->ContainsAddress(guest_sp - 1);
+        if (active_lease_owns_sp) {
+            if (!guest_sp_is_stack || stack_mbi.Type != MEM_PRIVATE) {
+                LOG_ERROR(Core_ARM,
+                          "Windows NCE active private stack lease has invalid guest stack state");
+                return false;
+            }
+            return true;
+        }
+
+        // Native guest code may switch SP between user-space stacks without leaving the current
+        // RunThread epoch. The previous lease still owns a valid dormant stack, but it must be
+        // synchronized/restored before evaluating the newly active guest stack. If that stack later
+        // becomes active again, it will be leased again from the section-backed mapping.
+        if (!stack_lease->Restore()) {
+            LOG_ERROR(Core_ARM, "Windows NCE failed to roll over previous private stack lease");
             return false;
         }
-        return true;
+        stack_lease.reset();
     }
 
     // Preserve the V7 eligibility policy: already-private stacks and synthetic/non-Stack mapped
