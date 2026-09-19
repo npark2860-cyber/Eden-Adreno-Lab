@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <cstring>
+
 #include <QApplication>
 #include "startup_checks.h"
 
@@ -25,7 +27,158 @@
 #include "main_window.h"
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cwchar>
+
 #include <QScreen>
+
+namespace {
+
+constexpr const char* V63WatchdogArgument = "--nce-v63-watchdog";
+
+HANDLE OpenWindowsNceV63Log() noexcept {
+    char temp_path[MAX_PATH + 1]{};
+    const DWORD temp_length = GetTempPathA(MAX_PATH, temp_path);
+    if (temp_length == 0 || temp_length >= MAX_PATH) {
+        return INVALID_HANDLE_VALUE;
+    }
+
+    char path[MAX_PATH + 64]{};
+    const int path_length =
+        std::snprintf(path, sizeof(path), "%s%s", temp_path, "eden_nce_v63_exit_watchdog.log");
+    if (path_length <= 0 || static_cast<size_t>(path_length) >= sizeof(path)) {
+        return INVALID_HANDLE_VALUE;
+    }
+
+    return CreateFileA(path, FILE_APPEND_DATA,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+void WriteWindowsNceV63Line(const char* tag, unsigned long parent_pid, unsigned long child_pid,
+                            unsigned long wait_result, unsigned long exit_code,
+                            unsigned long error_code) noexcept {
+    HANDLE file = OpenWindowsNceV63Log();
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    char line[512]{};
+    const int line_length = std::snprintf(
+        line, sizeof(line),
+        "%s tick=%llu parent_pid=%lu child_pid=%lu wait=0x%08lX exit=0x%08lX "
+        "error=%lu base=fb3d278617f69dd00671fbf3e5d56bdc1366ec73\r\n",
+        tag, static_cast<unsigned long long>(GetTickCount64()), parent_pid, child_pid, wait_result,
+        exit_code, error_code);
+    if (line_length > 0) {
+        DWORD written{};
+        const DWORD size = static_cast<DWORD>(
+            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
+        (void)WriteFile(file, line, size, &written, nullptr);
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
+int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
+    if (argc != 4) {
+        return 201;
+    }
+
+    char* handle_end{};
+    const auto inherited_handle_value = _strtoui64(argv[2], &handle_end, 10);
+    if (handle_end == argv[2] || inherited_handle_value == 0) {
+        return 202;
+    }
+
+    char* pid_end{};
+    const unsigned long parent_pid = std::strtoul(argv[3], &pid_end, 10);
+    if (pid_end == argv[3] || parent_pid == 0) {
+        return 203;
+    }
+
+    HANDLE parent_handle =
+        reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(inherited_handle_value));
+    const unsigned long child_pid = static_cast<unsigned long>(GetCurrentProcessId());
+    WriteWindowsNceV63Line("V63_WATCHDOG_READY", parent_pid, child_pid, 0xFFFFFFFFul,
+                           STILL_ACTIVE, 0);
+
+    const DWORD wait_result = WaitForSingleObject(parent_handle, INFINITE);
+    DWORD exit_code = 0xFFFFFFFFul;
+    const BOOL got_exit = GetExitCodeProcess(parent_handle, &exit_code);
+    const DWORD error_code = got_exit != FALSE ? 0 : GetLastError();
+
+    WriteWindowsNceV63Line("V63_WATCHDOG_EXIT", parent_pid, child_pid, wait_result, exit_code,
+                           error_code);
+    CloseHandle(parent_handle);
+    return 0;
+}
+
+void LaunchWindowsNceV63Watchdog() noexcept {
+    const DWORD parent_pid = GetCurrentProcessId();
+    HANDLE parent_handle =
+        OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, TRUE, parent_pid);
+    if (parent_handle == nullptr) {
+        WriteWindowsNceV63Line("V63_WATCHDOG_OPEN_FAIL", parent_pid, 0, 0xFFFFFFFFul,
+                               STILL_ACTIVE, GetLastError());
+        return;
+    }
+
+    wchar_t executable[32768]{};
+    const DWORD executable_length =
+        GetModuleFileNameW(nullptr, executable,
+                           static_cast<DWORD>(sizeof(executable) / sizeof(executable[0])));
+    if (executable_length == 0 ||
+        executable_length >= static_cast<DWORD>(sizeof(executable) / sizeof(executable[0]))) {
+        WriteWindowsNceV63Line("V63_WATCHDOG_PATH_FAIL", parent_pid, 0, 0xFFFFFFFFul,
+                               STILL_ACTIVE, GetLastError());
+        CloseHandle(parent_handle);
+        return;
+    }
+
+    wchar_t command_line[32768]{};
+    const auto handle_value =
+        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(parent_handle));
+    const int command_length =
+        std::swprintf(command_line, sizeof(command_line) / sizeof(command_line[0]),
+                      L"\"%ls\" --nce-v63-watchdog %llu %lu", executable, handle_value,
+                      static_cast<unsigned long>(parent_pid));
+    if (command_length <= 0 ||
+        command_length >= static_cast<int>(sizeof(command_line) / sizeof(command_line[0]))) {
+        WriteWindowsNceV63Line("V63_WATCHDOG_COMMAND_FAIL", parent_pid, 0, 0xFFFFFFFFul,
+                               STILL_ACTIVE, 0);
+        CloseHandle(parent_handle);
+        return;
+    }
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    const BOOL created =
+        CreateProcessW(executable, command_line, nullptr, nullptr, TRUE,
+                       CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &startup,
+                       &child);
+    if (created == FALSE) {
+        WriteWindowsNceV63Line("V63_WATCHDOG_LAUNCH_FAIL", parent_pid, 0, 0xFFFFFFFFul,
+                               STILL_ACTIVE, GetLastError());
+        CloseHandle(parent_handle);
+        return;
+    }
+
+    WriteWindowsNceV63Line("V63_WATCHDOG_LAUNCHED", parent_pid,
+                           static_cast<unsigned long>(child.dwProcessId), 0xFFFFFFFFul,
+                           STILL_ACTIVE, 0);
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    CloseHandle(parent_handle);
+}
+
+} // namespace
 
 static void OverrideWindowsFont() {
     // Qt5 chooses these fonts on Windows and they have fairly ugly alphanumeric/cyrillic characters
@@ -78,6 +231,13 @@ static Qt::HighDpiScaleFactorRoundingPolicy GetHighDpiRoundingPolicy() {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    if (argc >= 2 && std::strcmp(argv[1], V63WatchdogArgument) == 0) {
+        return RunWindowsNceV63Watchdog(argc, argv);
+    }
+    LaunchWindowsNceV63Watchdog();
+#endif
+
 #if YUZU_ROOM
     bool launch_room = false;
     for (int i = 1; i < argc; i++) {
