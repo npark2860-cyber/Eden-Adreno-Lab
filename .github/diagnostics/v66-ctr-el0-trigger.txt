@@ -1,0 +1,4 @@
+V66 Windows ARM64 NCE CTR_EL0 compatibility build trigger.
+Exact tested V65 base: 202dacd40536e979315a6af5f70f36f3aabc2f22
+Source fix commit: 3595a34ccafb6fb6090f1089653b5241eba41935
+Fault evidence: 0xD53B0029 = MRS X9, CTR_EL0; Dynarmic guest CTR_EL0 = 0x8444C004.
