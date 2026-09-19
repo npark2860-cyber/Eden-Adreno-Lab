@@ -1,0 +1,7 @@
+V61 RunThread exit diagnostic trigger
+
+base=fb3d278617f69dd00671fbf3e5d56bdc1366ec73
+source=2931448bc452c9f7438247fee353df657ce66edd
+workflow=fa4648b0e7095d6ff45366099bb1db94dacd0457
+evidence=V60 had zero JIT overlap markers and ended after third fallback during repeated stack-lease restore Split calls
+diagnostic=sample RunThread exit site/hr/transition/fallback state only
