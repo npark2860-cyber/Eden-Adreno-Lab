@@ -5,3 +5,6 @@ source=5a063eca430b0e9d3c6a2efef74a5a7c943729b6
 workflow=e2f0e9b84e2c3f3351e4376b0149644356271956
 evidence=V55 reproduced ARM64 Dynarmic ASSERT(!is_executing); V56/V57 added synchronization and did not reproduce
 change=plain bool is_executing -> std::atomic_bool with atomic exchange/store/load
+
+retry_after_atomic_load_fix=5377806a321e9c579d2d66f0d2f60318a01de3d0
+fix=Impl::IsExecuting now uses explicit acquire load as required by V58 provenance
