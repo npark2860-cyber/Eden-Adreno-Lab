@@ -1,0 +1,3 @@
+V63 exit-watchdog diagnostic build trigger.
+Exact base: fb3d278617f69dd00671fbf3e5d56bdc1366ec73
+Source watchdog commit: de961cb62f05bcf81feed921535102fa99738262
