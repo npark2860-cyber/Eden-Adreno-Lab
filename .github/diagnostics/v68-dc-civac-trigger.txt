@@ -1,0 +1,4 @@
+V68 Windows ARM64 NCE DC CIVAC compatibility build trigger.
+Exact tested V66 base: 51789fcdf414a3f6f9d632bb2c4a843eb322aa39
+Source fix HEAD before workflow: 20e96709db4a4f8567a852a7c326c9848eb9a8b8
+Observed clean V66 fault: 0xD50B7E2A = DC CIVAC, X10; exit 0xC000001D.
