@@ -1,0 +1,7 @@
+V59 x18 lock-free owner diagnostic trigger
+
+base=fb3d278617f69dd00671fbf3e5d56bdc1366ec73
+source=43c52aef2200a80a0ea183b4c0fd3b7959fd017f
+workflow=7c12ec73bedf4b7e2b8c4bcf08b906118d75df3d
+evidence=V58 atomic exchange still asserted, proving real overlap
+diagnostic=lock-free owner TID CAS; no mutex; no serialization
