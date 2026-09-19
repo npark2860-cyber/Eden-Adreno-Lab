@@ -12,6 +12,7 @@
 namespace Core::NCE {
 
 enum SystemRegister : u32 {
+    CtrEl0 = 0x5801,
     TpidrEl0 = 0x5E82,
     TpidrroEl0 = 0x5E83,
     CntfrqEl0 = 0x5F00,
@@ -80,6 +81,9 @@ static_assert(sizeof(MRS) == sizeof(u32));
 static_assert(MRS(0xD53BE020).Verify());
 static_assert(MRS(0xD53BE020).GetSystemReg() == CntpctEl0);
 static_assert(MRS(0xD53BE020).GetRt() == 0x0);
+static_assert(MRS(0xD53B0029).Verify());
+static_assert(MRS(0xD53B0029).GetSystemReg() == CtrEl0);
+static_assert(MRS(0xD53B0029).GetRt() == 0x9);
 
 // https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/MSR--register---Move-general-purpose-register-to-System-Register-
 union MSR {
