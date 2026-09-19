@@ -178,6 +178,82 @@ void LaunchWindowsNceV63Watchdog() noexcept {
     CloseHandle(parent_handle);
 }
 
+
+
+LONG WINAPI WindowsNceV64UnhandledExceptionFilter(EXCEPTION_POINTERS* exception_pointers) noexcept {
+    if (exception_pointers == nullptr || exception_pointers->ExceptionRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const EXCEPTION_RECORD* record = exception_pointers->ExceptionRecord;
+    const CONTEXT* context = exception_pointers->ContextRecord;
+
+    char temp_path[MAX_PATH + 1]{};
+    const DWORD temp_length = GetTempPathA(MAX_PATH, temp_path);
+    if (temp_length == 0 || temp_length >= MAX_PATH) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    char path[MAX_PATH + 64]{};
+    const int path_length =
+        std::snprintf(path, sizeof(path), "%s%s", temp_path, "eden_nce_v64_unhandled.log");
+    if (path_length <= 0 || static_cast<size_t>(path_length) >= sizeof(path)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    HANDLE file = CreateFileA(path, FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const ULONG_PTR access_type =
+        record->NumberParameters >= 1 ? record->ExceptionInformation[0] : ~ULONG_PTR{0};
+    const ULONG_PTR fault_address =
+        record->NumberParameters >= 2 ? record->ExceptionInformation[1] : 0;
+
+#if defined(_M_ARM64)
+    const unsigned long long pc =
+        context != nullptr ? static_cast<unsigned long long>(context->Pc) : 0;
+    const unsigned long long sp =
+        context != nullptr ? static_cast<unsigned long long>(context->Sp) : 0;
+    const unsigned long long x18 =
+        context != nullptr ? static_cast<unsigned long long>(context->X[18]) : 0;
+#else
+    const unsigned long long pc = 0;
+    const unsigned long long sp = 0;
+    const unsigned long long x18 = 0;
+#endif
+
+    char line[1024]{};
+    const int line_length = std::snprintf(
+        line, sizeof(line),
+        "V64_UNHANDLED tick=%llu pid=%lu tid=%lu code=0x%08lX flags=0x%08lX "
+        "exception_address=0x%016llX parameters=%lu access_type=0x%016llX "
+        "fault_address=0x%016llX pc=0x%016llX sp=0x%016llX x18=0x%016llX "
+        "base=ef5a51e01159f7d7aff90e8df760ade7dd2bbe19\r\n",
+        static_cast<unsigned long long>(GetTickCount64()),
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()),
+        static_cast<unsigned long>(record->ExceptionCode),
+        static_cast<unsigned long>(record->ExceptionFlags),
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(record->ExceptionAddress)),
+        static_cast<unsigned long>(record->NumberParameters),
+        static_cast<unsigned long long>(access_type),
+        static_cast<unsigned long long>(fault_address), pc, sp, x18);
+    if (line_length > 0) {
+        DWORD written{};
+        const DWORD size = static_cast<DWORD>(
+            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
+        (void)WriteFile(file, line, size, &written, nullptr);
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 } // namespace
 
 static void OverrideWindowsFont() {
@@ -342,6 +418,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
 
 #ifdef _WIN32
+    SetUnhandledExceptionFilter(WindowsNceV64UnhandledExceptionFilter);
     OverrideWindowsFont();
 #endif
 
