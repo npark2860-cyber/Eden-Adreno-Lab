@@ -41,6 +41,9 @@ extern "C" void WindowsNceV74HostReturnProbe() noexcept;
 namespace {
 
 constexpr u64 V74ProvenanceMagicBase = 0x56373450524F0000ULL;
+constexpr u64 V76RedirectRouteMagicBase = 0x5637365254500000ULL;
+constexpr u64 V76RouteX18Fallback = 0x0100ULL;
+constexpr u64 V76RouteBreakLoop = 0x0200ULL;
 
 using NativeExecutionParameters = Kernel::KThread::NativeExecutionParameters;
 
@@ -249,6 +252,42 @@ struct BreakTransformState {
     bool patch_window{};
 };
 
+void InstallV76RedirectRouteProvenance(ARM64_NT_CONTEXT& context, GuestContext& guest,
+                                       u64 route_tag) noexcept {
+    // V76 diagnostic only: extend the already-proven V74 bridge consumer capture to the two
+    // remaining production RedirectToHost routes. This does not alter the host-return contract:
+    // the diagnostic success trampoline restores the exact saved host x19-x30 and branches to the
+    // original saved host PC. On a zero-scratch terminal, x25 identifies the writer route while
+    // x19-x24/x27-x28 preserve the first bridge consumer values.
+    u64 provenance_flags = 0;
+    const u64 submit_stack_base = context.X[1];
+    const u64 submit_stack_limit = context.X[2];
+    const u64 submit_host_sp = context.X[3];
+    const u64 submit_host_pc = context.X[16];
+
+    if (submit_stack_base != 0 && submit_stack_limit != 0 && submit_host_sp != 0 &&
+        submit_host_pc != 0) {
+        provenance_flags |= 0x0001;
+    }
+    if (submit_stack_limit < submit_stack_base) {
+        provenance_flags |= 0x0002;
+    }
+    if (submit_host_sp >= submit_stack_limit && submit_host_sp < submit_stack_base) {
+        provenance_flags |= 0x0004;
+    }
+    if ((submit_host_pc & 0x3) == 0 && submit_host_pc != 0) {
+        provenance_flags |= 0x0008;
+    }
+    if (context.X[30] == submit_host_pc && submit_host_pc != 0) {
+        provenance_flags |= 0x0020;
+    }
+
+    context.X[25] = V76RedirectRouteMagicBase | route_tag | provenance_flags;
+    context.X[26] = reinterpret_cast<u64>(&guest.host_ctx);
+    context.X[16] = reinterpret_cast<u64>(&WindowsNceV74HostReturnProbe);
+    context.Pc = reinterpret_cast<u64>(&WindowsNceV74HostStackBridge);
+}
+
 bool WindowsBreakTransform(ARM64_NT_CONTEXT& context, void* opaque) noexcept {
     auto* const state = static_cast<BreakTransformState*>(opaque);
     if (state == nullptr || state->nce == nullptr || state->nce->m_windows_break == nullptr) {
@@ -277,6 +316,7 @@ bool WindowsBreakTransform(ARM64_NT_CONTEXT& context, void* opaque) noexcept {
     auto& guest = state->nce->m_guest_ctx;
     const auto reason = guest.esr_el1.exchange(0, std::memory_order_acq_rel);
     NCE::WindowsNceTransition::RedirectToHost(context, guest, true, reason);
+    InstallV76RedirectRouteProvenance(context, guest, V76RouteBreakLoop);
     state->transformed = true;
     return true;
 }
@@ -316,6 +356,7 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
             exception, *guest, process->GetPostHandlers());
         if (redirected) {
             context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
+            InstallV76RedirectRouteProvenance(context, *guest, V76RouteX18Fallback);
             NCE::WindowsNceTransition::ContinueContext(context);
         }
         params->lock.store(SpinLockUnlocked, std::memory_order_release);
