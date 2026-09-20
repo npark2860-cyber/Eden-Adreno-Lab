@@ -1,0 +1,3 @@
+V74 HostBridge provenance diagnostic trigger
+Base: 3888982e8d9b58ab3139f224e60e5ed724b4bec5
+Hypothesis: compare AV RedirectToHost writer validity against first HostBridge consumer register state using natural WER evidence.
