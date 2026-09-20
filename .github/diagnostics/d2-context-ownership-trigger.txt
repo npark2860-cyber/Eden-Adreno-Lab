@@ -1,0 +1,17 @@
+D2 context ownership diagnostic trigger
+
+Base D2 HEAD:
+d56f2177ea94419b8cda96f644f3e4f4ec958b9e
+
+Purpose:
+- capture raw VEH / cross-thread-break context provenance before SaveGuestState
+- flush only after host-stack return
+- detect invalid/host-looking GuestContext PC once
+- bound V18 exact-placeholder log volume without changing Split behavior
+
+Preserve:
+- D1 CLOSED
+- D2 TEB coherence CI PASS
+- no V76 progression
+- no closed regression reruns
+- no production semantic change
