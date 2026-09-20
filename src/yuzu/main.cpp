@@ -682,9 +682,10 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
 
 #ifdef _WIN32
-    SetUnhandledExceptionFilter(WindowsNceV64UnhandledExceptionFilter);
-    InstallWindowsNceV65IllegalInstructionVeh();
-    InstallWindowsNceV70BreakpointVeh();
+    // V75 diagnostic: keep natural Windows WER terminal handling uncontaminated by the historical
+    // in-process V64/V65/V70 exception observers. Run 2 proved that their logging path can consume
+    // enough of a small guest/TEB stack to fault inside GetTempPathA. V63 remains out-of-process,
+    // and the V74 NCE provenance instrumentation is unchanged.
     OverrideWindowsFont();
 #endif
 
