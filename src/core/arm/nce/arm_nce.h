@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -100,6 +101,26 @@ public:
     bool m_windows_pending_nce_fault{};
     u64 m_windows_pending_nce_fault_address{};
     u64 m_windows_pending_nce_fault_page{};
+
+    // D2 diagnostic-only fixed storage. VEH and cross-thread break paths may execute while the
+    // guest SP is active, so they only publish raw provenance here. RunThread flushes it after
+    // returning to the host stack; no logging or allocation occurs in the guest-stack paths.
+    std::atomic<u64> m_windows_diag_veh_seq{};
+    std::atomic<u64> m_windows_diag_veh_route{};
+    std::atomic<u64> m_windows_diag_veh_pc{};
+    std::atomic<u64> m_windows_diag_veh_sp{};
+    std::atomic<u64> m_windows_diag_veh_lr{};
+    std::atomic<u64> m_windows_diag_veh_aux{};
+    std::atomic<u64> m_windows_diag_break_seq{};
+    std::atomic<u64> m_windows_diag_break_route{};
+    std::atomic<u64> m_windows_diag_break_pc{};
+    std::atomic<u64> m_windows_diag_break_sp{};
+    std::atomic<u64> m_windows_diag_break_lr{};
+    std::atomic<u64> m_windows_diag_break_aux{};
+    u64 m_windows_diag_last_veh_seq{};
+    u64 m_windows_diag_last_break_seq{};
+    u32 m_windows_diag_return_logs{};
+    bool m_windows_diag_invalid_pc_logged{};
 #else
     pid_t m_thread_id{-1};
 #endif
