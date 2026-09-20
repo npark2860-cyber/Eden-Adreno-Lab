@@ -180,7 +180,7 @@ void LaunchWindowsNceV63Watchdog() noexcept {
 
 
 
-LONG WINAPI WindowsNceV64UnhandledExceptionFilter(EXCEPTION_POINTERS* exception_pointers) noexcept {
+[[maybe_unused]] LONG WINAPI WindowsNceV64UnhandledExceptionFilter(EXCEPTION_POINTERS* exception_pointers) noexcept {
     if (exception_pointers == nullptr || exception_pointers->ExceptionRecord == nullptr) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -353,7 +353,7 @@ LONG CALLBACK WindowsNceV65IllegalInstructionVeh(EXCEPTION_POINTERS* exception_p
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-void InstallWindowsNceV65IllegalInstructionVeh() noexcept {
+[[maybe_unused]] void InstallWindowsNceV65IllegalInstructionVeh() noexcept {
     g_windows_nce_v65_illegal_instruction_veh =
         AddVectoredExceptionHandler(1, &WindowsNceV65IllegalInstructionVeh);
     WriteWindowsNceV65IllegalInstruction(
@@ -507,7 +507,7 @@ LONG CALLBACK WindowsNceV70BreakpointVeh(EXCEPTION_POINTERS* exception_pointers)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-void InstallWindowsNceV70BreakpointVeh() noexcept {
+[[maybe_unused]] void InstallWindowsNceV70BreakpointVeh() noexcept {
     // Tail observer: NCE still gets first chance. V70 only expands the escaping breakpoint
     // context so the host/guest bridge and RedirectToHost return-value origin can be classified.
     g_windows_nce_v70_breakpoint_veh =
