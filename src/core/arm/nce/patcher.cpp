@@ -32,6 +32,7 @@ using NativeExecutionParameters = Kernel::KThread::NativeExecutionParameters;
 
 constexpr size_t MaxRelativeBranch = 128_MiB;
 constexpr u32 ModuleCodeIndex = 0x24 / sizeof(u32);
+constexpr u32 NzcvMask = 0xF0000000U;
 
 Patcher::Patcher() : c(m_patch_instructions), c_pre(m_patch_instructions_pre) {
     // The first word of the patch section is always a branch to the first instruction of the
@@ -734,6 +735,17 @@ void Patcher::WriteSaveContext(oaknut::VectorCodeGenerator& cg) {
     cg.STR(W0, X30, offsetof(GuestContext, fpcr));
     cg.MRS(X0, oaknut::SystemReg::NZCV);
     cg.STR(W0, X30, offsetof(GuestContext, nzcv));
+#if defined(_WIN32)
+    // Keep the canonical architectural NZCV bits coherent across the Windows SVC round trip.
+    // Windows native re-entry and scheduler context exchange consume GuestContext::pstate, while
+    // x18 fallback consumes GuestContext::nzcv. Preserve non-NZCV PSTATE bits and mirror the live
+    // flags into both fields at the producer seam.
+    cg.LDR(W1, X30, offsetof(GuestContext, pstate));
+    cg.AND(W1, W1, ~NzcvMask);
+    cg.AND(W0, W0, NzcvMask);
+    cg.ORR(W1, W1, W0);
+    cg.STR(W1, X30, offsetof(GuestContext, pstate));
+#endif
     cg.LDR(X0, SP, POST_INDEXED, 16);
 
     // Reload our return X30 from the stack, and return.
