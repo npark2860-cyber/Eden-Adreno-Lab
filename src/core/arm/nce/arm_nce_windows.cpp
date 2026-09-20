@@ -57,8 +57,12 @@ struct WindowsTebStackBounds {
     void* host_stack_limit{};
 };
 
-[[nodiscard]] bool InstallGuestTebStackBounds(u64 guest_sp,
+static_assert(offsetof(NT_TIB, StackBase) == 0x08);
+static_assert(offsetof(NT_TIB, StackLimit) == 0x10);
+
+[[nodiscard]] bool InstallGuestTebStackBounds(GuestContext& guest,
                                               WindowsTebStackBounds& bounds) noexcept {
+    const u64 guest_sp = guest.sp;
     if (guest_sp == 0) {
         return false;
     }
@@ -101,6 +105,12 @@ struct WindowsTebStackBounds {
     bounds.tib = tib;
     bounds.host_stack_base = tib->StackBase;
     bounds.host_stack_limit = tib->StackLimit;
+    guest.windows_guest_stack_base = static_cast<u64>(allocation_end);
+    guest.windows_guest_stack_limit = static_cast<u64>(allocation_base);
+    guest.windows_host_stack_base =
+        static_cast<u64>(reinterpret_cast<std::uintptr_t>(bounds.host_stack_base));
+    guest.windows_host_stack_limit =
+        static_cast<u64>(reinterpret_cast<std::uintptr_t>(bounds.host_stack_limit));
     // Keep the host StackLimit through the host-side NtContinue transition. Publishing the guest
     // allocation limit here makes the Windows ARM64 stack probe in ucrtbase run against guest
     // bounds while it still owns the host stack. Only publish the guest StackBase/top at this seam.
@@ -490,7 +500,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         }
 
         WindowsTebStackBounds teb_stack_bounds{};
-        if (!InstallGuestTebStackBounds(m_guest_ctx.sp, teb_stack_bounds)) {
+        if (!InstallGuestTebStackBounds(m_guest_ctx, teb_stack_bounds)) {
             NCE::CurrentNceContext::Clear();
             hr = HaltReason::PrefetchAbort;
             break;
