@@ -652,6 +652,7 @@ void ArmNce::SetContext(const Kernel::Svc::ThreadContext& ctx) {
     m_guest_ctx.sp = ctx.sp;
     m_guest_ctx.pc = ctx.pc;
     m_guest_ctx.pstate = ctx.pstate;
+    m_guest_ctx.nzcv = ctx.pstate & 0xF0000000U;
     m_guest_ctx.vector_registers = ctx.v;
     m_guest_ctx.fpcr = ctx.fpcr;
     m_guest_ctx.fpsr = ctx.fpsr;
