@@ -46,10 +46,13 @@ enum class WindowsNceDiagRoute : u64 {
     VehHostStack = 0x101,
     VehX18Trap = 0x102,
     VehAccessViolation = 0x103,
+    VehInstructionMisalignment = 0x104,
     BreakHostStack = 0x201,
     BreakPatchWindow = 0x202,
     BreakRedirect = 0x203,
 };
+
+constexpr DWORD WindowsStatusInstructionMisalignment = 0xC00000AAUL;
 
 void PublishWindowsNceDiagSlot(std::atomic<u64>& seq, std::atomic<u64>& route,
                                std::atomic<u64>& pc, std::atomic<u64>& sp,
@@ -449,6 +452,16 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         }
         params->lock.store(SpinLockUnlocked, std::memory_order_release);
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (exception->ExceptionRecord->ExceptionCode == WindowsStatusInstructionMisalignment) {
+        PublishWindowsNceVehDiag(*nce, WindowsNceDiagRoute::VehInstructionMisalignment, context,
+                                 exception->ExceptionRecord->ExceptionCode);
+        params->lock.store(SpinLockLocked, std::memory_order_release);
+        NCE::WindowsNceTransition::RedirectToHost(
+            context, *guest, true, static_cast<u64>(HaltReason::PrefetchAbort));
+        context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
+        NCE::WindowsNceTransition::ContinueContext(context);
     }
 
     if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {
