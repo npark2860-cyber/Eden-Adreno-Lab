@@ -1,0 +1,5 @@
+Windows NCE D1 NZCV coherence validation trigger
+Base: 75c87ed4507a0fe6f1a89912a5353c3a5c03f3ba
+Single production variable: keep GuestContext::nzcv and GuestContext::pstate NZCV bits coherent across Windows SVC save and scheduler SetContext.
+Regression: ADDS -> SVC -> GetContext, then injected pstate -> ordinary x18 fallback -> MRS NZCV -> SVC.
+Full real-game package is produced only if the regression passes.
