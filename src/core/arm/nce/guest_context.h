@@ -38,6 +38,14 @@ struct GuestContext {
     u32 svc{};
     System* system{};
     ArmNce* parent{};
+#if defined(_WIN32)
+    // Windows NCE transition metadata. These are prepared while host SP is active and consumed
+    // only by leaf host<->guest stack handoff code; guest architectural state does not own them.
+    u64 windows_guest_stack_base{};
+    u64 windows_guest_stack_limit{};
+    u64 windows_host_stack_base{};
+    u64 windows_host_stack_limit{};
+#endif
 };
 
 // Verify assembly offsets.
@@ -48,5 +56,11 @@ static_assert(offsetof(HostContext, host_tpidr_el0) - 8 == HostContextSpTpidrEl0
 static_assert(offsetof(HostContext, host_tpidr_el0) == HostContextTpidrEl0);
 static_assert(offsetof(HostContext, host_saved_regs) == HostContextRegs);
 static_assert(offsetof(HostContext, host_saved_vregs) == HostContextVregs);
+#if defined(_WIN32)
+static_assert(offsetof(GuestContext, windows_guest_stack_base) == 0x440);
+static_assert(offsetof(GuestContext, windows_guest_stack_limit) == 0x448);
+static_assert(offsetof(GuestContext, windows_host_stack_base) == 0x450);
+static_assert(offsetof(GuestContext, windows_host_stack_limit) == 0x458);
+#endif
 
 } // namespace Core
