@@ -152,13 +152,11 @@ jobs:
           winexe="$(cygpath -w "$exe")"
           winout="$(cygpath -w ../d1-nzcv.out.log)"
           winerr="$(cygpath -w ../d1-nzcv.err.log)"
+          export D1_EXE="$winexe"
+          export D1_OUT="$winout"
+          export D1_ERR="$winerr"
           set +e
-          powershell.exe -NoProfile -NonInteractive -Command "& {
-            $ErrorActionPreference = 'Stop'
-            $p = Start-Process -FilePath '$winexe' -NoNewWindow -Wait -PassThru -RedirectStandardOutput '$winout' -RedirectStandardError '$winerr'
-            Write-Host ('IMP008_D1_NZCV_PROCESS_EXIT=' + $p.ExitCode)
-            exit $p.ExitCode
-          }"
+          powershell.exe -NoProfile -NonInteractive -Command '$ErrorActionPreference = "Stop"; $p = Start-Process -FilePath $env:D1_EXE -NoNewWindow -Wait -PassThru -RedirectStandardOutput $env:D1_OUT -RedirectStandardError $env:D1_ERR; Write-Host ("IMP008_D1_NZCV_PROCESS_EXIT=" + $p.ExitCode); exit $p.ExitCode'
           rc=$?
           set -e
           cat ../d1-nzcv.out.log 2>/dev/null || true
