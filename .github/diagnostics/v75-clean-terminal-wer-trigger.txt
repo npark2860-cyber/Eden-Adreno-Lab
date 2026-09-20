@@ -1,0 +1,3 @@
+V75 clean terminal WER diagnostic trigger
+Base: 7c8313e6bfd2bf99487eec283d8523e5017e69f2
+Single variable: disable installation of historical in-process V64/V65/V70 exception observers; preserve V74 NCE provenance and V63 out-of-process watchdog.
