@@ -111,8 +111,9 @@ void FlushWindowsNceContextDiag(ArmNce& nce, Kernel::KProcess* process, HaltReas
         process != nullptr && nce.m_guest_ctx.pc != 0 &&
         process->GetMemory().IsValidVirtualAddressRange(nce.m_guest_ctx.pc, sizeof(u32));
     const bool bounded_return_log = nce.m_windows_diag_return_logs < 24;
+    const bool bounded_route_log = route_changed && nce.m_windows_diag_return_logs < 128;
 
-    if (bounded_return_log || route_changed || !guest_pc_valid) {
+    if (bounded_return_log || bounded_route_log || !guest_pc_valid) {
         LOG_INFO(
             Core_ARM,
             "NCE_D2_CTX_RETURN entry_pc={:#018x} pc={:#018x} sp={:#018x} lr={:#018x} "
@@ -138,7 +139,8 @@ void FlushWindowsNceContextDiag(ArmNce& nce, Kernel::KProcess* process, HaltReas
             nce.m_windows_diag_break_lr.load(std::memory_order_relaxed),
             nce.m_windows_diag_break_aux.load(std::memory_order_relaxed));
 
-        if (bounded_return_log) {
+        if ((bounded_return_log || bounded_route_log) &&
+            nce.m_windows_diag_return_logs < 128) {
             ++nce.m_windows_diag_return_logs;
         }
     }
