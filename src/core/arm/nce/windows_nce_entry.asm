@@ -102,7 +102,9 @@ WindowsNceEnterGuest PROC
 
         ; D2: publish a complete guest TEB interval while host SP is still active, then switch SP
         ; immediately. No call/probe/stack access may occur between the TEB pair store and MOV SP.
-        ldp     x14, x15, [x17, #GuestContextWinGuestBase]
+        add     x14, x17, #GuestContextWinGuestBase
+        ldr     x15, [x14, #8]
+        ldr     x14, [x14]
         stp     x14, x15, [x18, #WindowsTebStackBase]
         mov     sp, x30
 
