@@ -1,0 +1,29 @@
+D2 unmatched breakpoint diagnostic trigger
+
+Tested production candidate:
+0a10242006636a37727ad9c185b0de620c704ef5
+
+Physical result:
+- exact HEAD 0a102420
+- no host-PC backtrace / no observed prior invalid GuestContext pattern
+- reached CreateManagedDisplaySeparableLayer
+- reached SetErrorNotifier / ChannelSetTimeout / ChannelSetTimeslice
+- reached NCE_V74_AV_PROVENANCE_RETURNED
+- natural watchdog exit 0x80000003 (STATUS_BREAKPOINT)
+- no ordinary Critical/Error/LogBacktrace before termination
+
+Purpose:
+- leave recognized x18 fallback breakpoint handling unchanged
+- capture only unmatched EXCEPTION_BREAKPOINT raw PC/SP/LR
+- record whether fault PC is currently guest-mapped
+- do not SaveGuestState from the unmatched breakpoint CONTEXT
+- return diagnostically through the proven host bridge as PrefetchAbort
+- emit one host-side NCE_D2_UNMATCHED_BREAKPOINT marker
+
+Preserve:
+- production PC guard candidate semantics
+- D1 CLOSED
+- D2 CI PASS
+- D3/D5 not reopened
+- no V76 progression
+- no closed regression reruns
