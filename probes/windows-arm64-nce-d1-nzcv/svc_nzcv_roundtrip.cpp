@@ -396,48 +396,6 @@ int main() {
     std::cout << "IMP008_D1_NZCV_REENTRY_COHERENCE=PASS\n" << std::flush;
 
     RemoveVectoredExceptionHandler(diagnostic_veh);
-        thread->Close(kernel);
-        process->Close(kernel);
-        kernel.Shutdown();
-        return Fail("IMP008_D1_NZCV_SECOND_HALT_REASON");
-    }
-    if (interface->GetSvcNumber() != 0x44) {
-        RemoveVectoredExceptionHandler(diagnostic_veh);
-        thread->Close(kernel);
-        process->Close(kernel);
-        kernel.Shutdown();
-        return Fail("IMP008_D1_NZCV_SECOND_SVC_NUMBER");
-    }
-
-    Kernel::Svc::ThreadContext second_returned{};
-    interface->GetContext(second_returned);
-    if (second_returned.r[0] != SecondReturnedX0) {
-        RemoveVectoredExceptionHandler(diagnostic_veh);
-        thread->Close(kernel);
-        process->Close(kernel);
-        kernel.Shutdown();
-        return Fail("IMP008_D1_NZCV_REENTRY_GUEST_EXECUTED");
-    }
-    if (second_returned.pc != load_base_u64 + GuestAfterSecondSvcOffset) {
-        RemoveVectoredExceptionHandler(diagnostic_veh);
-        thread->Close(kernel);
-        process->Close(kernel);
-        kernel.Shutdown();
-        return Fail("IMP008_D1_NZCV_SECOND_RETURN_PC");
-    }
-    if (second_returned.sp != guest_sp) {
-        RemoveVectoredExceptionHandler(diagnostic_veh);
-        thread->Close(kernel);
-        process->Close(kernel);
-        kernel.Shutdown();
-        return Fail("IMP008_D1_NZCV_SECOND_RETURN_SP");
-    }
-
-    std::cout << "IMP008_D1_NZCV_REENTRY_GUEST_EXECUTED=PASS\n";
-    std::cout << "IMP008_D1_NZCV_SECOND_SVC_RETURN=PASS\n";
-    std::cout << "IMP008_D1_NZCV_CONTEXT_COHERENT=PASS\n" << std::flush;
-
-    RemoveVectoredExceptionHandler(diagnostic_veh);
     thread->Close(kernel);
     process->Close(kernel);
     kernel.Shutdown();
