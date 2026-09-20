@@ -1,0 +1,6 @@
+D2 post-SVC TEB StackBase/StackLimit coherence trigger
+Base: 95a8e5a1e2cd55e19fea5c11979aa0f5173d57e6
+Branch: fix/windows-nce-d2-teb-coherence-95a8e5a1
+Single production variable: make guest/host SP ownership transition with a complete matching TEB StackBase/StackLimit pair in the leaf handoff.
+Regression: separate guest stack -> capture guest TEB pair at first guest instruction -> SVC host return pair -> generated post-SVC reentry -> second host return pair.
+Preserve D1 CLOSED. Do not run V76.
