@@ -4,3 +4,9 @@ Branch: fix/windows-nce-d2-teb-coherence-95a8e5a1
 Single production variable: make guest/host SP ownership transition with a complete matching TEB StackBase/StackLimit pair in the leaf handoff.
 Regression: separate guest stack -> capture guest TEB pair at first guest instruction -> SVC host return pair -> generated post-SVC reentry -> second host return pair.
 Preserve D1 CLOSED. Do not run V76.
+
+Corrected retrigger:
+- previous run 35517796226 failed at ARMASM64 only
+- error A2513: LDP immediate #0x440 out of range
+- production logic unchanged
+- metadata address now formed with ADD, then loaded with two LDRs before the same TEB pair store -> guest SP handoff
