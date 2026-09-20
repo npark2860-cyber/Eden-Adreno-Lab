@@ -42,6 +42,45 @@ namespace {
 
 constexpr u64 V74ProvenanceMagicBase = 0x56373450524F0000ULL;
 
+enum class WindowsNceDiagRoute : u64 {
+    VehHostStack = 0x101,
+    VehX18Trap = 0x102,
+    VehAccessViolation = 0x103,
+    BreakHostStack = 0x201,
+    BreakPatchWindow = 0x202,
+    BreakRedirect = 0x203,
+};
+
+void PublishWindowsNceDiagSlot(std::atomic<u64>& seq, std::atomic<u64>& route,
+                               std::atomic<u64>& pc, std::atomic<u64>& sp,
+                               std::atomic<u64>& lr, std::atomic<u64>& aux,
+                               WindowsNceDiagRoute route_value,
+                               const ARM64_NT_CONTEXT& context, u64 aux_value) noexcept {
+    const u64 next = seq.load(std::memory_order_relaxed) + 1;
+    route.store(static_cast<u64>(route_value), std::memory_order_relaxed);
+    pc.store(context.Pc, std::memory_order_relaxed);
+    sp.store(context.Sp, std::memory_order_relaxed);
+    lr.store(context.X[30], std::memory_order_relaxed);
+    aux.store(aux_value, std::memory_order_relaxed);
+    seq.store(next, std::memory_order_release);
+}
+
+void PublishWindowsNceVehDiag(ArmNce& nce, WindowsNceDiagRoute route,
+                              const ARM64_NT_CONTEXT& context, u64 aux) noexcept {
+    PublishWindowsNceDiagSlot(
+        nce.m_windows_diag_veh_seq, nce.m_windows_diag_veh_route,
+        nce.m_windows_diag_veh_pc, nce.m_windows_diag_veh_sp,
+        nce.m_windows_diag_veh_lr, nce.m_windows_diag_veh_aux, route, context, aux);
+}
+
+void PublishWindowsNceBreakDiag(ArmNce& nce, WindowsNceDiagRoute route,
+                                const ARM64_NT_CONTEXT& context, u64 aux) noexcept {
+    PublishWindowsNceDiagSlot(
+        nce.m_windows_diag_break_seq, nce.m_windows_diag_break_route,
+        nce.m_windows_diag_break_pc, nce.m_windows_diag_break_sp,
+        nce.m_windows_diag_break_lr, nce.m_windows_diag_break_aux, route, context, aux);
+}
+
 using NativeExecutionParameters = Kernel::KThread::NativeExecutionParameters;
 
 static_assert(offsetof(NativeExecutionParameters, native_context) == TpidrEl0NativeContext);
@@ -59,6 +98,77 @@ struct WindowsTebStackBounds {
 
 static_assert(offsetof(NT_TIB, StackBase) == 0x08);
 static_assert(offsetof(NT_TIB, StackLimit) == 0x10);
+
+void FlushWindowsNceContextDiag(ArmNce& nce, Kernel::KProcess* process, HaltReason hr,
+                                u64 entry_pc, u64 return_teb_base,
+                                u64 return_teb_limit) {
+    const u64 veh_seq = nce.m_windows_diag_veh_seq.load(std::memory_order_acquire);
+    const u64 break_seq = nce.m_windows_diag_break_seq.load(std::memory_order_acquire);
+    const bool route_changed = veh_seq != nce.m_windows_diag_last_veh_seq ||
+                               break_seq != nce.m_windows_diag_last_break_seq;
+
+    const bool guest_pc_valid =
+        process != nullptr && nce.m_guest_ctx.pc != 0 &&
+        process->GetMemory().IsValidVirtualAddressRange(nce.m_guest_ctx.pc, sizeof(u32));
+    const bool bounded_return_log = nce.m_windows_diag_return_logs < 24;
+
+    if (bounded_return_log || route_changed || !guest_pc_valid) {
+        LOG_INFO(
+            Core_ARM,
+            "NCE_D2_CTX_RETURN entry_pc={:#018x} pc={:#018x} sp={:#018x} lr={:#018x} "
+            "hr={:#018x} guest_pc_valid={} teb_return_base={:#018x} "
+            "teb_return_limit={:#018x} guest_base={:#018x} guest_limit={:#018x} "
+            "host_base={:#018x} host_limit={:#018x} veh_seq={} veh_route={:#x} "
+            "veh_pc={:#018x} veh_sp={:#018x} veh_lr={:#018x} veh_aux={:#018x} "
+            "break_seq={} break_route={:#x} break_pc={:#018x} break_sp={:#018x} "
+            "break_lr={:#018x} break_aux={:#018x}",
+            entry_pc, nce.m_guest_ctx.pc, nce.m_guest_ctx.sp,
+            nce.m_guest_ctx.cpu_registers[30], static_cast<u64>(hr), guest_pc_valid,
+            return_teb_base, return_teb_limit, nce.m_guest_ctx.windows_guest_stack_base,
+            nce.m_guest_ctx.windows_guest_stack_limit, nce.m_guest_ctx.windows_host_stack_base,
+            nce.m_guest_ctx.windows_host_stack_limit, veh_seq,
+            nce.m_windows_diag_veh_route.load(std::memory_order_relaxed),
+            nce.m_windows_diag_veh_pc.load(std::memory_order_relaxed),
+            nce.m_windows_diag_veh_sp.load(std::memory_order_relaxed),
+            nce.m_windows_diag_veh_lr.load(std::memory_order_relaxed),
+            nce.m_windows_diag_veh_aux.load(std::memory_order_relaxed), break_seq,
+            nce.m_windows_diag_break_route.load(std::memory_order_relaxed),
+            nce.m_windows_diag_break_pc.load(std::memory_order_relaxed),
+            nce.m_windows_diag_break_sp.load(std::memory_order_relaxed),
+            nce.m_windows_diag_break_lr.load(std::memory_order_relaxed),
+            nce.m_windows_diag_break_aux.load(std::memory_order_relaxed));
+
+        if (bounded_return_log) {
+            ++nce.m_windows_diag_return_logs;
+        }
+    }
+
+    if (!guest_pc_valid && !nce.m_windows_diag_invalid_pc_logged) {
+        LOG_ERROR(
+            Core_ARM,
+            "NCE_D2_CTX_INVALID_GUEST_PC pc={:#018x} sp={:#018x} lr={:#018x} "
+            "hr={:#018x} entry_pc={:#018x} veh_seq={} veh_route={:#x} "
+            "veh_pc={:#018x} veh_sp={:#018x} veh_lr={:#018x} veh_aux={:#018x} "
+            "break_seq={} break_route={:#x} break_pc={:#018x} break_sp={:#018x} "
+            "break_lr={:#018x} break_aux={:#018x}",
+            nce.m_guest_ctx.pc, nce.m_guest_ctx.sp, nce.m_guest_ctx.cpu_registers[30],
+            static_cast<u64>(hr), entry_pc, veh_seq,
+            nce.m_windows_diag_veh_route.load(std::memory_order_relaxed),
+            nce.m_windows_diag_veh_pc.load(std::memory_order_relaxed),
+            nce.m_windows_diag_veh_sp.load(std::memory_order_relaxed),
+            nce.m_windows_diag_veh_lr.load(std::memory_order_relaxed),
+            nce.m_windows_diag_veh_aux.load(std::memory_order_relaxed), break_seq,
+            nce.m_windows_diag_break_route.load(std::memory_order_relaxed),
+            nce.m_windows_diag_break_pc.load(std::memory_order_relaxed),
+            nce.m_windows_diag_break_sp.load(std::memory_order_relaxed),
+            nce.m_windows_diag_break_lr.load(std::memory_order_relaxed),
+            nce.m_windows_diag_break_aux.load(std::memory_order_relaxed));
+        nce.m_windows_diag_invalid_pc_logged = true;
+    }
+
+    nce.m_windows_diag_last_veh_seq = veh_seq;
+    nce.m_windows_diag_last_break_seq = break_seq;
+}
 
 [[nodiscard]] bool InstallGuestTebStackBounds(GuestContext& guest,
                                               WindowsTebStackBounds& bounds) noexcept {
@@ -270,6 +380,7 @@ bool WindowsBreakTransform(ARM64_NT_CONTEXT& context, void* opaque) noexcept {
     // SignalInterrupt retains the NativeExecutionParameters lock and retries after the target has
     // resumed far enough to own a guest stack.
     if (state->nce->m_windows_break->IsHostStackPointer(context.Sp)) {
+        PublishWindowsNceBreakDiag(*state->nce, WindowsNceDiagRoute::BreakHostStack, context, 0);
         state->host_window = true;
         return false;
     }
@@ -279,6 +390,7 @@ bool WindowsBreakTransform(ARM64_NT_CONTEXT& context, void* opaque) noexcept {
     auto* const process = thread != nullptr ? thread->GetOwnerProcess() : nullptr;
     if (process != nullptr && NCE::WindowsPatchCodeMetadata::Contains(
                                   context.Pc, process->GetPostHandlers())) {
+        PublishWindowsNceBreakDiag(*state->nce, WindowsNceDiagRoute::BreakPatchWindow, context, 0);
         state->patch_window = true;
         return false;
     }
@@ -286,6 +398,7 @@ bool WindowsBreakTransform(ARM64_NT_CONTEXT& context, void* opaque) noexcept {
     state->patch_window = false;
     auto& guest = state->nce->m_guest_ctx;
     const auto reason = guest.esr_el1.exchange(0, std::memory_order_acq_rel);
+    PublishWindowsNceBreakDiag(*state->nce, WindowsNceDiagRoute::BreakRedirect, context, reason);
     NCE::WindowsNceTransition::RedirectToHost(context, guest, true, reason);
     state->transformed = true;
     return true;
@@ -308,6 +421,8 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
     // The Windows transition and arbitrary-PC restore helpers execute on the original host stack.
     // Exceptions there belong to Windows/host code and must remain chainable.
     if (nce->m_windows_break != nullptr && nce->m_windows_break->IsHostStackPointer(context.Sp)) {
+        PublishWindowsNceVehDiag(*nce, WindowsNceDiagRoute::VehHostStack, context,
+                                 exception->ExceptionRecord->ExceptionCode);
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -321,6 +436,8 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
     if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT &&
         NCE::WindowsX18FallbackTrap::FindOriginalInstruction(
             context.Pc, process->GetPostHandlers()).has_value()) {
+        PublishWindowsNceVehDiag(*nce, WindowsNceDiagRoute::VehX18Trap, context,
+                                 exception->ExceptionRecord->ExceptionCode);
         params->lock.store(SpinLockLocked, std::memory_order_release);
         const bool redirected = NCE::WindowsX18FallbackTrap::TryRedirect(
             exception, *guest, process->GetPostHandlers());
@@ -335,6 +452,8 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
     if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {
         const auto fault_address = reinterpret_cast<u64>(
             NCE::WindowsExceptionContext::GetFaultAddress(*exception->ExceptionRecord));
+        PublishWindowsNceVehDiag(*nce, WindowsNceDiagRoute::VehAccessViolation, context,
+                                 fault_address);
         nce->m_windows_pending_nce_fault = true;
         nce->m_windows_pending_nce_fault_address = fault_address;
         nce->m_windows_pending_nce_fault_page = fault_address & ~Memory::YUZU_PAGEMASK;
@@ -506,6 +625,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             break;
         }
 
+        const u64 diag_entry_pc = m_guest_ctx.pc;
         if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
             hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
                 &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
@@ -513,8 +633,16 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuestContext(&m_guest_ctx));
         }
 
+        const auto* const diag_return_tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+        const u64 diag_return_teb_base =
+            reinterpret_cast<u64>(diag_return_tib->StackBase);
+        const u64 diag_return_teb_limit =
+            reinterpret_cast<u64>(diag_return_tib->StackLimit);
+
         RestoreHostTebStackBounds(teb_stack_bounds);
         NCE::CurrentNceContext::Clear();
+        FlushWindowsNceContextDiag(*this, process, hr, diag_entry_pc,
+                                   diag_return_teb_base, diag_return_teb_limit);
 
         if (m_windows_pending_nce_fault) {
             static thread_local bool v74_return_logged = false;
