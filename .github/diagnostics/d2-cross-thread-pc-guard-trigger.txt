@@ -1,0 +1,20 @@
+D2 cross-thread PC ownership guard trigger
+
+Base:
+d56f2177ea94419b8cda96f644f3e4f4ec958b9e
+
+Physical proof from diagnostic ad4690db:
+- cross-thread break route 0x203 captured PC=0x00007ff7b989a9d4
+- same captured SP=0x00000020934f9810 remained guest-stack-owned
+- LR=0x00007ff7b94f6094 was also host code
+- existing logic therefore misclassified a host-code / guest-SP transition window as guest state
+- SaveGuestState copied the host PC/LR into GuestContext
+- immediate NCE_D2_CTX_INVALID_GUEST_PC followed
+
+Production candidate:
+- preserve patch-window handling first
+- require suspended PC to be a valid guest process address before RedirectToHost(save_guest_state=true)
+- invalid/non-guest PC is treated as host_window and retried by the existing SignalInterrupt loop
+- no GuestContext/ASM/TEB/V74/HostMemory semantic changes
+
+Closed regressions are not rerun.
