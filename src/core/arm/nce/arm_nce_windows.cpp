@@ -343,6 +343,27 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT) {
+        const bool guest_mapped =
+            process->GetMemory().IsValidVirtualAddressRange(context.Pc, sizeof(u32));
+
+        nce->m_windows_diag_unmatched_break_pc.store(context.Pc, std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_sp.store(context.Sp, std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_lr.store(context.X[30], std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_guest_mapped.store(
+            guest_mapped ? 1ULL : 0ULL, std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_seq.fetch_add(1, std::memory_order_release);
+
+        // Diagnostic-only: preserve GuestContext exactly as it was before the unmatched
+        // breakpoint. Return through the already-proven host bridge solely to expose the raw
+        // Windows CONTEXT from a safe host-side logging seam.
+        params->lock.store(SpinLockLocked, std::memory_order_release);
+        NCE::WindowsNceTransition::RedirectToHost(
+            context, *guest, false, static_cast<u64>(HaltReason::PrefetchAbort));
+        context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
+        NCE::WindowsNceTransition::ContinueContext(context);
+    }
+
     if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {
         const auto fault_address = reinterpret_cast<u64>(
             NCE::WindowsExceptionContext::GetFaultAddress(*exception->ExceptionRecord));
@@ -526,6 +547,22 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
         RestoreHostTebStackBounds(teb_stack_bounds);
         NCE::CurrentNceContext::Clear();
+
+        const u64 unmatched_break_seq =
+            m_windows_diag_unmatched_break_seq.exchange(0, std::memory_order_acq_rel);
+        if (unmatched_break_seq != 0) {
+            LOG_ERROR(
+                Core_ARM,
+                "NCE_D2_UNMATCHED_BREAKPOINT seq={} pc={:#018x} sp={:#018x} lr={:#018x} "
+                "guest_mapped={}",
+                unmatched_break_seq,
+                m_windows_diag_unmatched_break_pc.load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_sp.load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_lr.load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_guest_mapped.load(std::memory_order_relaxed) != 0);
+            hr = HaltReason::PrefetchAbort;
+            break;
+        }
 
         if (m_windows_pending_nce_fault) {
             static thread_local bool v74_return_logged = false;
