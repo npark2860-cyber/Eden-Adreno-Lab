@@ -804,10 +804,20 @@ void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id,
     cg.ADD(X1, X1, offsetof(GuestContext, host_ctx));
 
 #if defined(_WIN32)
-    // WindowsNceEnterGuest saved the host ABI continuation without repurposing physical TPIDR_EL0.
-    // Restore only the saved host SP/nonvolatile state and return to its C++ caller. Physical x18
-    // and physical TPIDR_EL0 stay platform-owned throughout.
+    // D2: x1 points at GuestContext::host_ctx. Restore the complete host TEB interval before the
+    // host SP becomes active. The pair store and MOV SP form a leaf transition: no call/probe or
+    // stack access is permitted between them.
+    static_assert(offsetof(GuestContext, windows_host_stack_base) >
+                  offsetof(GuestContext, host_ctx));
+    constexpr size_t HostStackBaseFromHostContext =
+        offsetof(GuestContext, windows_host_stack_base) - offsetof(GuestContext, host_ctx);
+    constexpr size_t HostStackLimitFromHostContext =
+        offsetof(GuestContext, windows_host_stack_limit) - offsetof(GuestContext, host_ctx);
+    constexpr size_t WindowsTebStackBaseOffset = 0x08;
+    cg.LDR(X3, X1, HostStackBaseFromHostContext);
+    cg.LDR(X4, X1, HostStackLimitFromHostContext);
     cg.LDR(X2, X1, offsetof(HostContext, host_sp));
+    cg.STP(X3, X4, X18, WindowsTebStackBaseOffset);
     cg.MOV(SP, X2);
 #else
     // Reload host TPIDR_EL0 and SP on the Linux/Android path.
