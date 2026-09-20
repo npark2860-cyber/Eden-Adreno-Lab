@@ -6,6 +6,8 @@
         EXPORT  WindowsNceEnterGuestContext
         EXPORT  WindowsNceGuestStackBridge
         EXPORT  WindowsNceHostStackBridge
+        EXPORT  WindowsNceV74HostStackBridge
+        EXPORT  WindowsNceV74HostReturnProbe
         EXTERN  WindowsNceRestoreGuestContext
         EXTERN  WindowsNceContinueGuestContext
 
@@ -143,6 +145,54 @@ WindowsNceHostStackBridge PROC
         str     x2, [x18, #16]
         mov     sp, x3
         ret     x16
+        ENDP
+
+; V74 diagnostic-only AV return bridge. Before reproducing the production bridge operations,
+; preserve the exact consumer-side scratch values in nonvolatile registers so a natural WER dump
+; can compare them with the writer-side validity marker in x25. x26 points at HostContext and is
+; used only by the success trampoline below to restore the original host nonvolatile state.
+;
+; WER mapping if the bridge fails before the success trampoline:
+;   x19 <- bridge-entry x1   (host StackBase)
+;   x20 <- bridge-entry x2   (host StackLimit)
+;   x21 <- bridge-entry x3   (saved host SP)
+;   x22 <- bridge-entry x16  (V74 success trampoline)
+;   x23 <- bridge-entry x0   (return HaltReason)
+;   x24 <- bridge-entry x18  (Windows TEB)
+;   x25 = writer-side V74 provenance magic + flags
+;   x26 = HostContext pointer
+;   x27 <- bridge-entry SP
+;   x28 <- bridge-entry LR/x30 (original saved host return PC)
+WindowsNceV74HostStackBridge PROC
+        mov     x19, x1
+        mov     x20, x2
+        mov     x21, x3
+        mov     x22, x16
+        mov     x23, x0
+        mov     x24, x18
+        mov     x27, sp
+        mov     x28, x30
+
+        str     x1, [x18, #8]
+        str     x2, [x18, #16]
+        mov     sp, x3
+        ret     x16
+        ENDP
+
+; Reached only when all bridge inputs were sufficiently intact to publish the host TEB bounds,
+; switch to the saved host stack and branch through x16. Restore the host nonvolatile registers
+; that the V74 bridge temporarily used for provenance, then resume the original saved host PC.
+WindowsNceV74HostReturnProbe PROC
+        mov     x9, x26
+        ldr     x16, [x9, #(HostContextRegs + 0x58)]
+
+        ldp     x19, x20, [x9, #(HostContextRegs + 0x00)]
+        ldp     x21, x22, [x9, #(HostContextRegs + 0x10)]
+        ldp     x23, x24, [x9, #(HostContextRegs + 0x20)]
+        ldp     x25, x26, [x9, #(HostContextRegs + 0x30)]
+        ldp     x27, x28, [x9, #(HostContextRegs + 0x40)]
+        ldp     x29, x30, [x9, #(HostContextRegs + 0x50)]
+        br      x16
         ENDP
 
         END
