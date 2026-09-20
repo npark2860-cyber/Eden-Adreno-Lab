@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -100,6 +101,15 @@ public:
     bool m_windows_pending_nce_fault{};
     u64 m_windows_pending_nce_fault_address{};
     u64 m_windows_pending_nce_fault_page{};
+
+    // Diagnostic-only capture for an EXCEPTION_BREAKPOINT that was not recognized as
+    // a process-owned x18 fallback trap. The VEH only publishes raw values here; host-side
+    // RunThread logging happens after the stack/context transition has completed.
+    std::atomic<u64> m_windows_diag_unmatched_break_seq{};
+    std::atomic<u64> m_windows_diag_unmatched_break_pc{};
+    std::atomic<u64> m_windows_diag_unmatched_break_sp{};
+    std::atomic<u64> m_windows_diag_unmatched_break_lr{};
+    std::atomic<u64> m_windows_diag_unmatched_break_guest_mapped{};
 #else
     pid_t m_thread_id{-1};
 #endif
