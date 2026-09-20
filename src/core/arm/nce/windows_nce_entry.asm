@@ -16,9 +16,13 @@ GuestContextSp          EQU 0x0F8
 GuestContextFpcr        EQU 0x108
 GuestContextFpsr        EQU 0x10C
 GuestContextVregs       EQU 0x110
-GuestContextPstate      EQU 0x310
-GuestContextHostContext EQU 0x320
-HostContextRegs         EQU 0x000
+GuestContextPstate         EQU 0x310
+GuestContextHostContext    EQU 0x320
+GuestContextWinGuestBase   EQU 0x440
+GuestContextWinGuestLimit  EQU 0x448
+WindowsTebStackBase        EQU 0x08
+WindowsTebStackLimit       EQU 0x10
+HostContextRegs            EQU 0x000
 HostContextVregs        EQU 0x060
 HostContextSp           EQU 0x0E0
 
@@ -88,7 +92,7 @@ WindowsNceEnterGuest PROC
         ldp     x8,  x9,  [x17, #0x040]
         ldp     x10, x11, [x17, #0x050]
         ldp     x12, x13, [x17, #0x060]
-        ldp     x14, x15, [x17, #0x070]
+        ; x14/x15 are restored after the TEB handoff; they are temporary transition scratch below.
         ldp     x19, x20, [x17, #0x098]
         ldp     x21, x22, [x17, #0x0A8]
         ldp     x23, x24, [x17, #0x0B8]
@@ -96,7 +100,14 @@ WindowsNceEnterGuest PROC
         ldp     x27, x28, [x17, #0x0D8]
         ldr     x29,      [x17, #0x0E8]
 
+        ; D2: publish a complete guest TEB interval while host SP is still active, then switch SP
+        ; immediately. No call/probe/stack access may occur between the TEB pair store and MOV SP.
+        ldp     x14, x15, [x17, #GuestContextWinGuestBase]
+        stp     x14, x15, [x18, #WindowsTebStackBase]
         mov     sp, x30
+
+        ; Restore the architectural guest values that were borrowed as transition scratch.
+        ldp     x14, x15, [x17, #0x070]
         ldr     x30, [x17, #0x0F0]
 
         ; entry_trampoline restores guest x16/x17 and uses a direct relative branch to guest PC.
