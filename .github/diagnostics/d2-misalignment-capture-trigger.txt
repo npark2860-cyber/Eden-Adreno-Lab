@@ -1,0 +1,25 @@
+D2 instruction misalignment capture trigger
+
+Base diagnostic HEAD:
+627cfbbf133b9dac9924855baa141c3fb9953514
+
+Observed physical result:
+- exact diagnostic build HEAD 627cfbbf
+- NCE_D2_CTX_INVALID_GUEST_PC: 0
+- recorded VEH route: 0x102 x18 trap only
+- no cross-thread break route
+- no V74/NVDRV terminal sequence
+- watchdog exit 0xC00000AA (STATUS_INSTRUCTION_MISALIGNMENT)
+
+Purpose:
+- intercept only 0xC00000AA diagnostically
+- save raw PC/SP/LR as route 0x104
+- return through existing safe host-return seam as PrefetchAbort
+- preserve all production semantics outside this single exception class
+
+Preserve:
+- D1 CLOSED
+- D2 CI PASS
+- no V76 progression
+- no closed regression reruns
+- no duplicate build
