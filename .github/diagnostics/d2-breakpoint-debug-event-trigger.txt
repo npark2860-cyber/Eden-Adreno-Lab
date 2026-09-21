@@ -46,3 +46,12 @@ Low-perturbation observer revision:
 - non-BRK or unreadable breakpoint events retain full pre-VEH capture
 - emit one end-of-run NCE_D2_BREAKPOINT_FILTER_SUMMARY
 - triggered after two consecutive exact-artifact target NO-HIT runs under the full-capture observer
+
+
+PAC caller VQ/frame-chain diagnostic:
+- source commit 3c10985d7254b46f652ecbee5e78859e2e734237
+- triggered after low-perturbation physical run naturally reproduced C0000409 / FAST_FAIL_FATAL_APP_EXIT
+- capture PAC-stripped frame LR VirtualQueryEx region metadata
+- capture instructions at canonical frame LR
+- capture the next frame record and resolve it with the same PAC-aware + VQ path
+- NCE/runtime remains frozen at 2f0d41b
