@@ -103,16 +103,35 @@ jobs:
           update: false
           cache: false
 
-      - name: Install CLANGARM64 toolchain from stable mirrors
+      - name: Install CLANGARM64 toolchain from pinned direct mirrors
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          for mirror_list in /etc/pacman.d/mirrorlist*; do
-            if [ -f "$mirror_list" ]; then
-              sed -i '/ftp2\.osuosl\.org/d' "$mirror_list"
-            fi
-          done
 
+          # Do not use mirror.msys2.org (redirector) or ftp2.osuosl.org here.
+          # Both repeatedly hit pacman's low-speed timeout on the hosted ARM64 runner.
+          cat > /etc/pacman.d/mirrorlist.mingw <<'EOF'
+          Server = https://repo.msys2.org/mingw/$repo/
+          Server = https://mirror.yandex.ru/mirrors/msys2/mingw/$repo/
+          Server = https://mirror.accum.se/mirror/msys2.org/mingw/$repo/
+          Server = https://ftp.nluug.nl/pub/os/windows/msys2/builds/mingw/$repo/
+          EOF
+
+          cat > /etc/pacman.d/mirrorlist.msys <<'EOF'
+          Server = https://repo.msys2.org/msys/$arch/
+          Server = https://mirror.yandex.ru/mirrors/msys2/msys/$arch/
+          Server = https://mirror.accum.se/mirror/msys2.org/msys/$arch/
+          Server = https://ftp.nluug.nl/pub/os/windows/msys2/builds/msys/$arch/
+          EOF
+
+          # Large clang/llvm payloads can briefly fall below libalpm's default
+          # low-speed threshold on hosted ARM64. Keep overall job timeout as the
+          # hard bound instead of aborting after ten slow seconds.
+          if ! grep -Eq '^[[:space:]]*DisableDownloadTimeout([[:space:]]|$)' /etc/pacman.conf; then
+            printf '\nDisableDownloadTimeout\n' >> /etc/pacman.conf
+          fi
+
+          pacman --noconfirm -Syy
           pacman --noconfirm -S --needed --overwrite '*' \
             git make autoconf libtool automake-wrapper patch jq pactoys ninja
 
