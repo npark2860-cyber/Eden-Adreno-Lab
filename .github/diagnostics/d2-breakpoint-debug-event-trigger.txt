@@ -1,0 +1,39 @@
+D2 breakpoint debug-event provenance diagnostic trigger
+
+Base:
+2f0d41b173b4f9ae0d4e0b96cb61402c9ea5cd0e
+
+Exact 2f0d41b physical result:
+- HEAD-2f0d41b173-HEAD
+- PAC-caller target fast-fail did NOT occur before user ForceStop
+- V74 once
+- unmatched breakpoint once
+- breakpoint PC/ExceptionAddress=0x00007ff6dca5b814
+- module=eden.exe
+- RVA=0x10cb814
+- instruction at PC=0xf9000641 (STR X1,[X18,#8])
+- PC-4=0x17fffe28 (branch, not BRK)
+- BCR0..7/BVR0..7 all zero
+- breakpoint record flags=0 params=1 info0=0
+- guest_mapped=false
+- LogBacktrace followed at guest PC 0x00000010832791E8
+- user ForceStop at 51.64 s
+- shutdown HostMemory assert is secondary
+- watchdog has no NCE_D2_FASTFAIL_DEBUG event for this run and no natural parent exit line
+
+Classification:
+- invalid for PAC-caller target
+- valid breakpoint-family sample
+- hardware execute-breakpoint hypothesis rejected for this occurrence because all BCR/BVR slots are zero
+
+Purpose:
+- preserve all NCE/runtime code exactly at 2f0d41b
+- extend only external debugger observer
+- log every EXCEPTION_BREAKPOINT before VEH dispatch
+- record sequence and whether the event is the one consumed as debugger attach breakpoint
+- capture ExceptionRecord + PC/SP/LR/X18 + PC/PC-4/ExceptionAddress instructions
+- resolve PC/LR/ExceptionAddress modules/RVAs
+- capture BCR/BVR again externally
+- determine whether Windows debugger reports the HostStackBridge non-BRK address before the in-process VEH sees it
+
+No production semantic change.
