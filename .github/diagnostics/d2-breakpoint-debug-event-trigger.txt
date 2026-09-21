@@ -64,3 +64,13 @@ CI verification repair:
 - replace 24 printf|grep -Fq pipelines with grep -Fq <<<"$SRC"
 - observer source unchanged at 3c10985d7254b46f652ecbee5e78859e2e734237
 - one rebuild trigger only
+
+
+Terminal AV diagnostic:
+- physical e0a485572cdb879bc1e2ed12c2356006a67033b2 run exited naturally with 0xC0000005
+- no fast-fail marker in the new run
+- source commit 1a8d7dab7b31d91122813fe61f6fffd6da6faadf
+- capture only second-chance EXCEPTION_ACCESS_VIOLATION
+- first-chance guest AVs remain untouched
+- capture PC/SP/LR/FP/x18, TEB StackBase/StackLimit, access type/fault VA, nearby instruction, frame LR, and module provenance
+- NCE/runtime remains frozen at 2f0d41b
