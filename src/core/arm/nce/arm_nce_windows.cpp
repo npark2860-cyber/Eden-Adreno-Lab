@@ -35,6 +35,9 @@
 
 namespace Core {
 
+extern "C" void WindowsNceEnterGuestContext() noexcept;
+extern "C" void WindowsNceGuestStackBridge() noexcept;
+extern "C" void WindowsNceHostStackBridge() noexcept;
 extern "C" void WindowsNceV74HostStackBridge() noexcept;
 extern "C" void WindowsNceV74HostReturnProbe() noexcept;
 
@@ -350,6 +353,9 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         nce->m_windows_diag_unmatched_break_pc.store(context.Pc, std::memory_order_relaxed);
         nce->m_windows_diag_unmatched_break_sp.store(context.Sp, std::memory_order_relaxed);
         nce->m_windows_diag_unmatched_break_lr.store(context.X[30], std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_exception_address.store(
+            reinterpret_cast<u64>(exception->ExceptionRecord->ExceptionAddress),
+            std::memory_order_relaxed);
         nce->m_windows_diag_unmatched_break_guest_mapped.store(
             guest_mapped ? 1ULL : 0ULL, std::memory_order_relaxed);
         nce->m_windows_diag_unmatched_break_seq.fetch_add(1, std::memory_order_release);
@@ -573,11 +579,28 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
                 module_path_len = GetModuleFileNameA(module, module_path, MAX_PATH);
             }
 
-            u32 instruction{};
-            SIZE_T instruction_bytes{};
-            const BOOL instruction_ok =
-                ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(break_pc),
-                                  &instruction, sizeof(instruction), &instruction_bytes);
+            const u64 exception_address =
+                m_windows_diag_unmatched_break_exception_address.load(std::memory_order_relaxed);
+
+            auto read_instruction = [](u64 address, u32& instruction) {
+                SIZE_T bytes{};
+                const BOOL ok =
+                    ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(address),
+                                      &instruction, sizeof(instruction), &bytes);
+                return ok != FALSE && bytes == sizeof(instruction);
+            };
+
+            u32 instruction_at_pc{};
+            u32 instruction_at_pc_minus4{};
+            u32 instruction_at_exception{};
+            const bool instruction_at_pc_ok =
+                read_instruction(break_pc, instruction_at_pc);
+            const bool instruction_at_pc_minus4_ok =
+                break_pc >= sizeof(u32) &&
+                read_instruction(break_pc - sizeof(u32), instruction_at_pc_minus4);
+            const bool instruction_at_exception_ok =
+                exception_address != 0 &&
+                read_instruction(exception_address, instruction_at_exception);
 
             const u64 module_base = reinterpret_cast<u64>(module);
             const u64 allocation_base =
@@ -588,12 +611,22 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             LOG_ERROR(
                 Core_ARM,
                 "NCE_D2_UNMATCHED_BREAKPOINT seq={} pc={:#018x} sp={:#018x} lr={:#018x} "
-                "guest_mapped={} module={} module_base={:#018x} rva={:#x} "
-                "instruction={:#010x} instruction_ok={} allocation_base={:#018x} "
-                "protect={:#x} type={:#x}",
+                "guest_mapped={} exception_address={:#018x} module={} module_base={:#018x} "
+                "rva={:#x} instruction_pc={:#010x} instruction_pc_ok={} "
+                "instruction_pc_minus4={:#010x} instruction_pc_minus4_ok={} "
+                "instruction_exception={:#010x} instruction_exception_ok={} "
+                "sym_enter_guest_context={:#018x} sym_guest_stack_bridge={:#018x} "
+                "sym_host_stack_bridge={:#018x} sym_v74_host_stack_bridge={:#018x} "
+                "allocation_base={:#018x} protect={:#x} type={:#x}",
                 unmatched_break_seq, break_pc, break_sp, break_lr, guest_mapped,
-                module_path_len != 0 ? module_path : "<unknown>", module_base, module_rva,
-                instruction, instruction_ok != FALSE && instruction_bytes == sizeof(instruction),
+                exception_address, module_path_len != 0 ? module_path : "<unknown>",
+                module_base, module_rva, instruction_at_pc, instruction_at_pc_ok,
+                instruction_at_pc_minus4, instruction_at_pc_minus4_ok,
+                instruction_at_exception, instruction_at_exception_ok,
+                reinterpret_cast<u64>(&WindowsNceEnterGuestContext),
+                reinterpret_cast<u64>(&WindowsNceGuestStackBridge),
+                reinterpret_cast<u64>(&WindowsNceHostStackBridge),
+                reinterpret_cast<u64>(&WindowsNceV74HostStackBridge),
                 allocation_base, queried != 0 ? static_cast<u64>(mbi.Protect) : 0,
                 queried != 0 ? static_cast<u64>(mbi.Type) : 0);
             hr = HaltReason::PrefetchAbort;
