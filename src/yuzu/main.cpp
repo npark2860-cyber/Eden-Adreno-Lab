@@ -263,6 +263,147 @@ void WriteWindowsNceD2FastFailLine(
     CloseHandle(file);
 }
 
+
+void WriteWindowsNceD2BreakpointDebugLine(
+    DWORD parent_pid, DWORD child_pid, DWORD thread_id, u64 sequence, bool consumed_as_attach,
+    const EXCEPTION_DEBUG_INFO& info, const CONTEXT* context, HANDLE read_handle,
+    DWORD context_error) noexcept {
+    HANDLE file = OpenWindowsNceV63Log();
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    const auto& record = info.ExceptionRecord;
+    const u64 info0 =
+        record.NumberParameters > 0 ? static_cast<u64>(record.ExceptionInformation[0]) : 0;
+    const u64 info1 =
+        record.NumberParameters > 1 ? static_cast<u64>(record.ExceptionInformation[1]) : 0;
+
+    const u64 pc = context != nullptr ? static_cast<u64>(context->Pc) : 0;
+    const u64 sp = context != nullptr ? static_cast<u64>(context->Sp) : 0;
+    const u64 lr = context != nullptr ? static_cast<u64>(context->X[30]) : 0;
+    const u64 x18 = context != nullptr ? static_cast<u64>(context->X[18]) : 0;
+    const u64 context_flags =
+        context != nullptr ? static_cast<u64>(context->ContextFlags) : 0;
+    const u64 cpsr = context != nullptr ? static_cast<u64>(context->Cpsr) : 0;
+    const u64 exception_address =
+        reinterpret_cast<u64>(record.ExceptionAddress);
+
+    u32 instruction_minus4 = 0;
+    u32 instruction = 0;
+    u32 instruction_exception = 0;
+    bool instruction_minus4_ok = false;
+    bool instruction_ok = false;
+    bool instruction_exception_ok = false;
+    DWORD memory_error = 0;
+
+    if (read_handle != nullptr && context != nullptr) {
+        auto read_instruction = [&](u64 address, u32& value) {
+            SIZE_T bytes{};
+            if (address == 0) {
+                return false;
+            }
+            if (ReadProcessMemory(
+                    read_handle,
+                    reinterpret_cast<const void*>(static_cast<std::uintptr_t>(address)),
+                    &value, sizeof(value), &bytes) != FALSE &&
+                bytes == sizeof(value)) {
+                return true;
+            }
+            if (memory_error == 0) {
+                memory_error = GetLastError();
+            }
+            return false;
+        };
+
+        instruction_ok = read_instruction(pc, instruction);
+        instruction_minus4_ok =
+            pc >= sizeof(u32) && read_instruction(pc - sizeof(u32), instruction_minus4);
+        instruction_exception_ok =
+            read_instruction(exception_address, instruction_exception);
+    }
+
+    const auto pc_module = ResolveD2FastFailModule(parent_pid, pc);
+    const auto lr_module = ResolveD2FastFailModule(parent_pid, lr);
+    const auto exception_module = ResolveD2FastFailModule(parent_pid, exception_address);
+
+    const u64 pc_rva =
+        pc_module.base != 0 && pc_module.resolved_address >= pc_module.base
+            ? pc_module.resolved_address - pc_module.base
+            : 0;
+    const u64 lr_rva =
+        lr_module.base != 0 && lr_module.resolved_address >= lr_module.base
+            ? lr_module.resolved_address - lr_module.base
+            : 0;
+    const u64 exception_rva =
+        exception_module.base != 0 && exception_module.resolved_address >= exception_module.base
+            ? exception_module.resolved_address - exception_module.base
+            : 0;
+
+    char line[4096]{};
+    const int line_length = std::snprintf(
+        line, sizeof(line),
+        "NCE_D2_BREAKPOINT_DEBUG_EVENT seq=%llu consumed_as_attach=%u "
+        "parent_pid=%lu child_pid=%lu thread_id=%lu first_chance=%lu "
+        "flags=0x%08lX address=0x%016llX params=%lu info0=0x%016llX info1=0x%016llX "
+        "pc=0x%016llX sp=0x%016llX lr=0x%016llX x18=0x%016llX "
+        "instruction_minus4=0x%08X instruction_minus4_ok=%u "
+        "instruction=0x%08X instruction_ok=%u "
+        "instruction_exception=0x%08X instruction_exception_ok=%u "
+        "pc_module=%s pc_module_base=0x%016llX pc_rva=0x%llX "
+        "lr_module=%s lr_module_base=0x%016llX lr_rva=0x%llX "
+        "exception_module=%s exception_module_base=0x%016llX exception_rva=0x%llX "
+        "context_flags=0x%016llX cpsr=0x%016llX "
+        "bcr0=0x%08llX bvr0=0x%016llX bcr1=0x%08llX bvr1=0x%016llX "
+        "bcr2=0x%08llX bvr2=0x%016llX bcr3=0x%08llX bvr3=0x%016llX "
+        "bcr4=0x%08llX bvr4=0x%016llX bcr5=0x%08llX bvr5=0x%016llX "
+        "bcr6=0x%08llX bvr6=0x%016llX bcr7=0x%08llX bvr7=0x%016llX "
+        "context_error=%lu memory_error=%lu base=2f0d41b173b4f9ae0d4e0b96cb61402c9ea5cd0e\r\n",
+        static_cast<unsigned long long>(sequence), consumed_as_attach ? 1u : 0u,
+        parent_pid, child_pid, thread_id, info.dwFirstChance, record.ExceptionFlags,
+        static_cast<unsigned long long>(exception_address), record.NumberParameters,
+        static_cast<unsigned long long>(info0), static_cast<unsigned long long>(info1),
+        static_cast<unsigned long long>(pc), static_cast<unsigned long long>(sp),
+        static_cast<unsigned long long>(lr), static_cast<unsigned long long>(x18),
+        instruction_minus4, instruction_minus4_ok ? 1u : 0u, instruction,
+        instruction_ok ? 1u : 0u, instruction_exception,
+        instruction_exception_ok ? 1u : 0u, pc_module.name,
+        static_cast<unsigned long long>(pc_module.base),
+        static_cast<unsigned long long>(pc_rva), lr_module.name,
+        static_cast<unsigned long long>(lr_module.base),
+        static_cast<unsigned long long>(lr_rva), exception_module.name,
+        static_cast<unsigned long long>(exception_module.base),
+        static_cast<unsigned long long>(exception_rva),
+        static_cast<unsigned long long>(context_flags),
+        static_cast<unsigned long long>(cpsr),
+        context != nullptr ? static_cast<unsigned long long>(context->Bcr[0]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bvr[0]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bcr[1]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bvr[1]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bcr[2]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bvr[2]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bcr[3]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bvr[3]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bcr[4]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bvr[4]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bcr[5]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bvr[5]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bcr[6]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bvr[6]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bcr[7]) : 0ULL,
+        context != nullptr ? static_cast<unsigned long long>(context->Bvr[7]) : 0ULL,
+        context_error, memory_error);
+
+    if (line_length > 0) {
+        DWORD written{};
+        const DWORD size = static_cast<DWORD>(
+            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
+        (void)WriteFile(file, line, size, &written, nullptr);
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
 int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
     if (argc != 4) {
         return 201;
@@ -308,6 +449,7 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
     HANDLE read_handle =
         OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, parent_pid);
     bool consumed_attach_breakpoint = false;
+    u64 breakpoint_sequence = 0;
     bool saw_exit = false;
     DWORD debug_exit_code = 0xFFFFFFFFul;
 
@@ -325,7 +467,38 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
             const auto& exception = event.u.Exception;
             const auto& record = exception.ExceptionRecord;
 
-            if (record.ExceptionCode == D2FastFailExceptionCode) {
+            if (record.ExceptionCode == EXCEPTION_BREAKPOINT) {
+                CONTEXT context{};
+                context.ContextFlags = CONTEXT_ALL;
+                DWORD context_error = 0;
+                HANDLE thread =
+                    OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
+                               event.dwThreadId);
+                const CONTEXT* context_ptr = nullptr;
+                if (thread != nullptr) {
+                    if (GetThreadContext(thread, &context) != FALSE) {
+                        context_ptr = &context;
+                    } else {
+                        context_error = GetLastError();
+                    }
+                    CloseHandle(thread);
+                } else {
+                    context_error = GetLastError();
+                }
+
+                const bool consume_as_attach = !consumed_attach_breakpoint;
+                ++breakpoint_sequence;
+                WriteWindowsNceD2BreakpointDebugLine(
+                    parent_pid, child_pid, event.dwThreadId, breakpoint_sequence,
+                    consume_as_attach, exception, context_ptr, read_handle, context_error);
+
+                if (consume_as_attach) {
+                    consumed_attach_breakpoint = true;
+                    continue_status = DBG_CONTINUE;
+                } else {
+                    continue_status = DBG_EXCEPTION_NOT_HANDLED;
+                }
+            } else if (record.ExceptionCode == D2FastFailExceptionCode) {
                 CONTEXT context{};
                 context.ContextFlags = CONTEXT_ALL;
 
@@ -431,13 +604,6 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
                     instruction_minus4_ok, instruction_plus4, instruction_plus4_ok, frame_prev,
                     frame_lr, pc_module, lr_module, frame_lr_module, context_error, memory_error);
                 continue_status = DBG_EXCEPTION_NOT_HANDLED;
-            } else if (record.ExceptionCode == EXCEPTION_BREAKPOINT &&
-                       !consumed_attach_breakpoint) {
-                // DebugActiveProcess injects one debugger-owned startup breakpoint. Consume only
-                // that first attach breakpoint; every later breakpoint remains process-owned so
-                // the existing NCE VEH sees exactly the same exception stream as production.
-                consumed_attach_breakpoint = true;
-                continue_status = DBG_CONTINUE;
             } else {
                 continue_status = DBG_EXCEPTION_NOT_HANDLED;
             }
