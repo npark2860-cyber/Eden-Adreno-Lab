@@ -33,3 +33,9 @@ Purpose:
 - determine whether Windows reports post-BRK PC and whether the actual trap is the sentinel brk #1000 immediately preceding a bridge
 
 No production semantic change.
+
+
+Corrected build retry:
+- previous run failed only because arm_nce_windows.cpp referenced WindowsNceEnterGuestContext without the NCE namespace
+- fixed to NCE::WindowsNceEnterGuestContext
+- diagnostic hypothesis/scope unchanged
