@@ -37,3 +37,12 @@ Purpose:
 - determine whether Windows debugger reports the HostStackBridge non-BRK address before the in-process VEH sees it
 
 No production semantic change.
+
+
+Low-perturbation observer revision:
+- source commit 3db049741a73e4d9b063a563eb934e6a187a1f96
+- after attach, known guest BRK instruction 0xD43E0000 is passed through with only a 4-byte ExceptionAddress read
+- no GetThreadContext/module resolution/per-event file flush for known guest BRKs
+- non-BRK or unreadable breakpoint events retain full pre-VEH capture
+- emit one end-of-run NCE_D2_BREAKPOINT_FILTER_SUMMARY
+- triggered after two consecutive exact-artifact target NO-HIT runs under the full-capture observer
