@@ -1,0 +1,6 @@
+D2 fcontext entry x19 diagnostic
+base=d62ce3094d3b9b58210c7841328de161d2a92292
+reason=physical fast-fail frame2 LR resolves to eden.exe RVA 0x134679C = make_fcontext+0x40 return trampoline
+capture=x19 entry pointer + module/RVA/VQ on C0000409 only
+runtime=unchanged from exact d62 validated StackTop artifact
+active_queued_before_trigger=0/0
