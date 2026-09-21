@@ -1,0 +1,157 @@
+name: Build Windows ARM64 NCE D2 host breakpoint provenance diagnostic
+
+on:
+  push:
+    branches:
+      - diag/windows-nce-d2-host-breakpoint-provenance-30af9e1e
+    paths:
+      - .github/diagnostics/d2-host-breakpoint-provenance-trigger.txt
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-windows-nce-d2-host-breakpoint-provenance-30af9e1e
+  cancel-in-progress: false
+
+env:
+  BASE_SHA: 30af9e1ea45bf5aaba35b4a285c04e940725c574
+  CI_REF: afead830f3a444427f9fdfd841218f932465c03a
+  TEST_NAME: d2-host-breakpoint-provenance
+
+jobs:
+  build-package:
+    name: Windows ARM64 NCE D2 host breakpoint provenance
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+
+    steps:
+      - name: Checkout exact diagnostic Git object
+        uses: actions/checkout@v7
+        with:
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          ref: ${{ github.sha }}
+          path: build/validation/${{ github.sha }}/d2-host-breakpoint-provenance/source
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify diagnostic scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          SOURCE="$ROOT/source"
+          PROV="$ROOT/provenance"
+          mkdir -p "$PROV"
+
+          test "$(git -C "$SOURCE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$SOURCE" merge-base --is-ancestor "$BASE_SHA" "$GITHUB_SHA"
+          git -C "$SOURCE" diff --check "$BASE_SHA" "$GITHUB_SHA"
+
+          CHANGED="$(git -C "$SOURCE" diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/arm_nce_windows\.cpp|\.github/workflows/build-windows-arm64-nce-d2-host-breakpoint-provenance-30af9e1e\.yml|\.github/diagnostics/d2-host-breakpoint-provenance-trigger\.txt)$' || true)"
+          test -z "$UNEXPECTED"
+
+          SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/arm_nce_windows.cpp")"
+          printf '%s\n' "$SRC" | grep -Fq 'NCE_D2_UNMATCHED_BREAKPOINT'
+          printf '%s\n' "$SRC" | grep -Fq 'GetModuleHandleExA'
+          printf '%s\n' "$SRC" | grep -Fq 'GetModuleFileNameA'
+          printf '%s\n' "$SRC" | grep -Fq 'ReadProcessMemory'
+          printf '%s\n' "$SRC" | grep -Fq 'module_base='
+          printf '%s\n' "$SRC" | grep -Fq 'instruction='
+          printf '%s\n' "$SRC" | grep -Fq 'context, *guest, false, static_cast<u64>(HaltReason::PrefetchAbort)'
+
+          # Ensure the previous diagnostic semantics and production PC guard are untouched.
+          printf '%s\n' "$SRC" | grep -Fq 'm_windows_diag_unmatched_break_pc.store'
+          printf '%s\n' "$SRC" | grep -Fq '!process->GetMemory().IsValidVirtualAddressRange(context.Pc, sizeof(u32))'
+          printf '%s\n' "$SRC" | grep -Fq 'NCE_V74_AV_PROVENANCE_RETURNED'
+
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp             > "$PROV/D2_HOST_BREAKPOINT_PROVENANCE.diff"
+
+          printf 'BASE_SHA=%s\nDIAG_SHA=%s\nSOURCE_MODE=exact Git object\nHYPOTHESIS=the unmatched host breakpoint can be attributed to a concrete host module and ARM64 instruction\nSCOPE=host-side module/RVA/instruction provenance only; breakpoint VEH behavior unchanged from 30af9e1e\nCLOSED_REGRESSIONS=not rerun\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: ${{ env.CI_REF }}
+          path: build/validation/${{ github.sha }}/d2-host-breakpoint-provenance/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-host-breakpoint-provenance/source
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+
+      - name: Build full Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-host-breakpoint-provenance/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+
+      - name: Package Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-host-breakpoint-provenance/source
+        env:
+          ARTIFACT_REF: nce-d2-host-breakpoint-provenance-30af9e1e
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+
+      - name: Upload diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-D2-HOST-BREAKPOINT-PROVENANCE-DIAG
+          path: build/validation/${{ github.sha }}/d2-host-breakpoint-provenance/upload/*
+          if-no-files-found: error
+          retention-days: 14
