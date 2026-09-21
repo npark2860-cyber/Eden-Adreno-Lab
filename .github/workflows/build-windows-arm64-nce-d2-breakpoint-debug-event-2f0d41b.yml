@@ -1,9 +1,9 @@
-name: Build Windows ARM64 NCE D2 breakpoint debug-event provenance
+name: Build Windows ARM64 NCE D2 StackTop lease query validation
 
 on:
   push:
     branches:
-      - diag/windows-nce-d2-breakpoint-debug-event-2f0d41b
+      - fix/windows-nce-d2-stacktop-lease-query-85f058de
     paths:
       - .github/diagnostics/d2-breakpoint-debug-event-trigger.txt
 
@@ -22,7 +22,7 @@ env:
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE D2 breakpoint debug-event provenance
+    name: Windows ARM64 NCE D2 StackTop lease query validation
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -60,7 +60,399 @@ jobs:
           git -C "$SOURCE" diff --check "$BASE_SHA" "$GITHUB_SHA"
 
           CHANGED="$(git -C "$SOURCE" diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
-          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/yuzu/main\.cpp|\.github/workflows/build-windows-arm64-nce-d2-breakpoint-debug-event-2f0d41b\.yml|\.github/diagnostics/d2-breakpoint-debug-event-trigger\.txt)$' || true)"
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/yuzu/main\.cpp|src/core/arm/nce/arm_nce_windows\.cpp|\.github/workflows/build-windows-arm64-nce-d2-breakpoint-debug-event-2f0d41b\.yml|\.github/diagnostics/d2-breakpoint-debug-event-trigger\.txt)
+          test -z "$UNEXPECTED"
+
+          # One-variable runtime validation: only the stack-state page-table probe may differ.
+          RUNTIME_CHANGED="$(git -C "$SOURCE" diff --name-only "$BASE_SHA" "$GITHUB_SHA" -- \
+            src/core/arm/nce src/common/host_memory.cpp src/common/host_memory.h \
+            src/common/host_memory_windows_lease.h src/core/hle/kernel/physical_core.cpp \
+            src/core/hle/kernel/physical_core.h)"
+          test "$RUNTIME_CHANGED" = "src/core/arm/nce/arm_nce_windows.cpp"
+          RUNTIME_NUMSTAT="$(git -C "$SOURCE" diff --numstat "$BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp)"
+          test "$RUNTIME_NUMSTAT" = 
+          SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/yuzu/main.cpp")"
+          grep -Fq 'NCE_D2_FASTFAIL_DEBUG' <<<"$SRC"
+          grep -Fq 'DebugActiveProcess(parent_pid)' <<<"$SRC"
+          grep -Fq 'WaitForDebugEvent(&event, INFINITE)' <<<"$SRC"
+          grep -Fq 'DBG_EXCEPTION_NOT_HANDLED' <<<"$SRC"
+          grep -Fq 'D2FastFailExceptionCode = 0xC0000409' <<<"$SRC"
+          grep -Fq 'record.ExceptionInformation[0]' <<<"$SRC"
+          grep -Fq 'context.X[18]' <<<"$SRC"
+          grep -Fq 'ReadProcessMemory' <<<"$SRC"
+          grep -Fq 'stack_base=' <<<"$SRC"
+          grep -Fq 'stack_limit=' <<<"$SRC"
+          grep -Fq 'ResolveD2FastFailModule' <<<"$SRC"
+          grep -Fq 'pc_module=' <<<"$SRC"
+          grep -Fq 'frame_lr_module=' <<<"$SRC"
+          grep -Fq 'instruction_minus4=' <<<"$SRC"
+          grep -Fq 'instruction_plus4=' <<<"$SRC"
+          grep -Fq 'x0=0x%016llX' <<<"$SRC"
+          grep -Fq '0x0000FFFFFFFFFFFFULL' <<<"$SRC"
+          grep -Fq 'frame_lr_resolved=' <<<"$SRC"
+          grep -Fq 'frame_lr_pac_stripped=' <<<"$SRC"
+          grep -Fq 'NCE_D2_BREAKPOINT_DEBUG_EVENT' <<<"$SRC"
+          grep -Fq 'consumed_as_attach=' <<<"$SRC"
+          grep -Fq 'breakpoint_sequence' <<<"$SRC"
+          grep -Fq 'instruction_exception=' <<<"$SRC"
+          grep -Fq 'bcr7=' <<<"$SRC"
+
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" -- src/yuzu/main.cpp             > "$PROV/D2_BREAKPOINT_DEBUG_EVENT.diff"
+
+          printf 'BASE_SHA=%s\nDIAG_SHA=%s\nSOURCE_MODE=exact Git object\nHYPOTHESIS=SP exactly at stack allocation end is one-past-top; lease membership already probes SP-1 but KPageTable state used SP and misclassified active private stack state\nSCOPE=one-variable runtime fix: QueryInfo guest_sp -> guest_sp-1; retained external observer unchanged\nCAPTURE=existing breakpoint/fastfail/second-chance-AV observer plus physical hang/error outcome\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: ${{ env.CI_REF }}
+          path: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 base
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          cache: false
+
+      - name: Install CLANGARM64 toolchain from stable mirrors
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          # The previous two attempts both failed before configure/build because
+          # ftp2.osuosl.org stalled below pacman's low-speed threshold while
+          # retrieving unrelated package signatures. Keep the current MSYS2
+          # base release, remove only that failing mirror, then install the
+          # exact package set required by the fixed Eden CI scripts.
+          for mirror_list in /etc/pacman.d/mirrorlist*; do
+            if [ -f "$mirror_list" ]; then
+              sed -i '/ftp2\.osuosl\.org/d' "$mirror_list"
+            fi
+          done
+
+          pacman --noconfirm -S --needed --overwrite '*' \
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+
+          pacboy --noconfirm -S --needed \
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p \
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p \
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p \
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+
+      - name: Build full Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+
+      - name: Package Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        env:
+          ARTIFACT_REF: nce-d2-breakpoint-debug-event-2f0d41b
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+
+      - name: Upload diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-D2-BREAKPOINT-DEBUG-EVENT
+          path: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/upload/*
+          if-no-files-found: error
+          retention-days: 14
+ || true)"
+          test -z "$UNEXPECTED"
+
+          # Runtime/NCE implementation is frozen exactly at the 2f0d41b base.
+          test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce             src/common/host_memory.cpp             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
+
+          SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/yuzu/main.cpp")"
+          grep -Fq 'NCE_D2_FASTFAIL_DEBUG' <<<"$SRC"
+          grep -Fq 'DebugActiveProcess(parent_pid)' <<<"$SRC"
+          grep -Fq 'WaitForDebugEvent(&event, INFINITE)' <<<"$SRC"
+          grep -Fq 'DBG_EXCEPTION_NOT_HANDLED' <<<"$SRC"
+          grep -Fq 'D2FastFailExceptionCode = 0xC0000409' <<<"$SRC"
+          grep -Fq 'record.ExceptionInformation[0]' <<<"$SRC"
+          grep -Fq 'context.X[18]' <<<"$SRC"
+          grep -Fq 'ReadProcessMemory' <<<"$SRC"
+          grep -Fq 'stack_base=' <<<"$SRC"
+          grep -Fq 'stack_limit=' <<<"$SRC"
+          grep -Fq 'ResolveD2FastFailModule' <<<"$SRC"
+          grep -Fq 'pc_module=' <<<"$SRC"
+          grep -Fq 'frame_lr_module=' <<<"$SRC"
+          grep -Fq 'instruction_minus4=' <<<"$SRC"
+          grep -Fq 'instruction_plus4=' <<<"$SRC"
+          grep -Fq 'x0=0x%016llX' <<<"$SRC"
+          grep -Fq '0x0000FFFFFFFFFFFFULL' <<<"$SRC"
+          grep -Fq 'frame_lr_resolved=' <<<"$SRC"
+          grep -Fq 'frame_lr_pac_stripped=' <<<"$SRC"
+          grep -Fq 'NCE_D2_BREAKPOINT_DEBUG_EVENT' <<<"$SRC"
+          grep -Fq 'consumed_as_attach=' <<<"$SRC"
+          grep -Fq 'breakpoint_sequence' <<<"$SRC"
+          grep -Fq 'instruction_exception=' <<<"$SRC"
+          grep -Fq 'bcr7=' <<<"$SRC"
+
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" -- src/yuzu/main.cpp             > "$PROV/D2_BREAKPOINT_DEBUG_EVENT.diff"
+
+          printf 'BASE_SHA=%s\nDIAG_SHA=%s\nSOURCE_MODE=exact Git object\nHYPOTHESIS=2f0d41b reproduced unmatched EXCEPTION_BREAKPOINT at non-BRK HostStackBridge with all BCR/BVR zero; capture the Windows debugger event before VEH\nSCOPE=out-of-process breakpoint debug-event provenance only; NCE/runtime frozen at base\nCAPTURE=all EXCEPTION_BREAKPOINT debug events: sequence/attach-consume flag + ExceptionRecord + PC/SP/LR/X18 + instructions/modules + BCR/BVR\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: ${{ env.CI_REF }}
+          path: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 base
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          cache: false
+
+      - name: Install CLANGARM64 toolchain from stable mirrors
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          # The previous two attempts both failed before configure/build because
+          # ftp2.osuosl.org stalled below pacman's low-speed threshold while
+          # retrieving unrelated package signatures. Keep the current MSYS2
+          # base release, remove only that failing mirror, then install the
+          # exact package set required by the fixed Eden CI scripts.
+          for mirror_list in /etc/pacman.d/mirrorlist*; do
+            if [ -f "$mirror_list" ]; then
+              sed -i '/ftp2\.osuosl\.org/d' "$mirror_list"
+            fi
+          done
+
+          pacman --noconfirm -S --needed --overwrite '*' \
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+
+          pacboy --noconfirm -S --needed \
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p \
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p \
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p \
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+
+      - name: Build full Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+
+      - name: Package Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        env:
+          ARTIFACT_REF: nce-d2-breakpoint-debug-event-2f0d41b
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+
+      - name: Upload diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-D2-BREAKPOINT-DEBUG-EVENT
+          path: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/upload/*
+          if-no-files-found: error
+          retention-days: 14
+1\t1\tsrc/core/arm/nce/arm_nce_windows.cpp'
+          RUNTIME_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/arm_nce_windows.cpp")"
+          grep -Fq 'Kernel::KProcessAddress{guest_sp - 1}' <<<"$RUNTIME_SRC"
+          test "$(grep -Fc 'Kernel::KProcessAddress{guest_sp - 1}' <<<"$RUNTIME_SRC")" -eq 1
+          ! grep -Fq 'Kernel::KProcessAddress{guest_sp});' <<<"$RUNTIME_SRC"
+
+          SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/yuzu/main.cpp")"
+          grep -Fq 'NCE_D2_FASTFAIL_DEBUG' <<<"$SRC"
+          grep -Fq 'DebugActiveProcess(parent_pid)' <<<"$SRC"
+          grep -Fq 'WaitForDebugEvent(&event, INFINITE)' <<<"$SRC"
+          grep -Fq 'DBG_EXCEPTION_NOT_HANDLED' <<<"$SRC"
+          grep -Fq 'D2FastFailExceptionCode = 0xC0000409' <<<"$SRC"
+          grep -Fq 'record.ExceptionInformation[0]' <<<"$SRC"
+          grep -Fq 'context.X[18]' <<<"$SRC"
+          grep -Fq 'ReadProcessMemory' <<<"$SRC"
+          grep -Fq 'stack_base=' <<<"$SRC"
+          grep -Fq 'stack_limit=' <<<"$SRC"
+          grep -Fq 'ResolveD2FastFailModule' <<<"$SRC"
+          grep -Fq 'pc_module=' <<<"$SRC"
+          grep -Fq 'frame_lr_module=' <<<"$SRC"
+          grep -Fq 'instruction_minus4=' <<<"$SRC"
+          grep -Fq 'instruction_plus4=' <<<"$SRC"
+          grep -Fq 'x0=0x%016llX' <<<"$SRC"
+          grep -Fq '0x0000FFFFFFFFFFFFULL' <<<"$SRC"
+          grep -Fq 'frame_lr_resolved=' <<<"$SRC"
+          grep -Fq 'frame_lr_pac_stripped=' <<<"$SRC"
+          grep -Fq 'NCE_D2_BREAKPOINT_DEBUG_EVENT' <<<"$SRC"
+          grep -Fq 'consumed_as_attach=' <<<"$SRC"
+          grep -Fq 'breakpoint_sequence' <<<"$SRC"
+          grep -Fq 'instruction_exception=' <<<"$SRC"
+          grep -Fq 'bcr7=' <<<"$SRC"
+
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" -- src/yuzu/main.cpp             > "$PROV/D2_BREAKPOINT_DEBUG_EVENT.diff"
+
+          printf 'BASE_SHA=%s\nDIAG_SHA=%s\nSOURCE_MODE=exact Git object\nHYPOTHESIS=2f0d41b reproduced unmatched EXCEPTION_BREAKPOINT at non-BRK HostStackBridge with all BCR/BVR zero; capture the Windows debugger event before VEH\nSCOPE=out-of-process breakpoint debug-event provenance only; NCE/runtime frozen at base\nCAPTURE=all EXCEPTION_BREAKPOINT debug events: sequence/attach-consume flag + ExceptionRecord + PC/SP/LR/X18 + instructions/modules + BCR/BVR\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: ${{ env.CI_REF }}
+          path: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 base
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          cache: false
+
+      - name: Install CLANGARM64 toolchain from stable mirrors
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          # The previous two attempts both failed before configure/build because
+          # ftp2.osuosl.org stalled below pacman's low-speed threshold while
+          # retrieving unrelated package signatures. Keep the current MSYS2
+          # base release, remove only that failing mirror, then install the
+          # exact package set required by the fixed Eden CI scripts.
+          for mirror_list in /etc/pacman.d/mirrorlist*; do
+            if [ -f "$mirror_list" ]; then
+              sed -i '/ftp2\.osuosl\.org/d' "$mirror_list"
+            fi
+          done
+
+          pacman --noconfirm -S --needed --overwrite '*' \
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+
+          pacboy --noconfirm -S --needed \
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p \
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p \
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p \
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+
+      - name: Build full Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+
+      - name: Package Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/source
+        env:
+          ARTIFACT_REF: nce-d2-breakpoint-debug-event-2f0d41b
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+
+      - name: Upload diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-D2-BREAKPOINT-DEBUG-EVENT
+          path: build/validation/${{ github.sha }}/d2-breakpoint-debug-event/upload/*
+          if-no-files-found: error
+          retention-days: 14
+ || true)"
           test -z "$UNEXPECTED"
 
           # Runtime/NCE implementation is frozen exactly at the 2f0d41b base.
