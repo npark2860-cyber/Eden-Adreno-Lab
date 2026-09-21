@@ -209,7 +209,7 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
         cursor = region_end;
     }
 
-    if (stack_end <= stack_base || guest_sp <= stack_base || guest_sp >= stack_end ||
+    if (stack_end <= stack_base || guest_sp <= stack_base || guest_sp > stack_end ||
         (stack_base & Memory::YUZU_PAGEMASK) != 0 ||
         ((stack_end - stack_base) & Memory::YUZU_PAGEMASK) != 0) {
         LOG_ERROR(Core_ARM, "Windows NCE real guest stack host allocation is invalid");
