@@ -450,6 +450,8 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
         OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, parent_pid);
     bool consumed_attach_breakpoint = false;
     u64 breakpoint_sequence = 0;
+    u64 known_guest_brk_skipped = 0;
+    u64 breakpoint_candidates = 0;
     bool saw_exit = false;
     DWORD debug_exit_code = 0xFFFFFFFFul;
 
@@ -468,35 +470,70 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
             const auto& record = exception.ExceptionRecord;
 
             if (record.ExceptionCode == EXCEPTION_BREAKPOINT) {
-                CONTEXT context{};
-                context.ContextFlags = CONTEXT_ALL;
-                DWORD context_error = 0;
-                HANDLE thread =
-                    OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
-                               event.dwThreadId);
-                const CONTEXT* context_ptr = nullptr;
-                if (thread != nullptr) {
-                    if (GetThreadContext(thread, &context) != FALSE) {
-                        context_ptr = &context;
+                const bool consume_as_attach = !consumed_attach_breakpoint;
+                ++breakpoint_sequence;
+
+                // Low-perturbation D2 observer: the normal Windows NCE x18 fallback path generates
+                // very large numbers of deliberate BRK #0xF000 exceptions. Capturing full thread
+                // context, resolving modules, and flushing a log line for every one materially
+                // perturbs scheduling and can hide the rare unmatched HostStackBridge breakpoint.
+                //
+                // The target occurrence previously reported ExceptionAddress at a non-BRK host
+                // instruction (STR X1,[X18,#8]). Therefore, after the debugger-attach breakpoint,
+                // read only the 4-byte instruction at ExceptionAddress. Known generated guest BRK
+                // sites are passed directly to VEH with no thread-context capture or per-event I/O.
+                // Any non-BRK (or unreadable) breakpoint remains a candidate and gets the complete
+                // pre-VEH diagnostic record.
+                constexpr u32 D2KnownGuestBreakpointInstruction = 0xD43E0000;
+                u32 exception_instruction = 0;
+                SIZE_T exception_instruction_bytes = 0;
+                const u64 exception_address =
+                    reinterpret_cast<u64>(record.ExceptionAddress);
+                const bool known_guest_brk =
+                    !consume_as_attach && read_handle != nullptr && exception_address != 0 &&
+                    ReadProcessMemory(
+                        read_handle,
+                        reinterpret_cast<const void*>(
+                            static_cast<std::uintptr_t>(exception_address)),
+                        &exception_instruction, sizeof(exception_instruction),
+                        &exception_instruction_bytes) != FALSE &&
+                    exception_instruction_bytes == sizeof(exception_instruction) &&
+                    exception_instruction == D2KnownGuestBreakpointInstruction;
+
+                if (known_guest_brk) {
+                    ++known_guest_brk_skipped;
+                    continue_status = DBG_EXCEPTION_NOT_HANDLED;
+                } else {
+                    ++breakpoint_candidates;
+
+                    CONTEXT context{};
+                    context.ContextFlags = CONTEXT_ALL;
+                    DWORD context_error = 0;
+                    HANDLE thread =
+                        OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
+                                   event.dwThreadId);
+                    const CONTEXT* context_ptr = nullptr;
+                    if (thread != nullptr) {
+                        if (GetThreadContext(thread, &context) != FALSE) {
+                            context_ptr = &context;
+                        } else {
+                            context_error = GetLastError();
+                        }
+                        CloseHandle(thread);
                     } else {
                         context_error = GetLastError();
                     }
-                    CloseHandle(thread);
-                } else {
-                    context_error = GetLastError();
-                }
 
-                const bool consume_as_attach = !consumed_attach_breakpoint;
-                ++breakpoint_sequence;
-                WriteWindowsNceD2BreakpointDebugLine(
-                    parent_pid, child_pid, event.dwThreadId, breakpoint_sequence,
-                    consume_as_attach, exception, context_ptr, read_handle, context_error);
+                    WriteWindowsNceD2BreakpointDebugLine(
+                        parent_pid, child_pid, event.dwThreadId, breakpoint_sequence,
+                        consume_as_attach, exception, context_ptr, read_handle, context_error);
 
-                if (consume_as_attach) {
-                    consumed_attach_breakpoint = true;
-                    continue_status = DBG_CONTINUE;
-                } else {
-                    continue_status = DBG_EXCEPTION_NOT_HANDLED;
+                    if (consume_as_attach) {
+                        consumed_attach_breakpoint = true;
+                        continue_status = DBG_CONTINUE;
+                    } else {
+                        continue_status = DBG_EXCEPTION_NOT_HANDLED;
+                    }
                 }
             } else if (record.ExceptionCode == D2FastFailExceptionCode) {
                 CONTEXT context{};
@@ -625,6 +662,31 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
 
     if (read_handle != nullptr) {
         CloseHandle(read_handle);
+    }
+
+    {
+        HANDLE file = OpenWindowsNceV63Log();
+        if (file != INVALID_HANDLE_VALUE) {
+            char line[512]{};
+            const int line_length = std::snprintf(
+                line, sizeof(line),
+                "NCE_D2_BREAKPOINT_FILTER_SUMMARY parent_pid=%lu child_pid=%lu "
+                "breakpoints=%llu known_guest_brk_skipped=%llu candidates=%llu "
+                "base=2f0d41b173b4f9ae0d4e0b96cb61402c9ea5cd0e\r\n",
+                parent_pid, child_pid,
+                static_cast<unsigned long long>(breakpoint_sequence),
+                static_cast<unsigned long long>(known_guest_brk_skipped),
+                static_cast<unsigned long long>(breakpoint_candidates));
+            if (line_length > 0) {
+                DWORD written{};
+                const DWORD size = static_cast<DWORD>(
+                    line_length < static_cast<int>(sizeof(line)) ? line_length
+                                                                 : sizeof(line) - 1);
+                (void)WriteFile(file, line, size, &written, nullptr);
+                (void)FlushFileBuffers(file);
+            }
+            CloseHandle(file);
+        }
     }
 
     if (!saw_exit) {
