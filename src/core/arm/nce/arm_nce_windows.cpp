@@ -141,7 +141,7 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     Kernel::Svc::PageInfo guest_stack_page{};
     const auto guest_stack_query = process->GetPageTable().QueryInfo(
         std::addressof(guest_stack_info), std::addressof(guest_stack_page),
-        Kernel::KProcessAddress{guest_sp});
+        Kernel::KProcessAddress{guest_sp - 1});
     if (guest_stack_query.IsFailure()) {
         LOG_ERROR(Core_ARM, "Windows NCE guest stack page-table query failed");
         return false;
