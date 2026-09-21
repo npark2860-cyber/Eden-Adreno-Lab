@@ -1,0 +1,28 @@
+D2 ARM64 hardware-breakpoint register diagnostic trigger
+
+Base:
+9e652293ca3b66f67d0f2811a019d07e6d7e55b5
+
+Physical evidence from 9e652293:
+- exact HEAD confirmed
+- EXCEPTION_BREAKPOINT at:
+  - pc=0x00007ff700e7a894
+  - exception_address=0x00007ff700e7a894
+  - sp=0x00000020e0906500
+  - lr=0x00007ff700ad6058
+- module=eden.exe
+- instruction_pc=0xf9000641 = STR X1,[X18,#8]
+- instruction_pc_minus4=0x17fffe28 = branch, not BRK
+- sym_guest_stack_bridge=0x00007ff700e7a888
+- therefore pc=guest_stack_bridge+0xC, exactly the next PROC entry (WindowsNceHostStackBridge by source layout)
+- actual exception address is a non-BRK host bridge instruction
+- sentinel brk #1000 hypothesis is rejected
+
+Purpose:
+- preserve unmatched-breakpoint interception semantics
+- capture EXCEPTION_RECORD flags/NumberParameters/Info[0..1]
+- capture ARM64 ContextFlags/CPSR
+- capture BCR/BVR breakpoint debug-register slots 0..7
+- determine whether STATUS_BREAKPOINT is caused by an enabled ARM64 hardware breakpoint at the host bridge entry
+
+No production semantic change.
