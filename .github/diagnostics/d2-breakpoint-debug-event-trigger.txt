@@ -74,3 +74,16 @@ Terminal AV diagnostic:
 - first-chance guest AVs remain untouched
 - capture PC/SP/LR/FP/x18, TEB StackBase/StackLimit, access type/fault VA, nearby instruction, frame LR, and module provenance
 - NCE/runtime remains frozen at 2f0d41b
+
+
+MSYS2 mirror recovery:
+- run 35619377777 attempt 1 failed on jbigkit signature timeout at ftp2.osuosl.org
+- same run attempt 2 failed on libarchive signature timeout at ftp2.osuosl.org
+- repeated same-mirror network failure confirmed
+- workflow-only fix 0db8e363027400340f17dcdf97eecb46b5554193
+- setup-msys2 now installs only the CLANGARM64 base
+- next shell removes ftp2.osuosl.org from mirrorlist and installs the exact previous package set
+- observer source remains 1a8d7dab7b31d91122813fe61f6fffd6da6faadf
+- NCE/runtime remains frozen at 2f0d41b173b4f9ae0d4e0b96cb61402c9ea5cd0e
+- active/queued checked once: 0/0
+- one replacement build trigger only
