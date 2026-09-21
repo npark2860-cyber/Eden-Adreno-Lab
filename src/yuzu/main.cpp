@@ -356,6 +356,57 @@ void WriteWindowsNceD2FastFailLine(
 }
 
 
+void WriteWindowsNceD2FcontextEntryX19Line(
+    DWORD parent_pid, DWORD child_pid, DWORD thread_id, const CONTEXT* context) noexcept {
+    HANDLE file = OpenWindowsNceV63Log();
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    const u64 x19 = context != nullptr ? static_cast<u64>(context->X[19]) : 0;
+    const auto x19_module = ResolveD2FastFailModule(parent_pid, x19);
+    const u64 x19_rva =
+        x19_module.base != 0 && x19_module.resolved_address >= x19_module.base
+            ? x19_module.resolved_address - x19_module.base
+            : 0;
+    const u64 x19_vq_rva =
+        x19_module.query_allocation_base != 0 &&
+                x19_module.resolved_address >= x19_module.query_allocation_base
+            ? x19_module.resolved_address - x19_module.query_allocation_base
+            : 0;
+
+    char line[2048]{};
+    const int line_length = std::snprintf(
+        line, sizeof(line),
+        "NCE_D2_FCONTEXT_ENTRY_X19 tick=%llu parent_pid=%lu child_pid=%lu thread_id=%lu "
+        "x19=0x%016llX module=%s module_base=0x%016llX resolved=0x%016llX "
+        "pac_stripped=%u rva=0x%llX vq_base=0x%016llX vq_alloc=0x%016llX "
+        "vq_size=0x%llX vq_state=0x%08lX vq_protect=0x%08lX vq_type=0x%08lX "
+        "vq_error=%lu vq_rva=0x%llX "
+        "base=d62ce3094d3b9b58210c7841328de161d2a92292\r\n",
+        static_cast<unsigned long long>(GetTickCount64()), parent_pid, child_pid, thread_id,
+        static_cast<unsigned long long>(x19), x19_module.name,
+        static_cast<unsigned long long>(x19_module.base),
+        static_cast<unsigned long long>(x19_module.resolved_address),
+        x19_module.pac_stripped ? 1u : 0u,
+        static_cast<unsigned long long>(x19_rva),
+        static_cast<unsigned long long>(x19_module.query_base),
+        static_cast<unsigned long long>(x19_module.query_allocation_base),
+        static_cast<unsigned long long>(x19_module.query_region_size),
+        x19_module.query_state, x19_module.query_protect, x19_module.query_type,
+        x19_module.query_error, static_cast<unsigned long long>(x19_vq_rva));
+
+    if (line_length > 0) {
+        DWORD written{};
+        const DWORD size = static_cast<DWORD>(
+            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
+        (void)WriteFile(file, line, size, &written, nullptr);
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
+
 void WriteWindowsNceD2SecondChanceAvLine(
     DWORD parent_pid, DWORD child_pid, DWORD thread_id, const EXCEPTION_DEBUG_INFO& info,
     const CONTEXT* context, HANDLE read_handle, DWORD context_error) noexcept {
@@ -955,6 +1006,8 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
                     frame_lr_instruction_ok, frame_lr_instruction_plus4,
                     frame_lr_instruction_plus4_ok, pc_module, lr_module, frame_lr_module,
                     frame2_lr_module, context_error, memory_error);
+                WriteWindowsNceD2FcontextEntryX19Line(
+                    parent_pid, child_pid, event.dwThreadId, context_ptr);
                 continue_status = DBG_EXCEPTION_NOT_HANDLED;
             } else {
                 continue_status = DBG_EXCEPTION_NOT_HANDLED;
