@@ -1,0 +1,35 @@
+D2 breakpoint exception-site diagnostic trigger
+
+Base provenance diagnostic:
+cef637c99f1d570dace3cb313cb9d8e1d00b5511
+
+Physical result from cef637c9:
+- exact HEAD confirmed
+- unmatched breakpoint:
+  - pc=0x00007ff6d5c9a734
+  - sp=0x00000020bf1fb7c0
+  - lr=0x00007ff6d58f6054
+  - guest_mapped=false
+- module=C:\Emulators\eden_NCE\eden.exe
+- module_base=0x00007ff6d4bd0000
+- rva=0x10ca734
+- instruction at CONTEXT.Pc=0xf9000641
+- instruction_ok=true
+- instruction 0xf9000641 matches STR X1,[X18,#8], the first instruction used by Windows NCE stack bridges
+- therefore current CONTEXT.Pc is not itself a BRK instruction
+
+Purpose:
+- preserve existing unmatched-breakpoint interception semantics
+- additionally capture ExceptionRecord->ExceptionAddress
+- read instruction at:
+  - CONTEXT.Pc
+  - CONTEXT.Pc - 4
+  - ExceptionAddress
+- log runtime addresses of:
+  - WindowsNceEnterGuestContext
+  - WindowsNceGuestStackBridge
+  - WindowsNceHostStackBridge
+  - WindowsNceV74HostStackBridge
+- determine whether Windows reports post-BRK PC and whether the actual trap is the sentinel brk #1000 immediately preceding a bridge
+
+No production semantic change.
