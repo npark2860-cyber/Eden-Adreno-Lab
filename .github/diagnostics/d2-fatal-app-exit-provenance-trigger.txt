@@ -1,0 +1,29 @@
+D2 fatal-app-exit provenance diagnostic trigger
+
+Base:
+8ec479cd5693528d4fb60405e04cd8122aefdace
+
+Physical result from exact 8ec479cd build:
+- NCE_D2_FASTFAIL_DEBUG captured successfully
+- code=0xC0000409, noncontinuable, second chance
+- NumberParameters=1
+- info0=7 = FAST_FAIL_FATAL_APP_EXIT
+- PC/ExceptionAddress=0x00007FFD43B4C4DC
+- instruction=0xD43E0060 = ARM64 brk #0xF003, Windows __fastfail
+- SP=0x0000020D2361F290
+- LR=0x00007FFD43B4C4C0
+- X18=0x0000008810ED6000
+- remote TEB StackBase=0x000000208EDFB000 (guest-looking)
+- remote TEB StackLimit=0x0000020D23420004 (host-looking)
+- this rejects FAST_FAIL_INVALID_SET_OF_CONTEXT as the observed terminal subcode
+- exact module/function/caller of the explicit __fastfail(7) is still unknown
+
+Purpose:
+- preserve all NCE/runtime code exactly at 8ec479cd
+- extend only the external debugger watchdog
+- resolve PC/LR/frame-saved-LR module/base/RVA
+- capture X0-X7 and X29/frame record
+- capture PC-4 / PC / PC+4 instruction words
+- determine whether terminal is CRT abort/terminate and expose its first caller provenance
+
+No production semantic change.
