@@ -121,3 +121,15 @@ Pinned direct mirror recovery:
 - runtime source unchanged from one-line StackTop lease-query fix
 - pre-trigger active/queued 0/0
 - one replacement trigger only
+
+
+StackTop allocation-bound validation:
+- exact tested base 3c4b56c3b043ea80ff054b9b56a5de3b0b678ae3
+- prior SP-1 QueryInfo fix eliminated the earlier active-private-stack invalid-state seam
+- new leading error: Windows NCE real guest stack host allocation is invalid
+- source inspection shows exact StackTop still rejected by guest_sp >= stack_end
+- one-variable fix commit 3a961948e8d56f73d6b2a37adff2ce21927a6f05: >= -> >
+- workflow guard commit 109fe56631786a230b29a4402bdc817d43043eab
+- pinned direct MSYS2 mirrors retained
+- pre-trigger active/queued 0/0
+- one build trigger only
