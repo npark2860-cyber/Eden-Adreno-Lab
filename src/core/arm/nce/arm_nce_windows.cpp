@@ -551,15 +551,51 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         const u64 unmatched_break_seq =
             m_windows_diag_unmatched_break_seq.exchange(0, std::memory_order_acq_rel);
         if (unmatched_break_seq != 0) {
+            const u64 break_pc =
+                m_windows_diag_unmatched_break_pc.load(std::memory_order_relaxed);
+            const u64 break_sp =
+                m_windows_diag_unmatched_break_sp.load(std::memory_order_relaxed);
+            const u64 break_lr =
+                m_windows_diag_unmatched_break_lr.load(std::memory_order_relaxed);
+            const bool guest_mapped =
+                m_windows_diag_unmatched_break_guest_mapped.load(std::memory_order_relaxed) != 0;
+
+            MEMORY_BASIC_INFORMATION mbi{};
+            const SIZE_T queried =
+                VirtualQuery(reinterpret_cast<LPCVOID>(break_pc), &mbi, sizeof(mbi));
+
+            HMODULE module{};
+            char module_path[MAX_PATH]{};
+            DWORD module_path_len = 0;
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCSTR>(break_pc), &module)) {
+                module_path_len = GetModuleFileNameA(module, module_path, MAX_PATH);
+            }
+
+            u32 instruction{};
+            SIZE_T instruction_bytes{};
+            const BOOL instruction_ok =
+                ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(break_pc),
+                                  &instruction, sizeof(instruction), &instruction_bytes);
+
+            const u64 module_base = reinterpret_cast<u64>(module);
+            const u64 allocation_base =
+                queried != 0 ? reinterpret_cast<u64>(mbi.AllocationBase) : 0;
+            const u64 module_rva =
+                module_base != 0 && break_pc >= module_base ? break_pc - module_base : 0;
+
             LOG_ERROR(
                 Core_ARM,
                 "NCE_D2_UNMATCHED_BREAKPOINT seq={} pc={:#018x} sp={:#018x} lr={:#018x} "
-                "guest_mapped={}",
-                unmatched_break_seq,
-                m_windows_diag_unmatched_break_pc.load(std::memory_order_relaxed),
-                m_windows_diag_unmatched_break_sp.load(std::memory_order_relaxed),
-                m_windows_diag_unmatched_break_lr.load(std::memory_order_relaxed),
-                m_windows_diag_unmatched_break_guest_mapped.load(std::memory_order_relaxed) != 0);
+                "guest_mapped={} module={} module_base={:#018x} rva={:#x} "
+                "instruction={:#010x} instruction_ok={} allocation_base={:#018x} "
+                "protect={:#x} type={:#x}",
+                unmatched_break_seq, break_pc, break_sp, break_lr, guest_mapped,
+                module_path_len != 0 ? module_path : "<unknown>", module_base, module_rva,
+                instruction, instruction_ok != FALSE && instruction_bytes == sizeof(instruction),
+                allocation_base, queried != 0 ? static_cast<u64>(mbi.Protect) : 0,
+                queried != 0 ? static_cast<u64>(mbi.Type) : 0);
             hr = HaltReason::PrefetchAbort;
             break;
         }
