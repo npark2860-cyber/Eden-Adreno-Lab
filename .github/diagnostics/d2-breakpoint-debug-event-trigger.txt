@@ -110,3 +110,14 @@ Clean StackTop workflow recovery:
 - runtime semantic delta remains one line: QueryInfo guest_sp -> guest_sp-1
 - pre-trigger active/queued 0/0
 - one clean validation trigger only
+
+
+Pinned direct mirror recovery:
+- latest run 35630729298 failed in toolchain install before configure/build
+- mirror.msys2.org timed out on clang/llvm payloads; ftp2.osuosl.org also timed out as fallback
+- workflow fix c006520bc0f34b2df6df904de57d06a740b6bacb
+- mirrorlist.mingw/msys rewritten to repo.msys2.org first, then Yandex/Accum/NLUUG fallbacks
+- pacman DisableDownloadTimeout enabled; overall job timeout remains hard bound
+- runtime source unchanged from one-line StackTop lease-query fix
+- pre-trigger active/queued 0/0
+- one replacement trigger only
