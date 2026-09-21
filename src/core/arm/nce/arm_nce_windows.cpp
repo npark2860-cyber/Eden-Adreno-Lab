@@ -357,6 +357,30 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
             std::memory_order_relaxed);
         nce->m_windows_diag_unmatched_break_guest_mapped.store(
             guest_mapped ? 1ULL : 0ULL, std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_exception_flags.store(
+            exception->ExceptionRecord->ExceptionFlags, std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_number_parameters.store(
+            exception->ExceptionRecord->NumberParameters, std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_info0.store(
+            exception->ExceptionRecord->NumberParameters > 0
+                ? exception->ExceptionRecord->ExceptionInformation[0]
+                : 0,
+            std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_info1.store(
+            exception->ExceptionRecord->NumberParameters > 1
+                ? exception->ExceptionRecord->ExceptionInformation[1]
+                : 0,
+            std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_context_flags.store(
+            context.ContextFlags, std::memory_order_relaxed);
+        nce->m_windows_diag_unmatched_break_cpsr.store(context.Cpsr, std::memory_order_relaxed);
+        static_assert(ARM64_MAX_BREAKPOINTS <= 8);
+        for (std::size_t i = 0; i < ARM64_MAX_BREAKPOINTS; ++i) {
+            nce->m_windows_diag_unmatched_break_bcr[i].store(context.Bcr[i],
+                                                            std::memory_order_relaxed);
+            nce->m_windows_diag_unmatched_break_bvr[i].store(context.Bvr[i],
+                                                            std::memory_order_relaxed);
+        }
         nce->m_windows_diag_unmatched_break_seq.fetch_add(1, std::memory_order_release);
 
         // Diagnostic-only: preserve GuestContext exactly as it was before the unmatched
@@ -628,6 +652,50 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
                 reinterpret_cast<u64>(&WindowsNceV74HostStackBridge),
                 allocation_base, queried != 0 ? static_cast<u64>(mbi.Protect) : 0,
                 queried != 0 ? static_cast<u64>(mbi.Type) : 0);
+            const u64 exception_flags =
+                m_windows_diag_unmatched_break_exception_flags.load(std::memory_order_relaxed);
+            const u64 number_parameters =
+                m_windows_diag_unmatched_break_number_parameters.load(std::memory_order_relaxed);
+            const u64 info0 =
+                m_windows_diag_unmatched_break_info0.load(std::memory_order_relaxed);
+            const u64 info1 =
+                m_windows_diag_unmatched_break_info1.load(std::memory_order_relaxed);
+            const u64 context_flags =
+                m_windows_diag_unmatched_break_context_flags.load(std::memory_order_relaxed);
+            const u64 cpsr =
+                m_windows_diag_unmatched_break_cpsr.load(std::memory_order_relaxed);
+
+            LOG_ERROR(Core_ARM,
+                      "NCE_D2_BREAKPOINT_RECORD flags={:#x} params={} info0={:#018x} "
+                      "info1={:#018x} context_flags={:#x} cpsr={:#x}",
+                      exception_flags, number_parameters, info0, info1, context_flags, cpsr);
+            LOG_ERROR(
+                Core_ARM,
+                "NCE_D2_BREAKPOINT_DEBUGREGS_0_3 "
+                "bcr0={:#010x} bvr0={:#018x} bcr1={:#010x} bvr1={:#018x} "
+                "bcr2={:#010x} bvr2={:#018x} bcr3={:#010x} bvr3={:#018x}",
+                m_windows_diag_unmatched_break_bcr[0].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bvr[0].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bcr[1].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bvr[1].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bcr[2].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bvr[2].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bcr[3].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bvr[3].load(std::memory_order_relaxed));
+            LOG_ERROR(
+                Core_ARM,
+                "NCE_D2_BREAKPOINT_DEBUGREGS_4_7 "
+                "bcr4={:#010x} bvr4={:#018x} bcr5={:#010x} bvr5={:#018x} "
+                "bcr6={:#010x} bvr6={:#018x} bcr7={:#010x} bvr7={:#018x}",
+                m_windows_diag_unmatched_break_bcr[4].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bvr[4].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bcr[5].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bvr[5].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bcr[6].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bvr[6].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bcr[7].load(std::memory_order_relaxed),
+                m_windows_diag_unmatched_break_bvr[7].load(std::memory_order_relaxed));
+
             hr = HaltReason::PrefetchAbort;
             break;
         }
