@@ -63,7 +63,7 @@ jobs:
           UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/yuzu/main\.cpp|\.github/workflows/build-windows-arm64-nce-d2-fatal-app-exit-provenance-8ec479cd\.yml|\.github/diagnostics/d2-fatal-app-exit-provenance-trigger\.txt)$' || true)"
           test -z "$UNEXPECTED"
 
-          # Runtime/NCE implementation is frozen exactly at 811afc84.
+          # Runtime/NCE implementation is frozen exactly at the 8ec479cd base.
           test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce             src/common/host_memory.cpp             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
 
           SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/yuzu/main.cpp")"
