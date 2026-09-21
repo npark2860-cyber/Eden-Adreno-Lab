@@ -1,0 +1,29 @@
+D2 PAC caller provenance diagnostic trigger
+
+Base:
+152529fbf459dc61e810c37865c1822661463670
+
+Exact 152529fb physical result:
+- HEAD-152529fbf4-HEAD
+- external debugger caught second-chance noncontinuable 0xC0000409
+- info0=7 = FAST_FAIL_FATAL_APP_EXIT
+- x0=7
+- PC/ExceptionAddress=0x00007FFD43B4C4DC
+- instruction_minus4=0x528000E0 (mov w0,#7)
+- instruction=0xD43E0060 (brk #0xF003 / __fastfail)
+- PC module ucrtbase.dll, RVA 0x7C4DC
+- LR module ucrtbase.dll, RVA 0x7C4C0
+- raw frame LR=0x3A067FF70694B254
+- raw frame LR did not resolve because it is PAC-signed-looking
+- low 48-bit canonical candidate=0x00007FF70694B254
+- FP==SP; frame_prev is host-stack-looking
+
+Purpose:
+- keep all NCE/runtime code frozen at 152529fb
+- extend only the external observer's module resolver
+- first try raw address
+- then try address & 0x0000FFFFFFFFFFFF
+- record raw/resolved address, PAC-stripped flag, module/base/RVA
+- recover the first non-UCRT caller from the existing frame record without changing runtime semantics
+
+No production semantic change.
