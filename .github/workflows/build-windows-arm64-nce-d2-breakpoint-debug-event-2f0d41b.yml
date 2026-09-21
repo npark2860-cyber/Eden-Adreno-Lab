@@ -67,30 +67,30 @@ jobs:
           test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce             src/common/host_memory.cpp             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
 
           SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/yuzu/main.cpp")"
-          printf '%s\n' "$SRC" | grep -Fq 'NCE_D2_FASTFAIL_DEBUG'
-          printf '%s\n' "$SRC" | grep -Fq 'DebugActiveProcess(parent_pid)'
-          printf '%s\n' "$SRC" | grep -Fq 'WaitForDebugEvent(&event, INFINITE)'
-          printf '%s\n' "$SRC" | grep -Fq 'DBG_EXCEPTION_NOT_HANDLED'
-          printf '%s\n' "$SRC" | grep -Fq 'D2FastFailExceptionCode = 0xC0000409'
-          printf '%s\n' "$SRC" | grep -Fq 'record.ExceptionInformation[0]'
-          printf '%s\n' "$SRC" | grep -Fq 'context.X[18]'
-          printf '%s\n' "$SRC" | grep -Fq 'ReadProcessMemory'
-          printf '%s\n' "$SRC" | grep -Fq 'stack_base='
-          printf '%s\n' "$SRC" | grep -Fq 'stack_limit='
-          printf '%s\n' "$SRC" | grep -Fq 'ResolveD2FastFailModule'
-          printf '%s\n' "$SRC" | grep -Fq 'pc_module='
-          printf '%s\n' "$SRC" | grep -Fq 'frame_lr_module='
-          printf '%s\n' "$SRC" | grep -Fq 'instruction_minus4='
-          printf '%s\n' "$SRC" | grep -Fq 'instruction_plus4='
-          printf '%s\n' "$SRC" | grep -Fq 'x0=0x%016llX'
-          printf '%s\n' "$SRC" | grep -Fq '0x0000FFFFFFFFFFFFULL'
-          printf '%s\n' "$SRC" | grep -Fq 'frame_lr_resolved='
-          printf '%s\n' "$SRC" | grep -Fq 'frame_lr_pac_stripped='
-          printf '%s\n' "$SRC" | grep -Fq 'NCE_D2_BREAKPOINT_DEBUG_EVENT'
-          printf '%s\n' "$SRC" | grep -Fq 'consumed_as_attach='
-          printf '%s\n' "$SRC" | grep -Fq 'breakpoint_sequence'
-          printf '%s\n' "$SRC" | grep -Fq 'instruction_exception='
-          printf '%s\n' "$SRC" | grep -Fq 'bcr7='
+          grep -Fq 'NCE_D2_FASTFAIL_DEBUG' <<<"$SRC"
+          grep -Fq 'DebugActiveProcess(parent_pid)' <<<"$SRC"
+          grep -Fq 'WaitForDebugEvent(&event, INFINITE)' <<<"$SRC"
+          grep -Fq 'DBG_EXCEPTION_NOT_HANDLED' <<<"$SRC"
+          grep -Fq 'D2FastFailExceptionCode = 0xC0000409' <<<"$SRC"
+          grep -Fq 'record.ExceptionInformation[0]' <<<"$SRC"
+          grep -Fq 'context.X[18]' <<<"$SRC"
+          grep -Fq 'ReadProcessMemory' <<<"$SRC"
+          grep -Fq 'stack_base=' <<<"$SRC"
+          grep -Fq 'stack_limit=' <<<"$SRC"
+          grep -Fq 'ResolveD2FastFailModule' <<<"$SRC"
+          grep -Fq 'pc_module=' <<<"$SRC"
+          grep -Fq 'frame_lr_module=' <<<"$SRC"
+          grep -Fq 'instruction_minus4=' <<<"$SRC"
+          grep -Fq 'instruction_plus4=' <<<"$SRC"
+          grep -Fq 'x0=0x%016llX' <<<"$SRC"
+          grep -Fq '0x0000FFFFFFFFFFFFULL' <<<"$SRC"
+          grep -Fq 'frame_lr_resolved=' <<<"$SRC"
+          grep -Fq 'frame_lr_pac_stripped=' <<<"$SRC"
+          grep -Fq 'NCE_D2_BREAKPOINT_DEBUG_EVENT' <<<"$SRC"
+          grep -Fq 'consumed_as_attach=' <<<"$SRC"
+          grep -Fq 'breakpoint_sequence' <<<"$SRC"
+          grep -Fq 'instruction_exception=' <<<"$SRC"
+          grep -Fq 'bcr7=' <<<"$SRC"
 
           git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" -- src/yuzu/main.cpp             > "$PROV/D2_BREAKPOINT_DEBUG_EVENT.diff"
 
