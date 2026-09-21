@@ -1,0 +1,33 @@
+D2 host breakpoint provenance diagnostic trigger
+
+Base diagnostic:
+30af9e1ea45bf5aaba35b4a285c04e940725c574
+
+Physical proof from valid Run2:
+- exact HEAD 30af9e1e
+- NCE_D2_UNMATCHED_BREAKPOINT fired once
+- raw PC=0x00007ff6a814a5f4
+- raw LR=0x00007ff6a7da6068
+- raw SP=0x00000020cbd851f0
+- guest_mapped=false
+- prior V74 also occurred earlier in the same run
+- diagnostic prevented natural 0x80000003 termination; process remained alive until manual ForceStop
+
+Purpose of this derivative:
+- keep VEH unmatched-breakpoint handling identical to 30af9e1e
+- at the safe host-side logging seam resolve:
+  - host module path
+  - module base
+  - PC RVA
+  - current 32-bit ARM64 instruction word at PC
+  - allocation base / protection / type
+- no GuestContext save from unmatched breakpoint CONTEXT
+- no production semantic change
+
+Preserve:
+- D1 CLOSED
+- D2 CI PASS
+- cross-thread PC guard production candidate
+- D3/D5 not reopened
+- no V76 progression
+- no closed regression reruns
