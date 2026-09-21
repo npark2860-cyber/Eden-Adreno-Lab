@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -111,6 +112,14 @@ public:
     std::atomic<u64> m_windows_diag_unmatched_break_lr{};
     std::atomic<u64> m_windows_diag_unmatched_break_exception_address{};
     std::atomic<u64> m_windows_diag_unmatched_break_guest_mapped{};
+    std::atomic<u64> m_windows_diag_unmatched_break_exception_flags{};
+    std::atomic<u64> m_windows_diag_unmatched_break_number_parameters{};
+    std::atomic<u64> m_windows_diag_unmatched_break_info0{};
+    std::atomic<u64> m_windows_diag_unmatched_break_info1{};
+    std::atomic<u64> m_windows_diag_unmatched_break_context_flags{};
+    std::atomic<u64> m_windows_diag_unmatched_break_cpsr{};
+    std::array<std::atomic<u64>, 8> m_windows_diag_unmatched_break_bcr{};
+    std::array<std::atomic<u64>, 8> m_windows_diag_unmatched_break_bvr{};
 #else
     pid_t m_thread_id{-1};
 #endif
