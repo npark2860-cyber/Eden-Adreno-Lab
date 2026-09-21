@@ -1,0 +1,25 @@
+D2 fast-fail debugger-watchdog diagnostic trigger
+
+Base:
+811afc84ac0bc00285b24ef786c8ad92b074009d
+
+Same-artifact physical sampling completed:
+- Run1: V74 once, no breakpoint/debugreg markers, natural 0xC0000409
+- Run2: no breakpoint/debugreg markers, no V74, reached display + fallback stack sync, natural 0xC0000409
+- no ForceStop in either run
+- therefore hardware-breakpoint capture path was not exercised in either sample
+- do not take a third 811afc84 sample
+
+Purpose:
+- leave all NCE/runtime code frozen at 811afc84
+- extend only the existing out-of-process V63 watchdog into a Windows debugger observer
+- capture STATUS_FAIL_FAST_EXCEPTION / 0xC0000409 before termination:
+  - first/second chance
+  - ExceptionAddress / flags / NumberParameters / ExceptionInformation[0..3]
+  - stopped-thread PC/SP/LR/X18
+  - remote TEB StackBase / StackLimit via X18
+  - instruction word at PC
+- first debugger-attach breakpoint only is consumed
+- all later process exceptions are continued as DBG_EXCEPTION_NOT_HANDLED so the existing NCE VEH receives them normally
+
+No production semantic change.
