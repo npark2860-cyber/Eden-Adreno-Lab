@@ -99,3 +99,14 @@ StackTop lease-query validation:
 - validation workflow guard commit 1230bc7d6ff6cb0879a3d2d11a22928a1b594b3b
 - pre-trigger active/queued 0/0
 - one build trigger only
+
+
+Clean StackTop workflow recovery:
+- prior validation workflow was malformed before any job creation
+- malformed workflow removed from this validation branch
+- clean dedicated workflow added at .github/workflows/build-windows-arm64-nce-d2-stacktop-lease-query-validation.yml
+- clean workflow commit 7b116556e17f9e7088aef00dba61b0a57c845f24
+- exact runtime fix remains 2dad1d4fdd5ddafd7ec274ca60f0cd3d6cfdc02f
+- runtime semantic delta remains one line: QueryInfo guest_sp -> guest_sp-1
+- pre-trigger active/queued 0/0
+- one clean validation trigger only
