@@ -1,9 +1,9 @@
-name: Build Windows ARM64 NCE D2 StackTop Lease Query Validation
+name: Build Windows ARM64 NCE D2 StackTop Allocation Bound Validation
 
 on:
   push:
     branches:
-      - fix/windows-nce-d2-stacktop-lease-query-85f058de
+      - fix/windows-nce-d2-stacktop-allocation-bound-3c4b56c3
     paths:
       - .github/diagnostics/d2-breakpoint-debug-event-trigger.txt
 
@@ -16,13 +16,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BASE_SHA: 85f058de33aa052e8879469b54432a46f9250e83
+  BASE_SHA: 3c4b56c3b043ea80ff054b9b56a5de3b0b678ae3
   CI_REF: afead830f3a444427f9fdfd841218f932465c03a
   TEST_NAME: d2-stacktop-lease-query
 
 jobs:
   build-package:
-    name: Windows ARM64 NCE D2 StackTop lease query validation
+    name: Windows ARM64 NCE D2 StackTop allocation bound validation
     runs-on: windows-11-arm
     timeout-minutes: 180
     env:
@@ -72,13 +72,14 @@ jobs:
           test "$FILEPATH" = "src/core/arm/nce/arm_nce_windows.cpp"
 
           RUNTIME_DIFF="$(git -C "$SOURCE" diff --unified=0 "$BASE_SHA" "$GITHUB_SHA" -- src/core/arm/nce/arm_nce_windows.cpp)"
-          grep -Fq -- '-        Kernel::KProcessAddress{guest_sp});' <<<"$RUNTIME_DIFF"
-          grep -Fq -- '+        Kernel::KProcessAddress{guest_sp - 1});' <<<"$RUNTIME_DIFF"
+          grep -Fq -- '-    if (stack_end <= stack_base || guest_sp <= stack_base || guest_sp >= stack_end ||' <<<"$RUNTIME_DIFF"
+          grep -Fq -- '+    if (stack_end <= stack_base || guest_sp <= stack_base || guest_sp > stack_end ||' <<<"$RUNTIME_DIFF"
 
           SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/arm_nce_windows.cpp")"
           grep -Fq 'Kernel::KProcessAddress{guest_sp - 1});' <<<"$SRC"
+          grep -Fq 'guest_sp <= stack_base || guest_sp > stack_end' <<<"$SRC"
 
-          printf 'BASE_SHA=%s\nVALIDATION_SHA=%s\nSOURCE_MODE=exact Git object\nHYPOTHESIS=StackTop SP equals allocation end; lease membership and VirtualQuery use SP-1 but KPageTable QueryInfo used SP\nSCOPE=one-variable runtime validation: QueryInfo guest_sp -> guest_sp-1\n' "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nVALIDATION_SHA=%s\nSOURCE_MODE=exact Git object\nHYPOTHESIS=after SP-1 page-table classification fix, exact StackTop still fails the later private-lease allocation guard because guest_sp == stack_end is rejected by >=\nSCOPE=one-variable runtime validation: allocation upper bound guest_sp >= stack_end -> guest_sp > stack_end\n' "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
@@ -183,7 +184,7 @@ jobs:
       - name: Upload StackTop validation package
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-Windows-ARM64-NCE-D2-STACKTOP-LEASE-QUERY
+          name: Eden-Windows-ARM64-NCE-D2-STACKTOP-ALLOCATION-BOUND
           path: build/validation/${{ github.sha }}/d2-stacktop-lease-query/upload/*
           if-no-files-found: error
           retention-days: 14
