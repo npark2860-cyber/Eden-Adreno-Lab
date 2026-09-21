@@ -112,17 +112,36 @@ jobs:
           cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
           printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
 
-      - name: Set up CLANGARM64 toolchain
+      - name: Set up CLANGARM64 base
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANGARM64
-          update: true
+          update: false
           cache: false
-          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
-          pacboy: >-
-            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
-            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
-            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+
+      - name: Install CLANGARM64 toolchain from stable mirrors
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          # The previous two attempts both failed before configure/build because
+          # ftp2.osuosl.org stalled below pacman's low-speed threshold while
+          # retrieving unrelated package signatures. Keep the current MSYS2
+          # base release, remove only that failing mirror, then install the
+          # exact package set required by the fixed Eden CI scripts.
+          for mirror_list in /etc/pacman.d/mirrorlist*; do
+            if [ -f "$mirror_list" ]; then
+              sed -i '/ftp2\.osuosl\.org/d' "$mirror_list"
+            fi
+          done
+
+          pacman --noconfirm -S --needed --overwrite '*' \
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+
+          pacboy --noconfirm -S --needed \
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p \
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p \
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p \
             libwebp:p libtiff:p brotli:p
 
       - name: Configure Windows ARM64 NCE build
