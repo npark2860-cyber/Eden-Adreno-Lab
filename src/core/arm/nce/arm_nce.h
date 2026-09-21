@@ -109,6 +109,7 @@ public:
     std::atomic<u64> m_windows_diag_unmatched_break_pc{};
     std::atomic<u64> m_windows_diag_unmatched_break_sp{};
     std::atomic<u64> m_windows_diag_unmatched_break_lr{};
+    std::atomic<u64> m_windows_diag_unmatched_break_exception_address{};
     std::atomic<u64> m_windows_diag_unmatched_break_guest_mapped{};
 #else
     pid_t m_thread_id{-1};
