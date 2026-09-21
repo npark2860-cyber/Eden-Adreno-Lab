@@ -93,6 +93,13 @@ struct D2FastFailModuleInfo {
     u64 size{};
     u64 resolved_address{};
     bool pac_stripped{};
+    u64 query_base{};
+    u64 query_allocation_base{};
+    u64 query_region_size{};
+    DWORD query_state{};
+    DWORD query_protect{};
+    DWORD query_type{};
+    DWORD query_error{};
     char name[MAX_PATH]{"<unknown>"};
 };
 
@@ -144,6 +151,40 @@ D2FastFailModuleInfo ResolveD2FastFailModule(DWORD process_id, u64 address) noex
     }
 
     CloseHandle(snapshot);
+
+    // If Toolhelp cannot associate a PAC-stripped return address with a loaded module,
+    // classify the remote virtual-memory region directly. This distinguishes PE image
+    // code from MEM_PRIVATE/JIT/generated code without executing anything in the target.
+    const u64 query_address =
+        result.resolved_address != 0 ? result.resolved_address : candidates[1];
+    if (query_address != 0) {
+        HANDLE process =
+            OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
+        if (process != nullptr) {
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (VirtualQueryEx(process,
+                               reinterpret_cast<const void*>(
+                                   static_cast<std::uintptr_t>(query_address)),
+                               &mbi, sizeof(mbi)) != 0) {
+                result.query_base = reinterpret_cast<u64>(mbi.BaseAddress);
+                result.query_allocation_base = reinterpret_cast<u64>(mbi.AllocationBase);
+                result.query_region_size = static_cast<u64>(mbi.RegionSize);
+                result.query_state = mbi.State;
+                result.query_protect = mbi.Protect;
+                result.query_type = mbi.Type;
+                if (result.resolved_address == 0) {
+                    result.resolved_address = query_address;
+                    result.pac_stripped = query_address != address;
+                }
+            } else {
+                result.query_error = GetLastError();
+            }
+            CloseHandle(process);
+        } else {
+            result.query_error = GetLastError();
+        }
+    }
+
     return result;
 }
 
@@ -152,8 +193,12 @@ void WriteWindowsNceD2FastFailLine(
     const CONTEXT* context, u64 stack_base, u64 stack_limit, u32 instruction,
     bool instruction_ok, u32 instruction_minus4, bool instruction_minus4_ok,
     u32 instruction_plus4, bool instruction_plus4_ok, u64 frame_prev, u64 frame_lr,
-    const D2FastFailModuleInfo& pc_module, const D2FastFailModuleInfo& lr_module,
-    const D2FastFailModuleInfo& frame_lr_module, DWORD context_error,
+    u64 frame2_prev, u64 frame2_lr, u32 frame_lr_instruction_minus4,
+    bool frame_lr_instruction_minus4_ok, u32 frame_lr_instruction,
+    bool frame_lr_instruction_ok, u32 frame_lr_instruction_plus4,
+    bool frame_lr_instruction_plus4_ok, const D2FastFailModuleInfo& pc_module,
+    const D2FastFailModuleInfo& lr_module, const D2FastFailModuleInfo& frame_lr_module,
+    const D2FastFailModuleInfo& frame2_lr_module, DWORD context_error,
     DWORD memory_error) noexcept {
     HANDLE file = OpenWindowsNceV63Log();
     if (file == INVALID_HANDLE_VALUE) {
@@ -199,8 +244,23 @@ void WriteWindowsNceD2FastFailLine(
         frame_lr_module.base != 0 && frame_lr_module.resolved_address >= frame_lr_module.base
             ? frame_lr_module.resolved_address - frame_lr_module.base
             : 0;
+    const u64 frame_lr_vq_rva =
+        frame_lr_module.query_allocation_base != 0 &&
+                frame_lr_module.resolved_address >= frame_lr_module.query_allocation_base
+            ? frame_lr_module.resolved_address - frame_lr_module.query_allocation_base
+            : 0;
+    const u64 frame2_lr_rva =
+        frame2_lr_module.base != 0 &&
+                frame2_lr_module.resolved_address >= frame2_lr_module.base
+            ? frame2_lr_module.resolved_address - frame2_lr_module.base
+            : 0;
+    const u64 frame2_lr_vq_rva =
+        frame2_lr_module.query_allocation_base != 0 &&
+                frame2_lr_module.resolved_address >= frame2_lr_module.query_allocation_base
+            ? frame2_lr_module.resolved_address - frame2_lr_module.query_allocation_base
+            : 0;
 
-    char line[4096]{};
+    char line[8192]{};
     const int line_length = std::snprintf(
         line, sizeof(line),
         "NCE_D2_FASTFAIL_DEBUG tick=%llu parent_pid=%lu child_pid=%lu thread_id=%lu "
@@ -214,9 +274,18 @@ void WriteWindowsNceD2FastFailLine(
         "instruction=0x%08X instruction_ok=%u "
         "instruction_plus4=0x%08X instruction_plus4_ok=%u "
         "frame_prev=0x%016llX frame_lr=0x%016llX "
+        "frame2_prev=0x%016llX frame2_lr=0x%016llX "
+        "frame_lr_instruction_minus4=0x%08X frame_lr_instruction_minus4_ok=%u "
+        "frame_lr_instruction=0x%08X frame_lr_instruction_ok=%u "
+        "frame_lr_instruction_plus4=0x%08X frame_lr_instruction_plus4_ok=%u "
         "pc_module=%s pc_module_base=0x%016llX pc_resolved=0x%016llX pc_pac_stripped=%u pc_rva=0x%llX "
         "lr_module=%s lr_module_base=0x%016llX lr_resolved=0x%016llX lr_pac_stripped=%u lr_rva=0x%llX "
         "frame_lr_module=%s frame_lr_module_base=0x%016llX frame_lr_resolved=0x%016llX frame_lr_pac_stripped=%u frame_lr_rva=0x%llX "
+        "frame_lr_vq_base=0x%016llX frame_lr_vq_alloc=0x%016llX frame_lr_vq_size=0x%llX "
+        "frame_lr_vq_state=0x%08lX frame_lr_vq_protect=0x%08lX frame_lr_vq_type=0x%08lX frame_lr_vq_error=%lu frame_lr_vq_rva=0x%llX "
+        "frame2_lr_module=%s frame2_lr_module_base=0x%016llX frame2_lr_resolved=0x%016llX frame2_lr_pac_stripped=%u frame2_lr_rva=0x%llX "
+        "frame2_lr_vq_base=0x%016llX frame2_lr_vq_alloc=0x%016llX frame2_lr_vq_size=0x%llX "
+        "frame2_lr_vq_state=0x%08lX frame2_lr_vq_protect=0x%08lX frame2_lr_vq_type=0x%08lX frame2_lr_vq_error=%lu frame2_lr_vq_rva=0x%llX "
         "context_flags=0x%016llX cpsr=0x%016llX context_error=%lu memory_error=%lu "
         "base=811afc84ac0bc00285b24ef786c8ad92b074009d\r\n",
         static_cast<unsigned long long>(GetTickCount64()), parent_pid, child_pid, thread_id,
@@ -237,7 +306,13 @@ void WriteWindowsNceD2FastFailLine(
         instruction_minus4_ok ? 1u : 0u, instruction, instruction_ok ? 1u : 0u,
         instruction_plus4, instruction_plus4_ok ? 1u : 0u,
         static_cast<unsigned long long>(frame_prev),
-        static_cast<unsigned long long>(frame_lr), pc_module.name,
+        static_cast<unsigned long long>(frame_lr),
+        static_cast<unsigned long long>(frame2_prev),
+        static_cast<unsigned long long>(frame2_lr),
+        frame_lr_instruction_minus4, frame_lr_instruction_minus4_ok ? 1u : 0u,
+        frame_lr_instruction, frame_lr_instruction_ok ? 1u : 0u,
+        frame_lr_instruction_plus4, frame_lr_instruction_plus4_ok ? 1u : 0u,
+        pc_module.name,
         static_cast<unsigned long long>(pc_module.base),
         static_cast<unsigned long long>(pc_module.resolved_address),
         pc_module.pac_stripped ? 1u : 0u,
@@ -250,6 +325,23 @@ void WriteWindowsNceD2FastFailLine(
         static_cast<unsigned long long>(frame_lr_module.resolved_address),
         frame_lr_module.pac_stripped ? 1u : 0u,
         static_cast<unsigned long long>(frame_lr_rva),
+        static_cast<unsigned long long>(frame_lr_module.query_base),
+        static_cast<unsigned long long>(frame_lr_module.query_allocation_base),
+        static_cast<unsigned long long>(frame_lr_module.query_region_size),
+        frame_lr_module.query_state, frame_lr_module.query_protect,
+        frame_lr_module.query_type, frame_lr_module.query_error,
+        static_cast<unsigned long long>(frame_lr_vq_rva),
+        frame2_lr_module.name,
+        static_cast<unsigned long long>(frame2_lr_module.base),
+        static_cast<unsigned long long>(frame2_lr_module.resolved_address),
+        frame2_lr_module.pac_stripped ? 1u : 0u,
+        static_cast<unsigned long long>(frame2_lr_rva),
+        static_cast<unsigned long long>(frame2_lr_module.query_base),
+        static_cast<unsigned long long>(frame2_lr_module.query_allocation_base),
+        static_cast<unsigned long long>(frame2_lr_module.query_region_size),
+        frame2_lr_module.query_state, frame2_lr_module.query_protect,
+        frame2_lr_module.query_type, frame2_lr_module.query_error,
+        static_cast<unsigned long long>(frame2_lr_vq_rva),
         static_cast<unsigned long long>(context_flags),
         static_cast<unsigned long long>(cpsr), context_error, memory_error);
 
@@ -559,6 +651,14 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
                 u64 stack_limit = 0;
                 u64 frame_prev = 0;
                 u64 frame_lr = 0;
+                u64 frame2_prev = 0;
+                u64 frame2_lr = 0;
+                u32 frame_lr_instruction_minus4 = 0;
+                u32 frame_lr_instruction = 0;
+                u32 frame_lr_instruction_plus4 = 0;
+                bool frame_lr_instruction_minus4_ok = false;
+                bool frame_lr_instruction_ok = false;
+                bool frame_lr_instruction_plus4_ok = false;
                 u32 instruction = 0;
                 u32 instruction_minus4 = 0;
                 u32 instruction_plus4 = 0;
@@ -622,6 +722,33 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
                             frame_bytes == sizeof(frame_record)) {
                             frame_prev = frame_record[0];
                             frame_lr = frame_record[1];
+
+                            const u64 canonical_frame_lr =
+                                frame_lr & 0x0000FFFFFFFFFFFFULL;
+                            frame_lr_instruction_ok =
+                                read_instruction(canonical_frame_lr, frame_lr_instruction);
+                            frame_lr_instruction_minus4_ok =
+                                canonical_frame_lr >= sizeof(u32) &&
+                                read_instruction(canonical_frame_lr - sizeof(u32),
+                                                 frame_lr_instruction_minus4);
+                            frame_lr_instruction_plus4_ok =
+                                read_instruction(canonical_frame_lr + sizeof(u32),
+                                                 frame_lr_instruction_plus4);
+
+                            if (frame_prev > fp && frame_prev - fp < 0x01000000ULL) {
+                                u64 frame2_record[2]{};
+                                SIZE_T frame2_bytes{};
+                                if (ReadProcessMemory(
+                                        read_handle,
+                                        reinterpret_cast<const void*>(
+                                            static_cast<std::uintptr_t>(frame_prev)),
+                                        frame2_record, sizeof(frame2_record),
+                                        &frame2_bytes) != FALSE &&
+                                    frame2_bytes == sizeof(frame2_record)) {
+                                    frame2_prev = frame2_record[0];
+                                    frame2_lr = frame2_record[1];
+                                }
+                            }
                         } else if (memory_error == 0) {
                             memory_error = GetLastError();
                         }
@@ -634,12 +761,17 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
                 const auto pc_module = ResolveD2FastFailModule(parent_pid, pc_value);
                 const auto lr_module = ResolveD2FastFailModule(parent_pid, lr_value);
                 const auto frame_lr_module = ResolveD2FastFailModule(parent_pid, frame_lr);
+                const auto frame2_lr_module = ResolveD2FastFailModule(parent_pid, frame2_lr);
 
                 WriteWindowsNceD2FastFailLine(
                     parent_pid, child_pid, event.dwThreadId, exception, context_ptr, stack_base,
                     stack_limit, instruction, instruction_ok, instruction_minus4,
                     instruction_minus4_ok, instruction_plus4, instruction_plus4_ok, frame_prev,
-                    frame_lr, pc_module, lr_module, frame_lr_module, context_error, memory_error);
+                    frame_lr, frame2_prev, frame2_lr, frame_lr_instruction_minus4,
+                    frame_lr_instruction_minus4_ok, frame_lr_instruction,
+                    frame_lr_instruction_ok, frame_lr_instruction_plus4,
+                    frame_lr_instruction_plus4_ok, pc_module, lr_module, frame_lr_module,
+                    frame2_lr_module, context_error, memory_error);
                 continue_status = DBG_EXCEPTION_NOT_HANDLED;
             } else {
                 continue_status = DBG_EXCEPTION_NOT_HANDLED;
