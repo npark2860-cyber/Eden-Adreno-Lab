@@ -55,3 +55,12 @@ PAC caller VQ/frame-chain diagnostic:
 - capture instructions at canonical frame LR
 - capture the next frame record and resolve it with the same PAC-aware + VQ path
 - NCE/runtime remains frozen at 2f0d41b
+
+
+CI verification repair:
+- previous run 35610728262 failed in Step 3 before configure/build
+- cause: pipefail + printf|grep -Fq SIGPIPE => exit 141 after successful match
+- workflow-only fix commit 77aede2935a0f46f242e88ffb77291dd4206e85d
+- replace 24 printf|grep -Fq pipelines with grep -Fq <<<"$SRC"
+- observer source unchanged at 3c10985d7254b46f652ecbee5e78859e2e734237
+- one rebuild trigger only
