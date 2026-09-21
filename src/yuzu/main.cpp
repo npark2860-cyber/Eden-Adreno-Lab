@@ -85,6 +85,69 @@ void WriteWindowsNceV63Line(const char* tag, unsigned long parent_pid, unsigned 
     CloseHandle(file);
 }
 
+constexpr DWORD D2FastFailExceptionCode = 0xC0000409ul;
+
+void WriteWindowsNceD2FastFailLine(DWORD parent_pid, DWORD child_pid, DWORD thread_id,
+                                   const EXCEPTION_DEBUG_INFO& info, const CONTEXT* context,
+                                   u64 stack_base, u64 stack_limit, u32 instruction,
+                                   bool instruction_ok, DWORD context_error,
+                                   DWORD memory_error) noexcept {
+    HANDLE file = OpenWindowsNceV63Log();
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    const auto& record = info.ExceptionRecord;
+    const u64 info0 =
+        record.NumberParameters > 0 ? static_cast<u64>(record.ExceptionInformation[0]) : 0;
+    const u64 info1 =
+        record.NumberParameters > 1 ? static_cast<u64>(record.ExceptionInformation[1]) : 0;
+    const u64 info2 =
+        record.NumberParameters > 2 ? static_cast<u64>(record.ExceptionInformation[2]) : 0;
+    const u64 info3 =
+        record.NumberParameters > 3 ? static_cast<u64>(record.ExceptionInformation[3]) : 0;
+
+    const u64 pc = context != nullptr ? static_cast<u64>(context->Pc) : 0;
+    const u64 sp = context != nullptr ? static_cast<u64>(context->Sp) : 0;
+    const u64 lr = context != nullptr ? static_cast<u64>(context->X[30]) : 0;
+    const u64 x18 = context != nullptr ? static_cast<u64>(context->X[18]) : 0;
+    const u64 context_flags =
+        context != nullptr ? static_cast<u64>(context->ContextFlags) : 0;
+    const u64 cpsr = context != nullptr ? static_cast<u64>(context->Cpsr) : 0;
+
+    char line[2048]{};
+    const int line_length = std::snprintf(
+        line, sizeof(line),
+        "NCE_D2_FASTFAIL_DEBUG tick=%llu parent_pid=%lu child_pid=%lu thread_id=%lu "
+        "first_chance=%lu code=0x%08lX flags=0x%08lX address=0x%016llX params=%lu "
+        "info0=0x%016llX info1=0x%016llX info2=0x%016llX info3=0x%016llX "
+        "pc=0x%016llX sp=0x%016llX lr=0x%016llX x18=0x%016llX "
+        "stack_base=0x%016llX stack_limit=0x%016llX instruction=0x%08X "
+        "instruction_ok=%u context_flags=0x%016llX cpsr=0x%016llX "
+        "context_error=%lu memory_error=%lu base=811afc84ac0bc00285b24ef786c8ad92b074009d\r\n",
+        static_cast<unsigned long long>(GetTickCount64()), parent_pid, child_pid, thread_id,
+        info.dwFirstChance, record.ExceptionCode, record.ExceptionFlags,
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(record.ExceptionAddress)),
+        record.NumberParameters, static_cast<unsigned long long>(info0),
+        static_cast<unsigned long long>(info1), static_cast<unsigned long long>(info2),
+        static_cast<unsigned long long>(info3), static_cast<unsigned long long>(pc),
+        static_cast<unsigned long long>(sp), static_cast<unsigned long long>(lr),
+        static_cast<unsigned long long>(x18), static_cast<unsigned long long>(stack_base),
+        static_cast<unsigned long long>(stack_limit), instruction,
+        instruction_ok ? 1u : 0u, static_cast<unsigned long long>(context_flags),
+        static_cast<unsigned long long>(cpsr), context_error, memory_error);
+
+    if (line_length > 0) {
+        DWORD written{};
+        const DWORD size = static_cast<DWORD>(
+            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
+        (void)WriteFile(file, line, size, &written, nullptr);
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
 int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
     if (argc != 4) {
         return 201;
@@ -108,13 +171,154 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
     WriteWindowsNceV63Line("V63_WATCHDOG_READY", parent_pid, child_pid, 0xFFFFFFFFul,
                            STILL_ACTIVE, 0);
 
-    const DWORD wait_result = WaitForSingleObject(parent_handle, INFINITE);
-    DWORD exit_code = 0xFFFFFFFFul;
-    const BOOL got_exit = GetExitCodeProcess(parent_handle, &exit_code);
-    const DWORD error_code = got_exit != FALSE ? 0 : GetLastError();
+    if (DebugActiveProcess(parent_pid) == FALSE) {
+        const DWORD attach_error = GetLastError();
+        WriteWindowsNceV63Line("NCE_D2_FASTFAIL_DEBUG_ATTACH_FAIL", parent_pid, child_pid,
+                               0xFFFFFFFFul, STILL_ACTIVE, attach_error);
 
-    WriteWindowsNceV63Line("V63_WATCHDOG_EXIT", parent_pid, child_pid, wait_result, exit_code,
-                           error_code);
+        const DWORD wait_result = WaitForSingleObject(parent_handle, INFINITE);
+        DWORD exit_code = 0xFFFFFFFFul;
+        const BOOL got_exit = GetExitCodeProcess(parent_handle, &exit_code);
+        const DWORD error_code = got_exit != FALSE ? 0 : GetLastError();
+        WriteWindowsNceV63Line("V63_WATCHDOG_EXIT", parent_pid, child_pid, wait_result, exit_code,
+                               error_code);
+        CloseHandle(parent_handle);
+        return 0;
+    }
+
+    (void)DebugSetProcessKillOnExit(FALSE);
+    WriteWindowsNceV63Line("NCE_D2_FASTFAIL_DEBUG_ATTACHED", parent_pid, child_pid,
+                           0xFFFFFFFFul, STILL_ACTIVE, 0);
+
+    HANDLE read_handle =
+        OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, parent_pid);
+    bool consumed_attach_breakpoint = false;
+    bool saw_exit = false;
+    DWORD debug_exit_code = 0xFFFFFFFFul;
+
+    while (!saw_exit) {
+        DEBUG_EVENT event{};
+        if (WaitForDebugEvent(&event, INFINITE) == FALSE) {
+            WriteWindowsNceV63Line("NCE_D2_FASTFAIL_DEBUG_WAIT_FAIL", parent_pid, child_pid,
+                                   0xFFFFFFFFul, STILL_ACTIVE, GetLastError());
+            break;
+        }
+
+        DWORD continue_status = DBG_CONTINUE;
+
+        if (event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
+            const auto& exception = event.u.Exception;
+            const auto& record = exception.ExceptionRecord;
+
+            if (record.ExceptionCode == D2FastFailExceptionCode) {
+                CONTEXT context{};
+                context.ContextFlags = CONTEXT_ALL;
+
+                DWORD context_error = 0;
+                HANDLE thread =
+                    OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
+                               event.dwThreadId);
+                const CONTEXT* context_ptr = nullptr;
+                if (thread != nullptr) {
+                    if (GetThreadContext(thread, &context) != FALSE) {
+                        context_ptr = &context;
+                    } else {
+                        context_error = GetLastError();
+                    }
+                    CloseHandle(thread);
+                } else {
+                    context_error = GetLastError();
+                }
+
+                u64 stack_base = 0;
+                u64 stack_limit = 0;
+                u32 instruction = 0;
+                bool instruction_ok = false;
+                DWORD memory_error = 0;
+
+                if (read_handle != nullptr && context_ptr != nullptr) {
+                    SIZE_T bytes{};
+                    const u64 x18 = static_cast<u64>(context.X[18]);
+                    if (x18 != 0) {
+                        if (ReadProcessMemory(read_handle,
+                                              reinterpret_cast<const void*>(x18 + 8),
+                                              &stack_base, sizeof(stack_base), &bytes) == FALSE ||
+                            bytes != sizeof(stack_base)) {
+                            memory_error = GetLastError();
+                            stack_base = 0;
+                        }
+                        bytes = 0;
+                        if (ReadProcessMemory(read_handle,
+                                              reinterpret_cast<const void*>(x18 + 16),
+                                              &stack_limit, sizeof(stack_limit), &bytes) == FALSE ||
+                            bytes != sizeof(stack_limit)) {
+                            if (memory_error == 0) {
+                                memory_error = GetLastError();
+                            }
+                            stack_limit = 0;
+                        }
+                    }
+
+                    bytes = 0;
+                    if (ReadProcessMemory(read_handle,
+                                          reinterpret_cast<const void*>(
+                                              static_cast<std::uintptr_t>(context.Pc)),
+                                          &instruction, sizeof(instruction), &bytes) != FALSE &&
+                        bytes == sizeof(instruction)) {
+                        instruction_ok = true;
+                    } else if (memory_error == 0) {
+                        memory_error = GetLastError();
+                    }
+                }
+
+                WriteWindowsNceD2FastFailLine(parent_pid, child_pid, event.dwThreadId,
+                                              exception, context_ptr, stack_base, stack_limit,
+                                              instruction, instruction_ok, context_error,
+                                              memory_error);
+                continue_status = DBG_EXCEPTION_NOT_HANDLED;
+            } else if (record.ExceptionCode == EXCEPTION_BREAKPOINT &&
+                       !consumed_attach_breakpoint) {
+                // DebugActiveProcess injects one debugger-owned startup breakpoint. Consume only
+                // that first attach breakpoint; every later breakpoint remains process-owned so
+                // the existing NCE VEH sees exactly the same exception stream as production.
+                consumed_attach_breakpoint = true;
+                continue_status = DBG_CONTINUE;
+            } else {
+                continue_status = DBG_EXCEPTION_NOT_HANDLED;
+            }
+        } else if (event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT) {
+            if (event.u.CreateProcessInfo.hFile != nullptr) {
+                CloseHandle(event.u.CreateProcessInfo.hFile);
+            }
+        } else if (event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT) {
+            if (event.u.LoadDll.hFile != nullptr) {
+                CloseHandle(event.u.LoadDll.hFile);
+            }
+        } else if (event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT) {
+            debug_exit_code = event.u.ExitProcess.dwExitCode;
+            saw_exit = true;
+        }
+
+        (void)ContinueDebugEvent(event.dwProcessId, event.dwThreadId, continue_status);
+    }
+
+    if (read_handle != nullptr) {
+        CloseHandle(read_handle);
+    }
+
+    if (!saw_exit) {
+        (void)DebugActiveProcessStop(parent_pid);
+        const DWORD wait_result = WaitForSingleObject(parent_handle, INFINITE);
+        DWORD exit_code = 0xFFFFFFFFul;
+        const BOOL got_exit = GetExitCodeProcess(parent_handle, &exit_code);
+        const DWORD error_code = got_exit != FALSE ? 0 : GetLastError();
+        WriteWindowsNceV63Line("V63_WATCHDOG_EXIT", parent_pid, child_pid, wait_result, exit_code,
+                               error_code);
+    } else {
+        WriteWindowsNceV63Line("V63_WATCHDOG_EXIT", parent_pid, child_pid, WAIT_OBJECT_0,
+                               debug_exit_code, 0);
+    }
+
     CloseHandle(parent_handle);
     return 0;
 }
