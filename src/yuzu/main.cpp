@@ -356,6 +356,162 @@ void WriteWindowsNceD2FastFailLine(
 }
 
 
+void WriteWindowsNceD2SecondChanceAvLine(
+    DWORD parent_pid, DWORD child_pid, DWORD thread_id, const EXCEPTION_DEBUG_INFO& info,
+    const CONTEXT* context, HANDLE read_handle, DWORD context_error) noexcept {
+    HANDLE file = OpenWindowsNceV63Log();
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    const auto& record = info.ExceptionRecord;
+    const u64 access_type =
+        record.NumberParameters > 0 ? static_cast<u64>(record.ExceptionInformation[0]) : 0;
+    const u64 fault_address =
+        record.NumberParameters > 1 ? static_cast<u64>(record.ExceptionInformation[1]) : 0;
+
+    const u64 pc = context != nullptr ? static_cast<u64>(context->Pc) : 0;
+    const u64 sp = context != nullptr ? static_cast<u64>(context->Sp) : 0;
+    const u64 lr = context != nullptr ? static_cast<u64>(context->X[30]) : 0;
+    const u64 fp = context != nullptr ? static_cast<u64>(context->X[29]) : 0;
+    const u64 x18 = context != nullptr ? static_cast<u64>(context->X[18]) : 0;
+    const u64 context_flags =
+        context != nullptr ? static_cast<u64>(context->ContextFlags) : 0;
+    const u64 cpsr = context != nullptr ? static_cast<u64>(context->Cpsr) : 0;
+
+    u64 stack_base = 0;
+    u64 stack_limit = 0;
+    u64 frame_prev = 0;
+    u64 frame_lr = 0;
+    u32 instruction_minus4 = 0;
+    u32 instruction = 0;
+    u32 instruction_plus4 = 0;
+    bool instruction_minus4_ok = false;
+    bool instruction_ok = false;
+    bool instruction_plus4_ok = false;
+    DWORD memory_error = 0;
+
+    if (read_handle != nullptr && context != nullptr) {
+        SIZE_T bytes{};
+        if (x18 != 0) {
+            if (ReadProcessMemory(read_handle, reinterpret_cast<const void*>(x18 + 8),
+                                  &stack_base, sizeof(stack_base), &bytes) == FALSE ||
+                bytes != sizeof(stack_base)) {
+                memory_error = GetLastError();
+                stack_base = 0;
+            }
+            bytes = 0;
+            if (ReadProcessMemory(read_handle, reinterpret_cast<const void*>(x18 + 16),
+                                  &stack_limit, sizeof(stack_limit), &bytes) == FALSE ||
+                bytes != sizeof(stack_limit)) {
+                if (memory_error == 0) {
+                    memory_error = GetLastError();
+                }
+                stack_limit = 0;
+            }
+        }
+
+        auto read_instruction = [&](u64 address, u32& value) {
+            SIZE_T instruction_bytes{};
+            return address != 0 &&
+                   ReadProcessMemory(
+                       read_handle,
+                       reinterpret_cast<const void*>(static_cast<std::uintptr_t>(address)),
+                       &value, sizeof(value), &instruction_bytes) != FALSE &&
+                   instruction_bytes == sizeof(value);
+        };
+
+        instruction_ok = read_instruction(pc, instruction);
+        instruction_minus4_ok =
+            pc >= sizeof(u32) && read_instruction(pc - sizeof(u32), instruction_minus4);
+        instruction_plus4_ok = read_instruction(pc + sizeof(u32), instruction_plus4);
+
+        if (fp != 0) {
+            u64 frame_record[2]{};
+            SIZE_T frame_bytes{};
+            if (ReadProcessMemory(
+                    read_handle,
+                    reinterpret_cast<const void*>(static_cast<std::uintptr_t>(fp)),
+                    frame_record, sizeof(frame_record), &frame_bytes) != FALSE &&
+                frame_bytes == sizeof(frame_record)) {
+                frame_prev = frame_record[0];
+                frame_lr = frame_record[1];
+            } else if (memory_error == 0) {
+                memory_error = GetLastError();
+            }
+        }
+    }
+
+    const auto pc_module = ResolveD2FastFailModule(parent_pid, pc);
+    const auto lr_module = ResolveD2FastFailModule(parent_pid, lr);
+    const auto fault_module = ResolveD2FastFailModule(parent_pid, fault_address);
+    const auto frame_lr_module = ResolveD2FastFailModule(parent_pid, frame_lr);
+
+    const auto module_rva = [](const D2FastFailModuleInfo& module) -> u64 {
+        return module.base != 0 && module.resolved_address >= module.base
+                   ? module.resolved_address - module.base
+                   : 0;
+    };
+
+    char line[8192]{};
+    const int line_length = std::snprintf(
+        line, sizeof(line),
+        "NCE_D2_SECOND_CHANCE_AV tick=%llu parent_pid=%lu child_pid=%lu thread_id=%lu "
+        "first_chance=%lu code=0x%08lX flags=0x%08lX address=0x%016llX params=%lu "
+        "access_type=0x%016llX fault_address=0x%016llX "
+        "pc=0x%016llX sp=0x%016llX lr=0x%016llX fp=0x%016llX x18=0x%016llX "
+        "stack_base=0x%016llX stack_limit=0x%016llX "
+        "instruction_minus4=0x%08X instruction_minus4_ok=%u "
+        "instruction=0x%08X instruction_ok=%u "
+        "instruction_plus4=0x%08X instruction_plus4_ok=%u "
+        "frame_prev=0x%016llX frame_lr=0x%016llX "
+        "pc_module=%s pc_resolved=0x%016llX pc_pac_stripped=%u pc_rva=0x%llX "
+        "lr_module=%s lr_resolved=0x%016llX lr_pac_stripped=%u lr_rva=0x%llX "
+        "fault_module=%s fault_resolved=0x%016llX fault_pac_stripped=%u fault_rva=0x%llX "
+        "frame_lr_module=%s frame_lr_resolved=0x%016llX frame_lr_pac_stripped=%u frame_lr_rva=0x%llX "
+        "context_flags=0x%016llX cpsr=0x%016llX context_error=%lu memory_error=%lu "
+        "base=2f0d41b173b4f9ae0d4e0b96cb61402c9ea5cd0e\r\n",
+        static_cast<unsigned long long>(GetTickCount64()), parent_pid, child_pid, thread_id,
+        info.dwFirstChance, record.ExceptionCode, record.ExceptionFlags,
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(record.ExceptionAddress)),
+        record.NumberParameters, static_cast<unsigned long long>(access_type),
+        static_cast<unsigned long long>(fault_address),
+        static_cast<unsigned long long>(pc), static_cast<unsigned long long>(sp),
+        static_cast<unsigned long long>(lr), static_cast<unsigned long long>(fp),
+        static_cast<unsigned long long>(x18), static_cast<unsigned long long>(stack_base),
+        static_cast<unsigned long long>(stack_limit), instruction_minus4,
+        instruction_minus4_ok ? 1u : 0u, instruction, instruction_ok ? 1u : 0u,
+        instruction_plus4, instruction_plus4_ok ? 1u : 0u,
+        static_cast<unsigned long long>(frame_prev),
+        static_cast<unsigned long long>(frame_lr),
+        pc_module.name, static_cast<unsigned long long>(pc_module.resolved_address),
+        pc_module.pac_stripped ? 1u : 0u,
+        static_cast<unsigned long long>(module_rva(pc_module)),
+        lr_module.name, static_cast<unsigned long long>(lr_module.resolved_address),
+        lr_module.pac_stripped ? 1u : 0u,
+        static_cast<unsigned long long>(module_rva(lr_module)),
+        fault_module.name, static_cast<unsigned long long>(fault_module.resolved_address),
+        fault_module.pac_stripped ? 1u : 0u,
+        static_cast<unsigned long long>(module_rva(fault_module)),
+        frame_lr_module.name,
+        static_cast<unsigned long long>(frame_lr_module.resolved_address),
+        frame_lr_module.pac_stripped ? 1u : 0u,
+        static_cast<unsigned long long>(module_rva(frame_lr_module)),
+        static_cast<unsigned long long>(context_flags),
+        static_cast<unsigned long long>(cpsr), context_error, memory_error);
+
+    if (line_length > 0) {
+        DWORD written{};
+        const DWORD size = static_cast<DWORD>(
+            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
+        (void)WriteFile(file, line, size, &written, nullptr);
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
+
 void WriteWindowsNceD2BreakpointDebugLine(
     DWORD parent_pid, DWORD child_pid, DWORD thread_id, u64 sequence, bool consumed_as_attach,
     const EXCEPTION_DEBUG_INFO& info, const CONTEXT* context, HANDLE read_handle,
@@ -627,6 +783,33 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
                         continue_status = DBG_EXCEPTION_NOT_HANDLED;
                     }
                 }
+            } else if (record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+                       exception.dwFirstChance == 0) {
+                // Capture only the terminal, second-chance AV. First-chance guest AVs remain
+                // completely untouched so the normal NCE VEH/recovery path gets no added
+                // context-read/module-resolution/logging overhead.
+                CONTEXT context{};
+                context.ContextFlags = CONTEXT_ALL;
+                DWORD context_error = 0;
+                HANDLE thread =
+                    OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
+                               event.dwThreadId);
+                const CONTEXT* context_ptr = nullptr;
+                if (thread != nullptr) {
+                    if (GetThreadContext(thread, &context) != FALSE) {
+                        context_ptr = &context;
+                    } else {
+                        context_error = GetLastError();
+                    }
+                    CloseHandle(thread);
+                } else {
+                    context_error = GetLastError();
+                }
+
+                WriteWindowsNceD2SecondChanceAvLine(
+                    parent_pid, child_pid, event.dwThreadId, exception, context_ptr,
+                    read_handle, context_error);
+                continue_status = DBG_EXCEPTION_NOT_HANDLED;
             } else if (record.ExceptionCode == D2FastFailExceptionCode) {
                 CONTEXT context{};
                 context.ContextFlags = CONTEXT_ALL;
