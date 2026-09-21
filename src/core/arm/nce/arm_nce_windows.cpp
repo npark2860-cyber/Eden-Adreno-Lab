@@ -35,7 +35,6 @@
 
 namespace Core {
 
-extern "C" void WindowsNceEnterGuestContext() noexcept;
 extern "C" void WindowsNceGuestStackBridge() noexcept;
 extern "C" void WindowsNceHostStackBridge() noexcept;
 extern "C" void WindowsNceV74HostStackBridge() noexcept;
