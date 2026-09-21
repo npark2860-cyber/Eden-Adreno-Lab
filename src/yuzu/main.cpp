@@ -91,6 +91,8 @@ constexpr DWORD D2FastFailExceptionCode = 0xC0000409ul;
 struct D2FastFailModuleInfo {
     u64 base{};
     u64 size{};
+    u64 resolved_address{};
+    bool pac_stripped{};
     char name[MAX_PATH]{"<unknown>"};
 };
 
@@ -100,31 +102,45 @@ D2FastFailModuleInfo ResolveD2FastFailModule(DWORD process_id, u64 address) noex
         return result;
     }
 
+    // Windows ARM64 may store PAC-signed return addresses in stack frame records.
+    // Try the raw address first, then a canonical user-mode candidate with the
+    // upper 16 PAC bits removed. This is diagnostic-only and does not alter state.
+    const u64 candidates[2] = {address, address & 0x0000FFFFFFFFFFFFULL};
+
     HANDLE snapshot =
         CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, process_id);
     if (snapshot == INVALID_HANDLE_VALUE) {
         return result;
     }
 
-    MODULEENTRY32W module{};
-    module.dwSize = sizeof(module);
-    if (Module32FirstW(snapshot, &module) != FALSE) {
-        do {
-            const u64 base =
-                reinterpret_cast<u64>(module.modBaseAddr);
-            const u64 end = base + static_cast<u64>(module.modBaseSize);
-            if (address >= base && address < end) {
-                result.base = base;
-                result.size = static_cast<u64>(module.modBaseSize);
-                const int converted =
-                    WideCharToMultiByte(CP_UTF8, 0, module.szModule, -1, result.name,
-                                        static_cast<int>(sizeof(result.name)), nullptr, nullptr);
-                if (converted <= 0) {
-                    std::snprintf(result.name, sizeof(result.name), "<module-name-error>");
+    for (size_t candidate_index = 0; candidate_index < 2 && result.base == 0;
+         ++candidate_index) {
+        const u64 candidate = candidates[candidate_index];
+        if (candidate == 0 || (candidate_index == 1 && candidate == candidates[0])) {
+            continue;
+        }
+
+        MODULEENTRY32W module{};
+        module.dwSize = sizeof(module);
+        if (Module32FirstW(snapshot, &module) != FALSE) {
+            do {
+                const u64 base = reinterpret_cast<u64>(module.modBaseAddr);
+                const u64 end = base + static_cast<u64>(module.modBaseSize);
+                if (candidate >= base && candidate < end) {
+                    result.base = base;
+                    result.size = static_cast<u64>(module.modBaseSize);
+                    result.resolved_address = candidate;
+                    result.pac_stripped = candidate_index == 1;
+                    const int converted =
+                        WideCharToMultiByte(CP_UTF8, 0, module.szModule, -1, result.name,
+                                            static_cast<int>(sizeof(result.name)), nullptr, nullptr);
+                    if (converted <= 0) {
+                        std::snprintf(result.name, sizeof(result.name), "<module-name-error>");
+                    }
+                    break;
                 }
-                break;
-            }
-        } while (Module32NextW(snapshot, &module) != FALSE);
+            } while (Module32NextW(snapshot, &module) != FALSE);
+        }
     }
 
     CloseHandle(snapshot);
@@ -171,11 +187,17 @@ void WriteWindowsNceD2FastFailLine(
         context != nullptr ? static_cast<u64>(context->ContextFlags) : 0;
     const u64 cpsr = context != nullptr ? static_cast<u64>(context->Cpsr) : 0;
 
-    const u64 pc_rva = pc_module.base != 0 && pc >= pc_module.base ? pc - pc_module.base : 0;
-    const u64 lr_rva = lr_module.base != 0 && lr >= lr_module.base ? lr - lr_module.base : 0;
+    const u64 pc_rva =
+        pc_module.base != 0 && pc_module.resolved_address >= pc_module.base
+            ? pc_module.resolved_address - pc_module.base
+            : 0;
+    const u64 lr_rva =
+        lr_module.base != 0 && lr_module.resolved_address >= lr_module.base
+            ? lr_module.resolved_address - lr_module.base
+            : 0;
     const u64 frame_lr_rva =
-        frame_lr_module.base != 0 && frame_lr >= frame_lr_module.base
-            ? frame_lr - frame_lr_module.base
+        frame_lr_module.base != 0 && frame_lr_module.resolved_address >= frame_lr_module.base
+            ? frame_lr_module.resolved_address - frame_lr_module.base
             : 0;
 
     char line[4096]{};
@@ -192,9 +214,9 @@ void WriteWindowsNceD2FastFailLine(
         "instruction=0x%08X instruction_ok=%u "
         "instruction_plus4=0x%08X instruction_plus4_ok=%u "
         "frame_prev=0x%016llX frame_lr=0x%016llX "
-        "pc_module=%s pc_module_base=0x%016llX pc_rva=0x%llX "
-        "lr_module=%s lr_module_base=0x%016llX lr_rva=0x%llX "
-        "frame_lr_module=%s frame_lr_module_base=0x%016llX frame_lr_rva=0x%llX "
+        "pc_module=%s pc_module_base=0x%016llX pc_resolved=0x%016llX pc_pac_stripped=%u pc_rva=0x%llX "
+        "lr_module=%s lr_module_base=0x%016llX lr_resolved=0x%016llX lr_pac_stripped=%u lr_rva=0x%llX "
+        "frame_lr_module=%s frame_lr_module_base=0x%016llX frame_lr_resolved=0x%016llX frame_lr_pac_stripped=%u frame_lr_rva=0x%llX "
         "context_flags=0x%016llX cpsr=0x%016llX context_error=%lu memory_error=%lu "
         "base=811afc84ac0bc00285b24ef786c8ad92b074009d\r\n",
         static_cast<unsigned long long>(GetTickCount64()), parent_pid, child_pid, thread_id,
@@ -217,10 +239,16 @@ void WriteWindowsNceD2FastFailLine(
         static_cast<unsigned long long>(frame_prev),
         static_cast<unsigned long long>(frame_lr), pc_module.name,
         static_cast<unsigned long long>(pc_module.base),
+        static_cast<unsigned long long>(pc_module.resolved_address),
+        pc_module.pac_stripped ? 1u : 0u,
         static_cast<unsigned long long>(pc_rva), lr_module.name,
         static_cast<unsigned long long>(lr_module.base),
+        static_cast<unsigned long long>(lr_module.resolved_address),
+        lr_module.pac_stripped ? 1u : 0u,
         static_cast<unsigned long long>(lr_rva), frame_lr_module.name,
         static_cast<unsigned long long>(frame_lr_module.base),
+        static_cast<unsigned long long>(frame_lr_module.resolved_address),
+        frame_lr_module.pac_stripped ? 1u : 0u,
         static_cast<unsigned long long>(frame_lr_rva),
         static_cast<unsigned long long>(context_flags),
         static_cast<unsigned long long>(cpsr), context_error, memory_error);
