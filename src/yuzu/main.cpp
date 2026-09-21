@@ -29,6 +29,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -87,11 +88,57 @@ void WriteWindowsNceV63Line(const char* tag, unsigned long parent_pid, unsigned 
 
 constexpr DWORD D2FastFailExceptionCode = 0xC0000409ul;
 
-void WriteWindowsNceD2FastFailLine(DWORD parent_pid, DWORD child_pid, DWORD thread_id,
-                                   const EXCEPTION_DEBUG_INFO& info, const CONTEXT* context,
-                                   u64 stack_base, u64 stack_limit, u32 instruction,
-                                   bool instruction_ok, DWORD context_error,
-                                   DWORD memory_error) noexcept {
+struct D2FastFailModuleInfo {
+    u64 base{};
+    u64 size{};
+    char name[MAX_PATH]{"<unknown>"};
+};
+
+D2FastFailModuleInfo ResolveD2FastFailModule(DWORD process_id, u64 address) noexcept {
+    D2FastFailModuleInfo result{};
+    if (address == 0) {
+        return result;
+    }
+
+    HANDLE snapshot =
+        CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, process_id);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return result;
+    }
+
+    MODULEENTRY32W module{};
+    module.dwSize = sizeof(module);
+    if (Module32FirstW(snapshot, &module) != FALSE) {
+        do {
+            const u64 base =
+                reinterpret_cast<u64>(module.modBaseAddr);
+            const u64 end = base + static_cast<u64>(module.modBaseSize);
+            if (address >= base && address < end) {
+                result.base = base;
+                result.size = static_cast<u64>(module.modBaseSize);
+                const int converted =
+                    WideCharToMultiByte(CP_UTF8, 0, module.szModule, -1, result.name,
+                                        static_cast<int>(sizeof(result.name)), nullptr, nullptr);
+                if (converted <= 0) {
+                    std::snprintf(result.name, sizeof(result.name), "<module-name-error>");
+                }
+                break;
+            }
+        } while (Module32NextW(snapshot, &module) != FALSE);
+    }
+
+    CloseHandle(snapshot);
+    return result;
+}
+
+void WriteWindowsNceD2FastFailLine(
+    DWORD parent_pid, DWORD child_pid, DWORD thread_id, const EXCEPTION_DEBUG_INFO& info,
+    const CONTEXT* context, u64 stack_base, u64 stack_limit, u32 instruction,
+    bool instruction_ok, u32 instruction_minus4, bool instruction_minus4_ok,
+    u32 instruction_plus4, bool instruction_plus4_ok, u64 frame_prev, u64 frame_lr,
+    const D2FastFailModuleInfo& pc_module, const D2FastFailModuleInfo& lr_module,
+    const D2FastFailModuleInfo& frame_lr_module, DWORD context_error,
+    DWORD memory_error) noexcept {
     HANDLE file = OpenWindowsNceV63Log();
     if (file == INVALID_HANDLE_VALUE) {
         return;
@@ -110,21 +157,46 @@ void WriteWindowsNceD2FastFailLine(DWORD parent_pid, DWORD child_pid, DWORD thre
     const u64 pc = context != nullptr ? static_cast<u64>(context->Pc) : 0;
     const u64 sp = context != nullptr ? static_cast<u64>(context->Sp) : 0;
     const u64 lr = context != nullptr ? static_cast<u64>(context->X[30]) : 0;
+    const u64 fp = context != nullptr ? static_cast<u64>(context->X[29]) : 0;
     const u64 x18 = context != nullptr ? static_cast<u64>(context->X[18]) : 0;
+    const u64 x0 = context != nullptr ? static_cast<u64>(context->X[0]) : 0;
+    const u64 x1 = context != nullptr ? static_cast<u64>(context->X[1]) : 0;
+    const u64 x2 = context != nullptr ? static_cast<u64>(context->X[2]) : 0;
+    const u64 x3 = context != nullptr ? static_cast<u64>(context->X[3]) : 0;
+    const u64 x4 = context != nullptr ? static_cast<u64>(context->X[4]) : 0;
+    const u64 x5 = context != nullptr ? static_cast<u64>(context->X[5]) : 0;
+    const u64 x6 = context != nullptr ? static_cast<u64>(context->X[6]) : 0;
+    const u64 x7 = context != nullptr ? static_cast<u64>(context->X[7]) : 0;
     const u64 context_flags =
         context != nullptr ? static_cast<u64>(context->ContextFlags) : 0;
     const u64 cpsr = context != nullptr ? static_cast<u64>(context->Cpsr) : 0;
 
-    char line[2048]{};
+    const u64 pc_rva = pc_module.base != 0 && pc >= pc_module.base ? pc - pc_module.base : 0;
+    const u64 lr_rva = lr_module.base != 0 && lr >= lr_module.base ? lr - lr_module.base : 0;
+    const u64 frame_lr_rva =
+        frame_lr_module.base != 0 && frame_lr >= frame_lr_module.base
+            ? frame_lr - frame_lr_module.base
+            : 0;
+
+    char line[4096]{};
     const int line_length = std::snprintf(
         line, sizeof(line),
         "NCE_D2_FASTFAIL_DEBUG tick=%llu parent_pid=%lu child_pid=%lu thread_id=%lu "
         "first_chance=%lu code=0x%08lX flags=0x%08lX address=0x%016llX params=%lu "
         "info0=0x%016llX info1=0x%016llX info2=0x%016llX info3=0x%016llX "
-        "pc=0x%016llX sp=0x%016llX lr=0x%016llX x18=0x%016llX "
-        "stack_base=0x%016llX stack_limit=0x%016llX instruction=0x%08X "
-        "instruction_ok=%u context_flags=0x%016llX cpsr=0x%016llX "
-        "context_error=%lu memory_error=%lu base=811afc84ac0bc00285b24ef786c8ad92b074009d\r\n",
+        "pc=0x%016llX sp=0x%016llX lr=0x%016llX fp=0x%016llX x18=0x%016llX "
+        "x0=0x%016llX x1=0x%016llX x2=0x%016llX x3=0x%016llX "
+        "x4=0x%016llX x5=0x%016llX x6=0x%016llX x7=0x%016llX "
+        "stack_base=0x%016llX stack_limit=0x%016llX "
+        "instruction_minus4=0x%08X instruction_minus4_ok=%u "
+        "instruction=0x%08X instruction_ok=%u "
+        "instruction_plus4=0x%08X instruction_plus4_ok=%u "
+        "frame_prev=0x%016llX frame_lr=0x%016llX "
+        "pc_module=%s pc_module_base=0x%016llX pc_rva=0x%llX "
+        "lr_module=%s lr_module_base=0x%016llX lr_rva=0x%llX "
+        "frame_lr_module=%s frame_lr_module_base=0x%016llX frame_lr_rva=0x%llX "
+        "context_flags=0x%016llX cpsr=0x%016llX context_error=%lu memory_error=%lu "
+        "base=811afc84ac0bc00285b24ef786c8ad92b074009d\r\n",
         static_cast<unsigned long long>(GetTickCount64()), parent_pid, child_pid, thread_id,
         info.dwFirstChance, record.ExceptionCode, record.ExceptionFlags,
         static_cast<unsigned long long>(
@@ -133,9 +205,24 @@ void WriteWindowsNceD2FastFailLine(DWORD parent_pid, DWORD child_pid, DWORD thre
         static_cast<unsigned long long>(info1), static_cast<unsigned long long>(info2),
         static_cast<unsigned long long>(info3), static_cast<unsigned long long>(pc),
         static_cast<unsigned long long>(sp), static_cast<unsigned long long>(lr),
-        static_cast<unsigned long long>(x18), static_cast<unsigned long long>(stack_base),
-        static_cast<unsigned long long>(stack_limit), instruction,
-        instruction_ok ? 1u : 0u, static_cast<unsigned long long>(context_flags),
+        static_cast<unsigned long long>(fp), static_cast<unsigned long long>(x18),
+        static_cast<unsigned long long>(x0), static_cast<unsigned long long>(x1),
+        static_cast<unsigned long long>(x2), static_cast<unsigned long long>(x3),
+        static_cast<unsigned long long>(x4), static_cast<unsigned long long>(x5),
+        static_cast<unsigned long long>(x6), static_cast<unsigned long long>(x7),
+        static_cast<unsigned long long>(stack_base),
+        static_cast<unsigned long long>(stack_limit), instruction_minus4,
+        instruction_minus4_ok ? 1u : 0u, instruction, instruction_ok ? 1u : 0u,
+        instruction_plus4, instruction_plus4_ok ? 1u : 0u,
+        static_cast<unsigned long long>(frame_prev),
+        static_cast<unsigned long long>(frame_lr), pc_module.name,
+        static_cast<unsigned long long>(pc_module.base),
+        static_cast<unsigned long long>(pc_rva), lr_module.name,
+        static_cast<unsigned long long>(lr_module.base),
+        static_cast<unsigned long long>(lr_rva), frame_lr_module.name,
+        static_cast<unsigned long long>(frame_lr_module.base),
+        static_cast<unsigned long long>(frame_lr_rva),
+        static_cast<unsigned long long>(context_flags),
         static_cast<unsigned long long>(cpsr), context_error, memory_error);
 
     if (line_length > 0) {
@@ -232,8 +319,14 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
 
                 u64 stack_base = 0;
                 u64 stack_limit = 0;
+                u64 frame_prev = 0;
+                u64 frame_lr = 0;
                 u32 instruction = 0;
+                u32 instruction_minus4 = 0;
+                u32 instruction_plus4 = 0;
                 bool instruction_ok = false;
+                bool instruction_minus4_ok = false;
+                bool instruction_plus4_ok = false;
                 DWORD memory_error = 0;
 
                 if (read_handle != nullptr && context_ptr != nullptr) {
@@ -259,22 +352,56 @@ int RunWindowsNceV63Watchdog(int argc, char* argv[]) noexcept {
                         }
                     }
 
-                    bytes = 0;
-                    if (ReadProcessMemory(read_handle,
-                                          reinterpret_cast<const void*>(
-                                              static_cast<std::uintptr_t>(context.Pc)),
-                                          &instruction, sizeof(instruction), &bytes) != FALSE &&
-                        bytes == sizeof(instruction)) {
-                        instruction_ok = true;
-                    } else if (memory_error == 0) {
-                        memory_error = GetLastError();
+                    auto read_instruction = [&](u64 address, u32& value) {
+                        SIZE_T instruction_bytes{};
+                        return address != 0 &&
+                               ReadProcessMemory(
+                                   read_handle,
+                                   reinterpret_cast<const void*>(
+                                       static_cast<std::uintptr_t>(address)),
+                                   &value, sizeof(value), &instruction_bytes) != FALSE &&
+                               instruction_bytes == sizeof(value);
+                    };
+
+                    instruction_ok = read_instruction(static_cast<u64>(context.Pc), instruction);
+                    instruction_minus4_ok =
+                        context.Pc >= sizeof(u32) &&
+                        read_instruction(static_cast<u64>(context.Pc) - sizeof(u32),
+                                         instruction_minus4);
+                    instruction_plus4_ok =
+                        read_instruction(static_cast<u64>(context.Pc) + sizeof(u32),
+                                         instruction_plus4);
+
+                    const u64 fp = static_cast<u64>(context.X[29]);
+                    if (fp != 0) {
+                        u64 frame_record[2]{};
+                        SIZE_T frame_bytes{};
+                        if (ReadProcessMemory(read_handle,
+                                              reinterpret_cast<const void*>(
+                                                  static_cast<std::uintptr_t>(fp)),
+                                              frame_record, sizeof(frame_record),
+                                              &frame_bytes) != FALSE &&
+                            frame_bytes == sizeof(frame_record)) {
+                            frame_prev = frame_record[0];
+                            frame_lr = frame_record[1];
+                        } else if (memory_error == 0) {
+                            memory_error = GetLastError();
+                        }
                     }
                 }
 
-                WriteWindowsNceD2FastFailLine(parent_pid, child_pid, event.dwThreadId,
-                                              exception, context_ptr, stack_base, stack_limit,
-                                              instruction, instruction_ok, context_error,
-                                              memory_error);
+                const u64 pc_value = context_ptr != nullptr ? static_cast<u64>(context.Pc) : 0;
+                const u64 lr_value =
+                    context_ptr != nullptr ? static_cast<u64>(context.X[30]) : 0;
+                const auto pc_module = ResolveD2FastFailModule(parent_pid, pc_value);
+                const auto lr_module = ResolveD2FastFailModule(parent_pid, lr_value);
+                const auto frame_lr_module = ResolveD2FastFailModule(parent_pid, frame_lr);
+
+                WriteWindowsNceD2FastFailLine(
+                    parent_pid, child_pid, event.dwThreadId, exception, context_ptr, stack_base,
+                    stack_limit, instruction, instruction_ok, instruction_minus4,
+                    instruction_minus4_ok, instruction_plus4, instruction_plus4_ok, frame_prev,
+                    frame_lr, pc_module, lr_module, frame_lr_module, context_error, memory_error);
                 continue_status = DBG_EXCEPTION_NOT_HANDLED;
             } else if (record.ExceptionCode == EXCEPTION_BREAKPOINT &&
                        !consumed_attach_breakpoint) {
