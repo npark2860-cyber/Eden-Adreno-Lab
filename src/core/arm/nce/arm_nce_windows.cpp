@@ -622,7 +622,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
                 module_base, module_rva, instruction_at_pc, instruction_at_pc_ok,
                 instruction_at_pc_minus4, instruction_at_pc_minus4_ok,
                 instruction_at_exception, instruction_at_exception_ok,
-                reinterpret_cast<u64>(&WindowsNceEnterGuestContext),
+                reinterpret_cast<u64>(&NCE::WindowsNceEnterGuestContext),
                 reinterpret_cast<u64>(&WindowsNceGuestStackBridge),
                 reinterpret_cast<u64>(&WindowsNceHostStackBridge),
                 reinterpret_cast<u64>(&WindowsNceV74HostStackBridge),
