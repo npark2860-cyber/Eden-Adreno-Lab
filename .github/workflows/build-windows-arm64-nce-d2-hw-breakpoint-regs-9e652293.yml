@@ -1,0 +1,137 @@
+name: Build Windows ARM64 NCE D2 hardware-breakpoint registers diagnostic
+
+on:
+  push:
+    branches:
+      - diag/windows-nce-d2-hw-breakpoint-regs-9e652293
+    paths:
+      - .github/diagnostics/d2-hw-breakpoint-regs-trigger.txt
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-windows-nce-d2-hw-breakpoint-regs-9e652293
+  cancel-in-progress: false
+
+env:
+  BASE_SHA: 9e652293ca3b66f67d0f2811a019d07e6d7e55b5
+  CI_REF: afead830f3a444427f9fdfd841218f932465c03a
+  TEST_NAME: d2-hw-breakpoint-regs
+
+jobs:
+  build-package:
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    env:
+      TARGET: arm64
+      COMPILER: clang
+      PGO_TARGET: standard
+      BUILD_ID: nightly
+      DEVEL: "true"
+      CCACHE: "true"
+      ARCH: arm64-clang-standard
+      RELEASE_PGO_HOST: github.com
+      RELEASE_PGO_REPO: Eden-CI/PGO
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: npark2860-cyber/Eden-Adreno-Lab
+          ref: ${{ github.sha }}
+          path: build/validation/${{ github.sha }}/d2-hw-breakpoint-regs/source
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify diagnostic scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          SOURCE="$ROOT/source"
+          PROV="$ROOT/provenance"
+          mkdir -p "$PROV"
+          test "$(git -C "$SOURCE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$SOURCE" merge-base --is-ancestor "$BASE_SHA" "$GITHUB_SHA"
+          git -C "$SOURCE" diff --check "$BASE_SHA" "$GITHUB_SHA"
+          CHANGED="$(git -C "$SOURCE" diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/arm_nce\.h|src/core/arm/nce/arm_nce_windows\.cpp|\.github/workflows/build-windows-arm64-nce-d2-hw-breakpoint-regs-9e652293\.yml|\.github/diagnostics/d2-hw-breakpoint-regs-trigger\.txt)$' || true)"
+          test -z "$UNEXPECTED"
+          SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/arm_nce_windows.cpp")"
+          printf '%s\n' "$SRC" | grep -Fq 'exception_address='
+          printf '%s\n' "$SRC" | grep -Fq 'instruction_pc_minus4='
+          printf '%s\n' "$SRC" | grep -Fq 'instruction_exception='
+          printf '%s\n' "$SRC" | grep -Fq 'sym_guest_stack_bridge='
+          printf '%s\n' "$SRC" | grep -Fq 'sym_host_stack_bridge='
+          printf '%s\n' "$SRC" | grep -Fq 'sym_v74_host_stack_bridge='
+          printf '%s\n' "$SRC" | grep -Fq 'context, *guest, false, static_cast<u64>(HaltReason::PrefetchAbort)'
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce.h src/core/arm/nce/arm_nce_windows.cpp             > "$PROV/D2_HW_BREAKPOINT_REGS.diff"
+          printf 'BASE_SHA=%s\nDIAG_SHA=%s\nSOURCE_MODE=exact Git object\nHYPOTHESIS=STATUS_BREAKPOINT at a non-BRK instruction may be an ARM64 hardware breakpoint; capture EXCEPTION_RECORD plus BCR/BVR state\nSCOPE=diagnostic breakpoint-record/debug-register capture only; unmatched-breakpoint redirect semantics unchanged\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: ${{ env.CI_REF }}
+          path: build/validation/${{ github.sha }}/d2-hw-breakpoint-regs/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: false
+          install: git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p
+            enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p
+            libwebp:p libtiff:p brotli:p
+
+      - name: Configure
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-hw-breakpoint-regs/source
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+
+      - name: Build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-hw-breakpoint-regs/source
+        run: cmake --build build
+
+      - name: Package
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-hw-breakpoint-regs/source
+        env:
+          ARTIFACT_REF: nce-d2-hw-breakpoint-regs-9e652293
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: ./.ci/package/windows.sh
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-D2-BREAKPOINT-EXCEPTION-SITE-DIAG
+          path: build/validation/${{ github.sha }}/d2-hw-breakpoint-regs/upload/*
+          if-no-files-found: error
+          retention-days: 14
