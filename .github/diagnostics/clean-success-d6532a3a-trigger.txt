@@ -1,0 +1,10 @@
+Windows ARM64 NCE clean-success candidate
+base=d6532a3a5a9d8667e28aa65b4239ebb106ddcec6
+candidate_pretrigger=4a61f4ae817b12067345d96583c9b78819acabf2
+strategy=compose validated working semantics only
+new_runtime_hypothesis=none
+retained=x18 direct resume,cached NtContinue,lease rollover,D1 NZCV,D2 stack ordering,StackTop,cross-thread guest-PC guard
+removed=V63,V64,V65,V70,V74,V16 success log,IMP008B transition traces
+repo_active_queued_before_trigger=0/0
+cancelled_obsolete_runs=35699990612,35699873901
+one_build_only
