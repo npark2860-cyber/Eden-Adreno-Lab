@@ -45,6 +45,60 @@ void TraceVirtualMapping(const char* name, std::uint64_t address) noexcept {
                  static_cast<unsigned long>(mbi.Type));
     std::fflush(stderr);
 }
+
+void TraceRestoreAbortReason(const char* reason, const GuestContext* guest,
+                             const void* parameters, const void* native_context,
+                             std::uintptr_t allocation_base = 0,
+                             std::uintptr_t allocation_end = 0,
+                             DWORD query_error = 0) noexcept {
+    char temp_path[MAX_PATH + 1]{};
+    const DWORD temp_length = GetTempPathA(MAX_PATH, temp_path);
+    if (temp_length == 0 || temp_length >= MAX_PATH) {
+        return;
+    }
+
+    char path[MAX_PATH + 64]{};
+    const int path_length =
+        std::snprintf(path, sizeof(path), "%s%s", temp_path,
+                      "eden_nce_v63_exit_watchdog.log");
+    if (path_length <= 0 || static_cast<std::size_t>(path_length) >= sizeof(path)) {
+        return;
+    }
+
+    HANDLE file = CreateFileA(path, FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    auto* const tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+    const auto stack_base = tib != nullptr ? tib->StackBase : nullptr;
+    const auto stack_limit = tib != nullptr ? tib->StackLimit : nullptr;
+    const std::uint64_t guest_sp = guest != nullptr ? guest->sp : 0;
+
+    char line[1024]{};
+    const int line_length = std::snprintf(
+        line, sizeof(line),
+        "NCE_D2_RESTORE_ABORT_REASON tick=%llu reason=%s guest=%p parameters=%p "
+        "native_context=%p guest_sp=0x%016llX allocation_base=0x%016llX "
+        "allocation_end=0x%016llX query_error=%lu teb_stack_base=%p teb_stack_limit=%p "
+        "base=f554d601cfe9706b162e6826a593c8a53ca145d4\r\n",
+        static_cast<unsigned long long>(GetTickCount64()), reason, guest, parameters,
+        native_context, static_cast<unsigned long long>(guest_sp),
+        static_cast<unsigned long long>(allocation_base),
+        static_cast<unsigned long long>(allocation_end),
+        static_cast<unsigned long>(query_error), stack_base, stack_limit);
+
+    if (line_length > 0) {
+        DWORD written{};
+        const DWORD size = static_cast<DWORD>(
+            line_length < static_cast<int>(sizeof(line)) ? line_length : sizeof(line) - 1);
+        (void)WriteFile(file, line, size, &written, nullptr);
+        (void)FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
 } // namespace
 
 static_assert(offsetof(GuestContext, cpu_registers) == 0x000);
@@ -108,6 +162,9 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     // before the Windows context transition transfers control to guest SP/PC.
     auto* const parameters = CurrentNceContext::Get();
     if (parameters == nullptr || parameters->native_context != guest) {
+        TraceRestoreAbortReason(
+            "CONTEXT_MISMATCH", guest, parameters,
+            parameters != nullptr ? parameters->native_context : nullptr);
         std::abort();
     }
     std::fputs("IMP008B_E2_RESTORE_CONTEXT_MATCH=PASS\n", stderr);
@@ -134,9 +191,14 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     std::fflush(stderr);
 
     MEMORY_BASIC_INFORMATION stack_mbi{};
-    if (VirtualQuery(reinterpret_cast<const void*>(guest->sp - 1), &stack_mbi,
-                     sizeof(stack_mbi)) == 0 ||
-        stack_mbi.AllocationBase == nullptr) {
+    const SIZE_T stack_query =
+        VirtualQuery(reinterpret_cast<const void*>(guest->sp - 1), &stack_mbi,
+                     sizeof(stack_mbi));
+    if (stack_query == 0 || stack_mbi.AllocationBase == nullptr) {
+        const DWORD query_error = stack_query == 0 ? GetLastError() : 0;
+        TraceRestoreAbortReason("STACK_QUERY", guest, parameters, parameters->native_context,
+                                reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase), 0,
+                                query_error);
         std::abort();
     }
     const auto allocation_base =
@@ -157,6 +219,8 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
         cursor = region_end;
     }
     if (guest->sp <= allocation_base || guest->sp > allocation_end) {
+        TraceRestoreAbortReason("STACK_RANGE", guest, parameters, parameters->native_context,
+                                allocation_base, allocation_end);
         std::abort();
     }
 
