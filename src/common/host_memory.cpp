@@ -462,10 +462,6 @@ private:
         // remaps the section-backed view. In that state there is nothing left to split.
         if (queried != 0 && region.State == MEM_RESERVE && region.BaseAddress == address &&
             static_cast<size_t>(region.RegionSize) == length) {
-            LOG_INFO(HW_Memory,
-                     "NCE_V18_SPLIT_NOOP_EXACT_PLACEHOLDER addr={:#018x} length={:#x} type={:#x}",
-                     reinterpret_cast<std::uintptr_t>(address), length,
-                     static_cast<unsigned long>(region.Type));
             return;
         }
 
