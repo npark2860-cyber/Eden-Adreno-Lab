@@ -60,7 +60,124 @@ jobs:
           git -C "$SOURCE" diff --check "$BASE_SHA" "$GITHUB_SHA"
 
           CHANGED="$(git -C "$SOURCE" diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
-          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/windows_nce_transition\.cpp|\.github/workflows/build-windows-arm64-nce-d2-restore-abort-reason-f554d601\.yml|\.github/diagnostics/d2-restore-abort-reason-trigger\.txt)$' || true)"
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/(windows_nce_transition|arm_nce_windows)\.cpp|\.github/workflows/build-windows-arm64-nce-d2-restore-abort-reason-f554d601\.yml|\.github/diagnostics/d2-restore-abort-reason-trigger\.txt) || true)"
+          test -z "$UNEXPECTED"
+
+          test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/patcher.cpp             src/common/host_memory.cpp             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h             src/yuzu/main.cpp)"
+
+          SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/windows_nce_transition.cpp")"
+          grep -Fq 'NCE_D2_RESTORE_ABORT_REASON' <<<"$SRC"
+          grep -Fq '"CONTEXT_MISMATCH"' <<<"$SRC"
+          grep -Fq '"STACK_QUERY"' <<<"$SRC"
+          grep -Fq '"STACK_RANGE"' <<<"$SRC"
+          grep -Fq 'eden_nce_v63_exit_watchdog.log' <<<"$SRC"
+          grep -Fq 'FlushFileBuffers(file)' <<<"$SRC"
+
+          RUN_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/arm_nce_windows.cpp")"
+          grep -Fq 'NCE_D2_CURRENT_CONTEXT_TU_COMPARE' <<<"$RUN_SRC"
+          grep -Fq 'GetCurrentNceContextForGeneratedCode()' <<<"$RUN_SRC"
+
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/windows_nce_transition.cpp src/core/arm/nce/arm_nce_windows.cpp             > "$PROV/D2_RESTORE_ABORT_REASON.diff"
+
+          printf 'BASE_SHA=%s\nDIAG_SHA=%s\nSOURCE_MODE=exact Git object\nHYPOTHESIS=CONTEXT_MISMATCH is confirmed with transition-TU CurrentNceContext null; compare same-TU and transition-TU views immediately after Install to prove or reject split TLS storage\nSCOPE=previous terminal reason marker plus one-time cross-TU context comparison; no state mutation\nCAPTURE=NCE_D2_CURRENT_CONTEXT_TU_COMPARE expected/same_tu/transition_tu\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+
+      - name: Checkout fixed Eden CI workflow
+        uses: actions/checkout@v7
+        with:
+          repository: Eden-CI/Workflow
+          ref: ${{ env.CI_REF }}
+          path: build/validation/${{ github.sha }}/d2-restore-abort-reason/ci
+
+      - name: Install fixed Eden CI scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/build/validation/$GITHUB_SHA/$TEST_NAME"
+          rm -rf "$ROOT/source/.ci"
+          cp -a "$ROOT/ci/.ci" "$ROOT/source/.ci"
+          printf 'EDEN_CI_REF=%s\n' "$CI_REF" >> "$ROOT/provenance/BUILD_INFO.txt"
+
+      - name: Set up CLANGARM64 base
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          cache: false
+
+      - name: Install CLANGARM64 toolchain from pinned direct mirrors
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          cat > /etc/pacman.d/mirrorlist.mingw <<'EOF'
+          Server = https://repo.msys2.org/mingw/$repo/
+          Server = https://mirror.yandex.ru/mirrors/msys2/mingw/$repo/
+          Server = https://mirror.accum.se/mirror/msys2.org/mingw/$repo/
+          Server = https://ftp.nluug.nl/pub/os/windows/msys2/builds/mingw/$repo/
+          EOF
+
+          cat > /etc/pacman.d/mirrorlist.msys <<'EOF'
+          Server = https://repo.msys2.org/msys/$arch/
+          Server = https://mirror.yandex.ru/mirrors/msys2/msys/$arch/
+          Server = https://mirror.accum.se/mirror/msys2.org/msys/$arch/
+          Server = https://ftp.nluug.nl/pub/os/windows/msys2/builds/msys/$arch/
+          EOF
+
+          if ! grep -Eq '^[[:space:]]*DisableDownloadTimeout([[:space:]]|$)' /etc/pacman.conf; then
+            printf '\nDisableDownloadTimeout\n' >> /etc/pacman.conf
+          fi
+
+          pacman --noconfirm -Syy
+          pacman --noconfirm -S --needed --overwrite '*'             git make autoconf libtool automake-wrapper patch jq pactoys ninja
+
+          pacboy --noconfirm -S --needed             qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p             openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p             enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p             libwebp:p libtiff:p brotli:p
+
+      - name: Configure Windows ARM64 NCE build
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-restore-abort-reason/source
+        run: |
+          set -euo pipefail
+          ./.ci/build/configure.sh -DCCACHE_PATH=sccache
+          grep -Fq 'HAS_NCE=1' build/compile_commands.json
+
+      - name: Build full Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-restore-abort-reason/source
+        run: |
+          set -euo pipefail
+          cmake --build build
+
+      - name: Package Windows ARM64 Eden diagnostic
+        shell: msys2 {0}
+        working-directory: build/validation/${{ github.sha }}/d2-restore-abort-reason/source
+        env:
+          ARTIFACT_REF: nce-d2-restore-abort-reason
+          MSYS_TOOLCHAIN: CLANGARM64
+        run: |
+          set -euo pipefail
+          ./.ci/package/windows.sh
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "build/validation/$env:GITHUB_SHA/$env:TEST_NAME"
+          $source = Join-Path $root 'source'
+          $prov = Join-Path $root 'provenance'
+          $files = @(Get-ChildItem -Path (Join-Path $source 'artifacts') -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one packaged artifact; found $($files.Count)" }
+          $upload = Join-Path $root 'upload'
+          New-Item -ItemType Directory -Force $upload | Out-Null
+          Copy-Item $files[0].FullName $upload -Force
+          Copy-Item (Join-Path $prov '*') $upload -Force
+
+      - name: Upload restore-abort diagnostic package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-Windows-ARM64-NCE-D2-RESTORE-ABORT-REASON
+          path: build/validation/${{ github.sha }}/d2-restore-abort-reason/upload/*
+          if-no-files-found: error
+          retention-days: 14
+ || true)"
           test -z "$UNEXPECTED"
 
           test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/patcher.cpp             src/common/host_memory.cpp             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h             src/yuzu/main.cpp)"
