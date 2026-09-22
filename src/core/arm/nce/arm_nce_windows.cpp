@@ -553,6 +553,26 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
         NCE::CurrentNceContext::Install(thread_params);
 
+        // D2 diagnostic: CurrentNceContext is currently header-owned inline thread_local state.
+        // Compare the same-TU view used by RunThread with the fixed getter compiled in
+        // windows_nce_transition.cpp. A mismatch proves the TLS carrier was split across TUs.
+        auto* const current_context_same_tu = NCE::CurrentNceContext::Get();
+        auto* const current_context_transition_tu =
+            static_cast<NativeExecutionParameters*>(NCE::GetCurrentNceContextForGeneratedCode());
+        if (current_context_same_tu != thread_params ||
+            current_context_transition_tu != thread_params) {
+            static thread_local bool current_context_tu_split_logged = false;
+            if (!current_context_tu_split_logged) {
+                LOG_ERROR(Core_ARM,
+                          "NCE_D2_CURRENT_CONTEXT_TU_COMPARE expected={} same_tu={} "
+                          "transition_tu={}",
+                          static_cast<const void*>(thread_params),
+                          static_cast<const void*>(current_context_same_tu),
+                          static_cast<const void*>(current_context_transition_tu));
+                current_context_tu_split_logged = true;
+            }
+        }
+
         if (!EnsureWindowsGuestStackLease(m_system, process, m_guest_ctx.sp,
                                           private_stack_lease)) {
             NCE::CurrentNceContext::Clear();
