@@ -1,0 +1,11 @@
+D2 HostStackBridge breakpoint-input diagnostic
+base=20da285f35c53304af83d4be49dcc58aac53a95c
+physical=first-chance EXCEPTION_BREAKPOINT at eden.exe HostStackBridge first STR
+exception_rva=0x10CD264
+instruction=0xF9000641 STR X1,[X18,#8]
+debug_regs=all BCR/BVR zero
+terminal=no natural fastfail; user ForceStop after hang
+capture=x1,x2,x3,x16,x18 and TEB StackBase/StackLimit memory before VEH handles candidate
+runtime_changes=none
+active_queued_before_trigger=0/0
+one_build_only
