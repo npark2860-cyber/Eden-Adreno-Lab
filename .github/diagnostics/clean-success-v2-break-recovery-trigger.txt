@@ -1,11 +1,11 @@
-Windows ARM64 NCE clean-success v2
-source_head_before_trigger=25ce54256adf03e8001a3679a2d1099c60e027af
-strategy=retain physically working pieces only
-included=20da unmatched-breakpoint host-return recovery
-included=V18 exact-placeholder no-op Info log cleanup
-preserved=NCE_V18_SPLIT_FAIL
+Windows ARM64 NCE resume-gate semantic candidate
+base_artifact=7d339e634ae4c4d611f31d7fc732d4df3178dbe9
+candidate_pretrigger=476c1c2e3d38867c79563ad8c8886fe54dd72df3
+state_variable=host/bridge unmatched breakpoint return reason
+old=PrefetchAbort -> PhysicalCore Debug Suspend
+new=BreakLoop for non-guest PC -> scheduler return/reschedule
+guest_pc_breakpoint=existing PrefetchAbort behavior preserved
 diagnostic_capture=none
-new_runtime_hypothesis=none
+new_observer=none
 repo_active_queued_before_trigger=0/0
-previous_run=35709464333 cancelled
 one_build_only
