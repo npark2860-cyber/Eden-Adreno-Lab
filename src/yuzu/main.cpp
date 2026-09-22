@@ -581,6 +581,10 @@ void WriteWindowsNceD2BreakpointDebugLine(
     const u64 pc = context != nullptr ? static_cast<u64>(context->Pc) : 0;
     const u64 sp = context != nullptr ? static_cast<u64>(context->Sp) : 0;
     const u64 lr = context != nullptr ? static_cast<u64>(context->X[30]) : 0;
+    const u64 x1 = context != nullptr ? static_cast<u64>(context->X[1]) : 0;
+    const u64 x2 = context != nullptr ? static_cast<u64>(context->X[2]) : 0;
+    const u64 x3 = context != nullptr ? static_cast<u64>(context->X[3]) : 0;
+    const u64 x16 = context != nullptr ? static_cast<u64>(context->X[16]) : 0;
     const u64 x18 = context != nullptr ? static_cast<u64>(context->X[18]) : 0;
     const u64 context_flags =
         context != nullptr ? static_cast<u64>(context->ContextFlags) : 0;
@@ -594,6 +598,11 @@ void WriteWindowsNceD2BreakpointDebugLine(
     bool instruction_minus4_ok = false;
     bool instruction_ok = false;
     bool instruction_exception_ok = false;
+    u64 teb_stack_base_memory = 0;
+    u64 teb_stack_limit_memory = 0;
+    bool teb_stack_base_memory_ok = false;
+    bool teb_stack_limit_memory_ok = false;
+    DWORD teb_memory_error = 0;
     DWORD memory_error = 0;
 
     if (read_handle != nullptr && context != nullptr) {
@@ -620,6 +629,27 @@ void WriteWindowsNceD2BreakpointDebugLine(
             pc >= sizeof(u32) && read_instruction(pc - sizeof(u32), instruction_minus4);
         instruction_exception_ok =
             read_instruction(exception_address, instruction_exception);
+
+        auto read_u64 = [&](u64 address, u64& value) {
+            SIZE_T bytes{};
+            if (address == 0) {
+                return false;
+            }
+            if (ReadProcessMemory(
+                    read_handle,
+                    reinterpret_cast<const void*>(static_cast<std::uintptr_t>(address)),
+                    &value, sizeof(value), &bytes) != FALSE &&
+                bytes == sizeof(value)) {
+                return true;
+            }
+            if (teb_memory_error == 0) {
+                teb_memory_error = GetLastError();
+            }
+            return false;
+        };
+
+        teb_stack_base_memory_ok = read_u64(x18 + 8, teb_stack_base_memory);
+        teb_stack_limit_memory_ok = read_u64(x18 + 16, teb_stack_limit_memory);
     }
 
     const auto pc_module = ResolveD2FastFailModule(parent_pid, pc);
@@ -645,7 +675,10 @@ void WriteWindowsNceD2BreakpointDebugLine(
         "NCE_D2_BREAKPOINT_DEBUG_EVENT seq=%llu consumed_as_attach=%u "
         "parent_pid=%lu child_pid=%lu thread_id=%lu first_chance=%lu "
         "flags=0x%08lX address=0x%016llX params=%lu info0=0x%016llX info1=0x%016llX "
-        "pc=0x%016llX sp=0x%016llX lr=0x%016llX x18=0x%016llX "
+        "pc=0x%016llX sp=0x%016llX lr=0x%016llX "
+        "x1=0x%016llX x2=0x%016llX x3=0x%016llX x16=0x%016llX x18=0x%016llX "
+        "teb_stack_base_mem=0x%016llX teb_stack_base_mem_ok=%u "
+        "teb_stack_limit_mem=0x%016llX teb_stack_limit_mem_ok=%u teb_memory_error=%lu "
         "instruction_minus4=0x%08X instruction_minus4_ok=%u "
         "instruction=0x%08X instruction_ok=%u "
         "instruction_exception=0x%08X instruction_exception_ok=%u "
@@ -657,13 +690,19 @@ void WriteWindowsNceD2BreakpointDebugLine(
         "bcr2=0x%08llX bvr2=0x%016llX bcr3=0x%08llX bvr3=0x%016llX "
         "bcr4=0x%08llX bvr4=0x%016llX bcr5=0x%08llX bvr5=0x%016llX "
         "bcr6=0x%08llX bvr6=0x%016llX bcr7=0x%08llX bvr7=0x%016llX "
-        "context_error=%lu memory_error=%lu base=2f0d41b173b4f9ae0d4e0b96cb61402c9ea5cd0e\r\n",
+        "context_error=%lu memory_error=%lu base=20da285f35c53304af83d4be49dcc58aac53a95c\r\n",
         static_cast<unsigned long long>(sequence), consumed_as_attach ? 1u : 0u,
         parent_pid, child_pid, thread_id, info.dwFirstChance, record.ExceptionFlags,
         static_cast<unsigned long long>(exception_address), record.NumberParameters,
         static_cast<unsigned long long>(info0), static_cast<unsigned long long>(info1),
         static_cast<unsigned long long>(pc), static_cast<unsigned long long>(sp),
-        static_cast<unsigned long long>(lr), static_cast<unsigned long long>(x18),
+        static_cast<unsigned long long>(lr), static_cast<unsigned long long>(x1),
+        static_cast<unsigned long long>(x2), static_cast<unsigned long long>(x3),
+        static_cast<unsigned long long>(x16), static_cast<unsigned long long>(x18),
+        static_cast<unsigned long long>(teb_stack_base_memory),
+        teb_stack_base_memory_ok ? 1u : 0u,
+        static_cast<unsigned long long>(teb_stack_limit_memory),
+        teb_stack_limit_memory_ok ? 1u : 0u, teb_memory_error,
         instruction_minus4, instruction_minus4_ok ? 1u : 0u, instruction,
         instruction_ok ? 1u : 0u, instruction_exception,
         instruction_exception_ok ? 1u : 0u, pc_module.name,
