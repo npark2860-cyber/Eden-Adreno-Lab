@@ -1,0 +1,9 @@
+Windows ARM64 NCE clean-success v2
+base=0ffca136f86a64304781a7259a43b671ccb1b8f4
+candidate_pretrigger=7e31c7300941eb6995b680beba2ca649535c773f
+strategy=retain physically working pieces only
+added=20da unmatched-breakpoint host-return recovery
+diagnostic_capture=none
+new_runtime_hypothesis=none
+repo_active_queued_before_trigger=0/0
+one_build_only
