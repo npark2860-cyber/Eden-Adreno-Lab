@@ -1,11 +1,9 @@
-Windows ARM64 NCE resume-gate semantic candidate
-base_artifact=7d339e634ae4c4d611f31d7fc732d4df3178dbe9
-candidate_pretrigger=476c1c2e3d38867c79563ad8c8886fe54dd72df3
-state_variable=host/bridge unmatched breakpoint return reason
-old=PrefetchAbort -> PhysicalCore Debug Suspend
-new=BreakLoop for non-guest PC -> scheduler return/reschedule
-guest_pc_breakpoint=existing PrefetchAbort behavior preserved
-diagnostic_capture=none
-new_observer=none
-repo_active_queued_before_trigger=0/0
+Windows ARM64 NCE focused post-audio reentry discriminator
+base_candidate=5cb6c51c91b02f73556badab2f9595f6ee62bbcb
+pretrigger_head=67d6e6e8cc8f8014772e283290926bae4ae517f3
+state_variable=after DeviceOut-2 completion, does the application guest thread re-enter RunThread and WindowsNceEnterGuest
+markers=NCE_POST_AUDIO_PROBE_ARMED;NCE_POST_AUDIO_RUNTHREAD_REENTRY;NCE_POST_AUDIO_ENTER_GUEST
+diagnostic_scope=one-shot only
+new_observer_loop=none
+active_queued_before_trigger=0/0
 one_build_only
