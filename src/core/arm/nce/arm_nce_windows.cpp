@@ -338,6 +338,18 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    // Preserve the working 20da recovery behavior without its diagnostic capture:
+    // an unmatched breakpoint observed while NCE owns the guest context must not overwrite
+    // GuestContext with the host/bridge exception state. Return to the saved host continuation
+    // through the already-proven host bridge and report PrefetchAbort to the RunThread loop.
+    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT) {
+        params->lock.store(SpinLockLocked, std::memory_order_release);
+        NCE::WindowsNceTransition::RedirectToHost(
+            context, *guest, false, static_cast<u64>(HaltReason::PrefetchAbort));
+        context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
+        NCE::WindowsNceTransition::ContinueContext(context);
+    }
+
     if (NCE::WindowsExceptionContext::IsAccessViolation(*exception->ExceptionRecord)) {
         const auto fault_address = reinterpret_cast<u64>(
             NCE::WindowsExceptionContext::GetFaultAddress(*exception->ExceptionRecord));
