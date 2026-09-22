@@ -6,3 +6,10 @@ capture=ctx_entry,ctx_after_stdio,ctx_after_capture,ctx_after_load on fatal rest
 state_mutation=none
 active_queued_before_trigger=0/0
 one_build_only
+
+verifier_fix=4d8a3e848738e49a634d6bc68e8a7588545689d0
+failure_run=35692682663
+failure=verifier allowlist omitted the new workflow path
+source_compile=not reached
+pretrigger_active_queued=0/0
+replacement_build=one only
