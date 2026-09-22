@@ -14,12 +14,18 @@ inline void Arm() noexcept {
 }
 
 inline bool ObserveRunThread() noexcept {
+    if (g_stage.load(std::memory_order_relaxed) != 1) {
+        return false;
+    }
     unsigned expected = 1;
     return g_stage.compare_exchange_strong(expected, 2, std::memory_order_acq_rel,
                                            std::memory_order_acquire);
 }
 
 inline bool ObserveEnterGuest() noexcept {
+    if (g_stage.load(std::memory_order_relaxed) != 2) {
+        return false;
+    }
     unsigned expected = 2;
     return g_stage.compare_exchange_strong(expected, 3, std::memory_order_acq_rel,
                                            std::memory_order_acquire);
