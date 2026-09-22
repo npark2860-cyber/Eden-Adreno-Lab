@@ -60,7 +60,7 @@ jobs:
           git -C "$SOURCE" diff --check "$BASE_SHA" "$GITHUB_SHA"
 
           CHANGED="$(git -C "$SOURCE" diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
-          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/(windows_nce_transition|arm_nce_windows)\.cpp|\.github/workflows/build-windows-arm64-nce-d2-restore-abort-reason-f554d601\.yml|\.github/diagnostics/d2-restore-abort-reason-trigger\.txt)
+          UNEXPECTED="$(printf '%s\n' "$CHANGED" | grep -Ev '^(src/core/arm/nce/(windows_nce_transition|arm_nce_windows)\.cpp|\.github/workflows/build-windows-arm64-nce-d2-restore-abort-reason-f554d601\.yml|\.github/diagnostics/d2-restore-abort-reason-trigger\.txt)' || true)"
           test -z "$UNEXPECTED"
 
           test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/patcher.cpp             src/common/host_memory.cpp             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h             src/yuzu/main.cpp)"
