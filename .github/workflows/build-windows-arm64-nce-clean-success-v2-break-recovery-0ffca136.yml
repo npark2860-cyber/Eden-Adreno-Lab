@@ -3,7 +3,7 @@ name: Build Windows ARM64 NCE clean success v2 break recovery
 on:
   push:
     branches:
-      - prod/windows-nce-clean-success-v2-break-recovery-0ffca136
+      - fix/windows-nce-resume-gate-breakloop-7d339e63
     paths:
       - .github/diagnostics/clean-success-v2-break-recovery-trigger.txt
 
@@ -102,9 +102,11 @@ jobs:
           PATCH_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/patcher.cpp")"
           grep -Fq 'Keep the canonical architectural NZCV bits coherent' <<<"$PATCH_SRC"
 
-          grep -Fq 'Preserve the working 20da recovery behavior without its diagnostic capture' <<<"$ARM_SRC"
-          grep -Fq 'RedirectToHost(' <<<"$ARM_SRC"
-          grep -Fq 'context, *guest, false, static_cast<u64>(HaltReason::PrefetchAbort)' <<<"$ARM_SRC"
+          grep -Fq 'Preserve the working 20da host-return recovery' <<<"$ARM_SRC"
+          grep -Fq 'breakpoint_pc_is_guest' <<<"$ARM_SRC"
+          grep -Fq 'HaltReason::PrefetchAbort' <<<"$ARM_SRC"
+          grep -Fq 'HaltReason::BreakLoop' <<<"$ARM_SRC"
+          grep -Fq 'static_cast<u64>(reason)' <<<"$ARM_SRC"
 
           HOST_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/common/host_memory.cpp")"
           ! grep -Fq 'NCE_V18_SPLIT_NOOP_EXACT_PLACEHOLDER' <<<"$HOST_SRC"
@@ -115,7 +117,7 @@ jobs:
 
           git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
-          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v1 plus physically observed 20da unmatched-breakpoint host-return recovery\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nNEW_RUNTIME_HYPOTHESIS=none\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus host-breakpoint resume-gate semantic correction\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=host/bridge unmatched breakpoint returns BreakLoop instead of debug-stopping PrefetchAbort; guest-PC breakpoint behavior preserved\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
