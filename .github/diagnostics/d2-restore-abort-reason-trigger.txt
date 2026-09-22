@@ -1,10 +1,9 @@
 D2 CurrentNceContext cross-TU diagnostic
 previous_exact=e5368df8efc9ca227f9003160a0179576f22cb29
-physical=CONTEXT_MISMATCH
-restore_parameters=null
-hypothesis=inline static thread_local CurrentNceContext carrier is split across translation units
-compare=RunThread same-TU Get vs GetCurrentNceContextForGeneratedCode from windows_nce_transition.cpp
-expected=thread_params
-state_mutation=none
+physical=CONTEXT_MISMATCH parameters=null native_context=null
+hypothesis=header-owned inline thread_local carrier has cross-TU identity failure
+compare=RunThread same-TU Get vs transition-TU GetCurrentNceContextForGeneratedCode immediately after Install
+workflow_clean=49d0b4300b8b8212ea5314c515de786a0b1fd496
+workflow_lines=185
 active_queued_before_trigger=0/0
 one_build_only
