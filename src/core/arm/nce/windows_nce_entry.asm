@@ -158,22 +158,4 @@ WindowsNceHostStackBridge PROC
         ret     x16
         ENDP
 
-        ENDP
-
-; Reached only when all bridge inputs were sufficiently intact to publish the host TEB bounds,
-; switch to the saved host stack and branch through x16. Restore the host nonvolatile registers
-; that the V74 bridge temporarily used for provenance, then resume the original saved host PC.
-WindowsNceV74HostReturnProbe PROC
-        mov     x9, x26
-        ldr     x16, [x9, #(HostContextRegs + 0x58)]
-
-        ldp     x19, x20, [x9, #(HostContextRegs + 0x00)]
-        ldp     x21, x22, [x9, #(HostContextRegs + 0x10)]
-        ldp     x23, x24, [x9, #(HostContextRegs + 0x20)]
-        ldp     x25, x26, [x9, #(HostContextRegs + 0x30)]
-        ldp     x27, x28, [x9, #(HostContextRegs + 0x40)]
-        ldp     x29, x30, [x9, #(HostContextRegs + 0x50)]
-        br      x16
-        ENDP
-
         END
