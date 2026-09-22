@@ -338,14 +338,22 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Preserve the working 20da recovery behavior without its diagnostic capture:
-    // an unmatched breakpoint observed while NCE owns the guest context must not overwrite
-    // GuestContext with the host/bridge exception state. Return to the saved host continuation
-    // through the already-proven host bridge and report PrefetchAbort to the RunThread loop.
+    // Preserve the working 20da host-return recovery without turning a host/bridge transition
+    // breakpoint into a guest prefetch fault. PhysicalCore treats PrefetchAbort as a debug-stop,
+    // while BreakLoop is the scheduler's normal "leave native execution and reschedule" reason.
+    // Use the already-proven guest-PC ownership test to distinguish the two meanings: a breakpoint
+    // outside the guest address space is a transient host/bridge seam and must not close the guest
+    // execution resume gate. Unknown breakpoints at a real guest PC retain the existing behavior.
     if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT) {
+        const bool breakpoint_pc_is_guest =
+            process != nullptr &&
+            process->GetMemory().IsValidVirtualAddressRange(context.Pc, sizeof(u32));
+        const auto reason = breakpoint_pc_is_guest ? HaltReason::PrefetchAbort
+                                                   : HaltReason::BreakLoop;
+
         params->lock.store(SpinLockLocked, std::memory_order_release);
-        NCE::WindowsNceTransition::RedirectToHost(
-            context, *guest, false, static_cast<u64>(HaltReason::PrefetchAbort));
+        NCE::WindowsNceTransition::RedirectToHost(context, *guest, false,
+                                                  static_cast<u64>(reason));
         context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
         NCE::WindowsNceTransition::ContinueContext(context);
     }
