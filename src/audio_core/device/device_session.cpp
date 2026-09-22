@@ -10,6 +10,7 @@
 #include "audio_core/device/device_session.h"
 #include "audio_core/sink/sink_stream.h"
 #include "core/core.h"
+#include "common/windows_nce_post_audio_probe.h"
 #include "core/core_timing.h"
 #include "core/guest_memory.h"
 #include "core/memory.h"
@@ -51,6 +52,14 @@ Result DeviceSession::Initialize(std::string_view name_, SampleFormat sample_for
         sink = &system.AudioCore().GetOutputSink();
     }
     stream = sink->AcquireSinkStream(system, channel_count, name, type);
+
+#if defined(_WIN32) && defined(ARCHITECTURE_arm64) && defined(HAS_NCE)
+    if (name == "DeviceOut-2") {
+        Common::WindowsNcePostAudioProbe::Arm();
+        LOG_INFO(Service_Audio, "NCE_POST_AUDIO_PROBE_ARMED name={}", name);
+    }
+#endif
+
     initialized = true;
     return ResultSuccess;
 }
