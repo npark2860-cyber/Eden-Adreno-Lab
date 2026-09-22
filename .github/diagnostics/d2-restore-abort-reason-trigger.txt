@@ -1,10 +1,10 @@
-D2 restore abort reason diagnostic
-base=f554d601cfe9706b162e6826a593c8a53ca145d4
-physical=natural C0000409 with PAC-stripped frame_lr eden.exe+0x10CCA54
-exact_binary=0x10CCA50 calls CRT abort; +0x10CCA54 is BRK #1
-source_owner=src/core/arm/nce/windows_nce_transition.cpp WindowsNceRestoreGuestContext
-ordinary_tail=third fallback pc=0x108252A378 sp=0x20F55C5B00
-observed_stack=0x20F5596000+0x30000 => end=0x20F55C6000, SP inside by 0x500
-capture=CONTEXT_MISMATCH vs STACK_QUERY vs STACK_RANGE only on fatal path
+D2 CurrentNceContext cross-TU diagnostic
+previous_exact=e5368df8efc9ca227f9003160a0179576f22cb29
+physical=CONTEXT_MISMATCH
+restore_parameters=null
+hypothesis=inline static thread_local CurrentNceContext carrier is split across translation units
+compare=RunThread same-TU Get vs GetCurrentNceContextForGeneratedCode from windows_nce_transition.cpp
+expected=thread_params
+state_mutation=none
 active_queued_before_trigger=0/0
 one_build_only
