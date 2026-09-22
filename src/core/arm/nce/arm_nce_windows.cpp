@@ -35,12 +35,7 @@
 
 namespace Core {
 
-extern "C" void WindowsNceV74HostStackBridge() noexcept;
-extern "C" void WindowsNceV74HostReturnProbe() noexcept;
-
 namespace {
-
-constexpr u64 V74ProvenanceMagicBase = 0x56373450524F0000ULL;
 
 using NativeExecutionParameters = Kernel::KThread::NativeExecutionParameters;
 
@@ -350,42 +345,8 @@ LONG CALLBACK WindowsNceVectoredExceptionHandler(PEXCEPTION_POINTERS exception) 
         // lost. Direct NtContinue keeps the redirected register contract intact through resume.
         context.X[18] = reinterpret_cast<u64>(NtCurrentTeb());
 
-        // V74 diagnostic only: prove whether the fully-written AV host-return CONTEXT reaches the
-        // first bridge instruction intact. The low 16 bits of x25 encode writer-side validity;
-        // x26 carries HostContext only so the diagnostic success trampoline can restore the exact
-        // host nonvolatile state. The diagnostic bridge itself copies its raw entry registers into
-        // x19-x24/x27-x28 before performing the production bridge operations. If the natural
-        // terminal AV recurs, the WER CONTEXT therefore preserves both the writer marker and the
-        // consumer-side values without logging or calling host code on the guest stack.
-        u64 provenance_flags = 0;
-        const u64 submit_stack_base = context.X[1];
-        const u64 submit_stack_limit = context.X[2];
-        const u64 submit_host_sp = context.X[3];
-        const u64 submit_host_pc = context.X[16];
-        if (submit_stack_base != 0 && submit_stack_limit != 0 && submit_host_sp != 0 &&
-            submit_host_pc != 0) {
-            provenance_flags |= 0x0001;
-        }
-        if (submit_stack_limit < submit_stack_base) {
-            provenance_flags |= 0x0002;
-        }
-        if (submit_host_sp >= submit_stack_limit && submit_host_sp < submit_stack_base) {
-            provenance_flags |= 0x0004;
-        }
-        if ((submit_host_pc & 0x3) == 0 && submit_host_pc != 0) {
-            provenance_flags |= 0x0008;
-        }
-        if (context.X[18] == reinterpret_cast<u64>(NtCurrentTeb())) {
-            provenance_flags |= 0x0010;
-        }
-        if (context.X[30] == submit_host_pc && submit_host_pc != 0) {
-            provenance_flags |= 0x0020;
-        }
-
-        context.X[25] = V74ProvenanceMagicBase | provenance_flags;
-        context.X[26] = reinterpret_cast<u64>(&guest->host_ctx);
-        context.X[16] = reinterpret_cast<u64>(&WindowsNceV74HostReturnProbe);
-        context.Pc = reinterpret_cast<u64>(&WindowsNceV74HostStackBridge);
+        // Resume the redirected host-return context directly. RedirectToHost already selected
+        // the standard WindowsNceHostStackBridge and populated its host bounds/SP/return-PC contract.
         NCE::WindowsNceTransition::ContinueContext(context);
     }
 
@@ -517,14 +478,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         NCE::CurrentNceContext::Clear();
 
         if (m_windows_pending_nce_fault) {
-            static thread_local bool v74_return_logged = false;
-            if (!v74_return_logged) {
-                LOG_INFO(Core_ARM,
-                         "NCE_V74_AV_PROVENANCE_RETURNED pc={:#018x} sp={:#018x}",
-                         m_guest_ctx.pc, m_guest_ctx.sp);
-                v74_return_logged = true;
-            }
-
             const u64 pending_fault_address = m_windows_pending_nce_fault_address;
             const u64 pending_fault_page = m_windows_pending_nce_fault_page;
             m_windows_pending_nce_fault = false;
@@ -562,16 +515,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             LOG_ERROR(Core_ARM, "V16 failed to synchronize fallback stack writes to private view");
             hr = HaltReason::PrefetchAbort;
             break;
-        }
-
-        if (fallback.handled && private_stack_lease.has_value()) {
-            static thread_local bool v16_sync_logged = false;
-            if (!v16_sync_logged) {
-                LOG_INFO(Core_ARM,
-                         "NCE_V16_FALLBACK_STACK_SYNC pc={:#018x} sp={:#018x}",
-                         m_guest_ctx.pc, m_guest_ctx.sp);
-                v16_sync_logged = true;
-            }
         }
 
         if (!fallback.handled) {
