@@ -1,0 +1,8 @@
+D2 restore context-stage diagnostic
+base=2e2f0912d4160f556f7c189bf877041fb10acb31
+physical=cross-TU compare marker absent while later restore CONTEXT_MISMATCH remains
+conclusion=cross-TU identity is valid immediately after Install
+capture=ctx_entry,ctx_after_stdio,ctx_after_capture,ctx_after_load on fatal restore mismatch
+state_mutation=none
+active_queued_before_trigger=0/0
+one_build_only
