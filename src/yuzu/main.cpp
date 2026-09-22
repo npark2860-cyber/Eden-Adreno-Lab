@@ -581,6 +581,11 @@ void WriteWindowsNceD2BreakpointDebugLine(
     const u64 pc = context != nullptr ? static_cast<u64>(context->Pc) : 0;
     const u64 sp = context != nullptr ? static_cast<u64>(context->Sp) : 0;
     const u64 lr = context != nullptr ? static_cast<u64>(context->X[30]) : 0;
+    const u64 x0 = context != nullptr ? static_cast<u64>(context->X[0]) : 0;
+    const u64 x1 = context != nullptr ? static_cast<u64>(context->X[1]) : 0;
+    const u64 x2 = context != nullptr ? static_cast<u64>(context->X[2]) : 0;
+    const u64 x3 = context != nullptr ? static_cast<u64>(context->X[3]) : 0;
+    const u64 x16 = context != nullptr ? static_cast<u64>(context->X[16]) : 0;
     const u64 x18 = context != nullptr ? static_cast<u64>(context->X[18]) : 0;
     const u64 context_flags =
         context != nullptr ? static_cast<u64>(context->ContextFlags) : 0;
@@ -645,7 +650,9 @@ void WriteWindowsNceD2BreakpointDebugLine(
         "NCE_D2_BREAKPOINT_DEBUG_EVENT seq=%llu consumed_as_attach=%u "
         "parent_pid=%lu child_pid=%lu thread_id=%lu first_chance=%lu "
         "flags=0x%08lX address=0x%016llX params=%lu info0=0x%016llX info1=0x%016llX "
-        "pc=0x%016llX sp=0x%016llX lr=0x%016llX x18=0x%016llX "
+        "pc=0x%016llX sp=0x%016llX lr=0x%016llX "
+        "x0=0x%016llX x1=0x%016llX x2=0x%016llX x3=0x%016llX "
+        "x16=0x%016llX x18=0x%016llX "
         "instruction_minus4=0x%08X instruction_minus4_ok=%u "
         "instruction=0x%08X instruction_ok=%u "
         "instruction_exception=0x%08X instruction_exception_ok=%u "
@@ -663,7 +670,10 @@ void WriteWindowsNceD2BreakpointDebugLine(
         static_cast<unsigned long long>(exception_address), record.NumberParameters,
         static_cast<unsigned long long>(info0), static_cast<unsigned long long>(info1),
         static_cast<unsigned long long>(pc), static_cast<unsigned long long>(sp),
-        static_cast<unsigned long long>(lr), static_cast<unsigned long long>(x18),
+        static_cast<unsigned long long>(lr), static_cast<unsigned long long>(x0),
+        static_cast<unsigned long long>(x1), static_cast<unsigned long long>(x2),
+        static_cast<unsigned long long>(x3), static_cast<unsigned long long>(x16),
+        static_cast<unsigned long long>(x18),
         instruction_minus4, instruction_minus4_ok ? 1u : 0u, instruction,
         instruction_ok ? 1u : 0u, instruction_exception,
         instruction_exception_ok ? 1u : 0u, pc_module.name,
