@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "common/host_memory_windows_lease.h"
+#include "common/windows_nce_post_audio_probe.h"
 #include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/arm_nce_asm_definitions.h"
 #include "core/arm/nce/current_nce_context.h"
@@ -454,6 +455,13 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     auto* const thread_params = &thread->GetNativeExecutionParameters();
     auto* const process = thread->GetOwnerProcess();
 
+    if (process == m_system.ApplicationProcess() &&
+        Common::WindowsNcePostAudioProbe::ObserveRunThread()) {
+        LOG_INFO(Core_ARM,
+                 "NCE_POST_AUDIO_RUNTHREAD_REENTRY pc={:#018x} sp={:#018x}",
+                 m_guest_ctx.pc, m_guest_ctx.sp);
+    }
+
     m_running_thread = thread;
     m_guest_ctx.parent = this;
     thread_params->native_context = &m_guest_ctx;
@@ -496,6 +504,14 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             NCE::CurrentNceContext::Clear();
             hr = HaltReason::PrefetchAbort;
             break;
+        }
+
+        if (process == m_system.ApplicationProcess() &&
+            Common::WindowsNcePostAudioProbe::ObserveEnterGuest()) {
+            LOG_INFO(Core_ARM,
+                     "NCE_POST_AUDIO_ENTER_GUEST pc={:#018x} sp={:#018x} post_handler={}",
+                     m_guest_ctx.pc, m_guest_ctx.sp,
+                     post_handlers.find(m_guest_ctx.pc) != post_handlers.end());
         }
 
         if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
