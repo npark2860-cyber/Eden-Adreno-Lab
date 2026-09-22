@@ -50,7 +50,11 @@ void TraceRestoreAbortReason(const char* reason, const GuestContext* guest,
                              const void* parameters, const void* native_context,
                              std::uintptr_t allocation_base = 0,
                              std::uintptr_t allocation_end = 0,
-                             DWORD query_error = 0) noexcept {
+                             DWORD query_error = 0,
+                             const void* context_at_entry = nullptr,
+                             const void* context_after_stdio = nullptr,
+                             const void* context_after_capture = nullptr,
+                             const void* context_after_load = nullptr) noexcept {
     char temp_path[MAX_PATH + 1]{};
     const DWORD temp_length = GetTempPathA(MAX_PATH, temp_path);
     if (temp_length == 0 || temp_length >= MAX_PATH) {
@@ -83,12 +87,14 @@ void TraceRestoreAbortReason(const char* reason, const GuestContext* guest,
         "NCE_D2_RESTORE_ABORT_REASON tick=%llu reason=%s guest=%p parameters=%p "
         "native_context=%p guest_sp=0x%016llX allocation_base=0x%016llX "
         "allocation_end=0x%016llX query_error=%lu teb_stack_base=%p teb_stack_limit=%p "
-        "base=f554d601cfe9706b162e6826a593c8a53ca145d4\r\n",
+        "ctx_entry=%p ctx_after_stdio=%p ctx_after_capture=%p ctx_after_load=%p "
+        "base=2e2f0912d4160f556f7c189bf877041fb10acb31\r\n",
         static_cast<unsigned long long>(GetTickCount64()), reason, guest, parameters,
         native_context, static_cast<unsigned long long>(guest_sp),
         static_cast<unsigned long long>(allocation_base),
         static_cast<unsigned long long>(allocation_end),
-        static_cast<unsigned long>(query_error), stack_base, stack_limit);
+        static_cast<unsigned long>(query_error), stack_base, stack_limit, context_at_entry,
+        context_after_stdio, context_after_capture, context_after_load);
 
     if (line_length > 0) {
         DWORD written{};
@@ -139,16 +145,21 @@ extern "C" [[noreturn]] void WindowsNceContinueGuestContext(
 }
 
 extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) noexcept {
+    auto* const context_at_entry = CurrentNceContext::Get();
+
     std::fputs("IMP008B_E2_RESTORE_ENTER=PASS\n", stderr);
     std::fflush(stderr);
+    auto* const context_after_stdio = CurrentNceContext::Get();
 
     ARM64_NT_CONTEXT context{};
     RtlCaptureContext(reinterpret_cast<PCONTEXT>(&context));
+    auto* const context_after_capture = CurrentNceContext::Get();
 
     // Load guest state into the captured Windows context. WindowsExceptionContext deliberately
     // skips architectural x18, so context.X[18] remains the live Windows/TEB platform value.
     const auto platform_cpsr = context.Cpsr & ~NzcvMask;
     WindowsExceptionContext::LoadGuestState(*guest, context);
+    auto* const context_after_load = CurrentNceContext::Get();
 
     // Native NCE owns guest NZCV only. Preserve the platform-owned non-NZCV PSTATE bits captured
     // from Windows rather than allowing guest state to alter them.
@@ -164,7 +175,8 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     if (parameters == nullptr || parameters->native_context != guest) {
         TraceRestoreAbortReason(
             "CONTEXT_MISMATCH", guest, parameters,
-            parameters != nullptr ? parameters->native_context : nullptr);
+            parameters != nullptr ? parameters->native_context : nullptr, 0, 0, 0,
+            context_at_entry, context_after_stdio, context_after_capture, context_after_load);
         std::abort();
     }
     std::fputs("IMP008B_E2_RESTORE_CONTEXT_MATCH=PASS\n", stderr);
