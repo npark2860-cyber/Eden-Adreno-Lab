@@ -279,6 +279,17 @@ bool WindowsBreakTransform(ARM64_NT_CONTEXT& context, void* opaque) noexcept {
     }
 
     state->patch_window = false;
+
+    // A Windows host bridge/helper can transiently execute with the physical guest SP already
+    // installed. Stack ownership alone is therefore insufficient to prove that the suspended
+    // CONTEXT is guest architectural state. Only snapshot a PC that belongs to the guest process
+    // address space; otherwise resume unchanged and let SignalInterrupt retry the host window.
+    if (process == nullptr ||
+        !process->GetMemory().IsValidVirtualAddressRange(context.Pc, sizeof(u32))) {
+        state->host_window = true;
+        return false;
+    }
+
     auto& guest = state->nce->m_guest_ctx;
     const auto reason = guest.esr_el1.exchange(0, std::memory_order_acq_rel);
     NCE::WindowsNceTransition::RedirectToHost(context, guest, true, reason);
