@@ -1,9 +1,9 @@
-Windows ARM64 NCE focused post-audio reentry discriminator
+Windows ARM64 NCE low-perturbation post-audio reentry discriminator
 base_candidate=5cb6c51c91b02f73556badab2f9595f6ee62bbcb
-pretrigger_head=67d6e6e8cc8f8014772e283290926bae4ae517f3
-state_variable=after DeviceOut-2 completion, does the application guest thread re-enter RunThread and WindowsNceEnterGuest
+previous_probe_build=6ea65de0181558d26f9deb79337cdd02bc7bdec8
+probe_fix_head=0d46be16b2f3cf814dba96f101786c6794d09a28
+state_variable=does app guest re-enter after DeviceOut-2
+probe_fix=avoid hot-path CAS before arming; relaxed load gate first
 markers=NCE_POST_AUDIO_PROBE_ARMED;NCE_POST_AUDIO_RUNTHREAD_REENTRY;NCE_POST_AUDIO_ENTER_GUEST
-diagnostic_scope=one-shot only
-new_observer_loop=none
 active_queued_before_trigger=0/0
 one_build_only
