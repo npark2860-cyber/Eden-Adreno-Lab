@@ -3,7 +3,6 @@
 
 #include "core/arm/nce/windows_nce_transition.h"
 
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -33,18 +32,6 @@ void ResolveNtContinue() noexcept {
                          : nullptr;
 }
 
-void TraceVirtualMapping(const char* name, std::uint64_t address) noexcept {
-    MEMORY_BASIC_INFORMATION mbi{};
-    const SIZE_T size = VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof(mbi));
-    std::fprintf(stderr,
-                 "IMP008B_E2_%s_ADDR=0x%llX QUERY=%llu BASE=%p ALLOC=%p STATE=0x%lX "
-                 "PROTECT=0x%lX TYPE=0x%lX\n",
-                 name, static_cast<unsigned long long>(address),
-                 static_cast<unsigned long long>(size), mbi.BaseAddress, mbi.AllocationBase,
-                 static_cast<unsigned long>(mbi.State), static_cast<unsigned long>(mbi.Protect),
-                 static_cast<unsigned long>(mbi.Type));
-    std::fflush(stderr);
-}
 } // namespace
 
 static_assert(offsetof(GuestContext, cpu_registers) == 0x000);
@@ -69,10 +56,7 @@ bool WindowsNceTransition::Initialize() noexcept {
         std::abort();
     }
 
-    const LONG status = nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
-    std::fprintf(stderr, "IMP008B_E2_NT_CONTINUE_RETURN=0x%08lX\n",
-                 static_cast<unsigned long>(status));
-    std::fflush(stderr);
+    (void)nt_continue(reinterpret_cast<PCONTEXT>(&context), FALSE);
     std::abort();
 }
 
@@ -85,9 +69,6 @@ extern "C" [[noreturn]] void WindowsNceContinueGuestContext(
 }
 
 extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) noexcept {
-    std::fputs("IMP008B_E2_RESTORE_ENTER=PASS\n", stderr);
-    std::fflush(stderr);
-
     ARM64_NT_CONTEXT context{};
     RtlCaptureContext(reinterpret_cast<PCONTEXT>(&context));
 
@@ -110,29 +91,11 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     if (parameters == nullptr || parameters->native_context != guest) {
         std::abort();
     }
-    std::fputs("IMP008B_E2_RESTORE_CONTEXT_MATCH=PASS\n", stderr);
-    std::fflush(stderr);
-
     parameters->lock.store(SpinLockUnlocked, std::memory_order_release);
-
-    std::fprintf(stderr,
-                 "IMP008B_E2_RESTORE_CONTEXT PC=0x%llX SP=0x%llX X18=0x%llX CPSR=0x%08lX "
-                 "FLAGS=0x%08lX\n",
-                 static_cast<unsigned long long>(context.Pc),
-                 static_cast<unsigned long long>(context.Sp),
-                 static_cast<unsigned long long>(context.X[18]),
-                 static_cast<unsigned long>(context.Cpsr),
-                 static_cast<unsigned long>(context.ContextFlags));
-    std::fflush(stderr);
-    TraceVirtualMapping("RESTORE_PC", context.Pc);
-    TraceVirtualMapping("RESTORE_SP", context.Sp);
 
     // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
     // underlying transition directly so the arbitrary-PC guest restore and exception continuation
     // share the same Windows context-resume primitive.
-    std::fputs("IMP008B_E2_BEFORE_NT_CONTINUE=PASS\n", stderr);
-    std::fflush(stderr);
-
     MEMORY_BASIC_INFORMATION stack_mbi{};
     if (VirtualQuery(reinterpret_cast<const void*>(guest->sp - 1), &stack_mbi,
                      sizeof(stack_mbi)) == 0 ||
