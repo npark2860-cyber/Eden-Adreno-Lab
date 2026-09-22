@@ -61,7 +61,7 @@ jobs:
 
           while IFS= read -r changed; do
             case "$changed" in
-              src/core/arm/nce/windows_nce_transition.cpp|              src/core/arm/nce/arm_nce_windows.cpp|              .github/workflows/build-windows-arm64-nce-d2-restore-abort-reason-f554d601.yml|              .github/diagnostics/d2-restore-context-stages-trigger.txt)
+              src/core/arm/nce/windows_nce_transition.cpp|              .github/workflows/build-windows-arm64-nce-d2-restore-context-stages-2e2f0912.yml|              .github/diagnostics/d2-restore-context-stages-trigger.txt)
                 ;;
               *)
                 echo "Unexpected changed path: $changed"
