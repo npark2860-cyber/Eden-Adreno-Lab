@@ -1,0 +1,10 @@
+D2 dual discriminator
+base=20da285f35c53304af83d4be49dcc58aac53a95c
+physical=restore-stage target NO-HIT; HostStackBridge breakpoint HIT
+host_bridge_event=eden.exe+0x10CD264 first STR X1,[X18,#8]
+debugregs=all zero
+candidate_capture=X0 X1 X2 X3 X16 plus existing PC SP LR X18
+restore_stage_capture=preserved
+known_guest_brk_fast_path=unchanged
+active_queued_before_trigger=0/0
+one_build_only
