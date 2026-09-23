@@ -61,7 +61,7 @@ jobs:
 
           while IFS= read -r changed; do
             case "$changed" in
-              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
+              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/core/CMakeLists.txt|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
                 ;;
               *)
                 echo "Unexpected changed path: $changed"
@@ -93,6 +93,9 @@ jobs:
           grep -Fq 'mov     sp, x3' <<<"$ASM_SRC"
           grep -Fq 'ret     x16' <<<"$ASM_SRC"
 
+          CORE_CMAKE="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/CMakeLists.txt")"
+          grep -Fq 'Microsoft Visual Studio/18/*/VC/Tools/MSVC/*/bin/Hostarm64/arm64/armasm64.exe' <<<"$CORE_CMAKE"
+
           TRANS_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/windows_nce_transition.cpp")"
           ! grep -Eq 'IMP008B_E2_|TraceVirtualMapping|std::fprintf|std::fputs' <<<"$TRANS_SRC"
           grep -Fq 'std::call_once(g_nt_continue_once, ResolveNtContinue)' <<<"$TRANS_SRC"
@@ -116,7 +119,7 @@ jobs:
 
           test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/yuzu/main.cpp             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/patcher.cpp             src/core/arm/nce/guest_context.h             src/core/arm/nce/arm_nce.h             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
 
-          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
           printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus host-breakpoint resume-gate semantic correction\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=force physical x18 to NtCurrentTeb in arbitrary-PC guest CONTEXT before NtContinue; preserve prior resume-gate correction\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
@@ -170,6 +173,55 @@ jobs:
           pacman --noconfirm -S --needed --overwrite '*'             git make autoconf libtool automake-wrapper patch jq pactoys ninja
 
           pacboy --noconfirm -S --needed             qt6-tools:p qt6-translations:p qt6-svg:p 7zip:p sccache:p cmake:p toolchain:p clang:p python-pip:p lld:p             openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p             enet:p opus:p mbedtls:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p crt-git:p             libwebp:p libtiff:p brotli:p
+
+      - name: Ensure Visual Studio ARM64 assembler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Find-ArmAsm64 {
+            $patterns = @(
+              'C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostarm64\arm64\armasm64.exe',
+              'C:\Program Files\Microsoft Visual Studio\18\*\VC\Tools\MSVC\*\bin\Hostarm64\arm64\armasm64.exe',
+              'C:\Program Files (x86)\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostarm64\arm64\armasm64.exe',
+              'C:\Program Files (x86)\Microsoft Visual Studio\18\*\VC\Tools\MSVC\*\bin\Hostarm64\arm64\armasm64.exe'
+            )
+            foreach ($pattern in $patterns) {
+              $match = Get-Item $pattern -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1
+              if ($match) { return $match.FullName }
+            }
+            return $null
+          }
+
+          $armasm = Find-ArmAsm64
+          if (-not $armasm) {
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            $setup = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\setup.exe'
+            if (-not (Test-Path $vswhere) -or -not (Test-Path $setup)) {
+              throw 'Visual Studio installer/vswhere not found on hosted ARM64 runner'
+            }
+
+            $installPath = (& $vswhere -latest -products * -property installationPath | Select-Object -First 1)
+            if (-not $installPath) {
+              throw 'No Visual Studio instance found to add the ARM64 toolchain component'
+            }
+
+            $argLine = 'modify --installPath "' + $installPath + '" --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 --quiet --norestart'
+            $proc = Start-Process -FilePath $setup -ArgumentList $argLine -Wait -PassThru
+            if ($proc.ExitCode -notin @(0, 3010)) {
+              throw "Visual Studio ARM64 component install failed with exit code $($proc.ExitCode)"
+            }
+
+            $armasm = Find-ArmAsm64
+          }
+
+          if (-not $armasm) {
+            throw 'armasm64.exe still not found after ARM64 toolchain provisioning'
+          }
+
+          Write-Host "Using ARM64 assembler: $armasm"
 
       - name: Configure Windows ARM64 NCE clean-success build
         shell: msys2 {0}
