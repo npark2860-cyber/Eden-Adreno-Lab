@@ -73,9 +73,12 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     RtlCaptureContext(reinterpret_cast<PCONTEXT>(&context));
 
     // Load guest state into the captured Windows context. WindowsExceptionContext deliberately
-    // skips architectural x18, so context.X[18] remains the live Windows/TEB platform value.
+    // skips architectural x18 because Windows owns physical x18 as the user-mode TEB pointer.
+    // RtlCaptureContext does not reliably leave a usable platform x18 in the captured CONTEXT on
+    // the physical Windows ARM64 path, so publish the current TEB explicitly before NtContinue.
     const auto platform_cpsr = context.Cpsr & ~NzcvMask;
     WindowsExceptionContext::LoadGuestState(*guest, context);
+    context.X[18] = reinterpret_cast<std::uint64_t>(NtCurrentTeb());
 
     // Native NCE owns guest NZCV only. Preserve the platform-owned non-NZCV PSTATE bits captured
     // from Windows rather than allowing guest state to alter them.
