@@ -1248,7 +1248,10 @@ if (HAS_NCE)
             # Windows entry shim is assembled by the Visual Studio ARM64 assembler already
             # present on supported Windows build hosts. Do not add a second assembler.
             file(GLOB NCE_ARMASM64_CANDIDATES
-                "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostarm64/arm64/armasm64.exe")
+                "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostarm64/arm64/armasm64.exe"
+                "C:/Program Files/Microsoft Visual Studio/18/*/VC/Tools/MSVC/*/bin/Hostarm64/arm64/armasm64.exe"
+                "C:/Program Files (x86)/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostarm64/arm64/armasm64.exe"
+                "C:/Program Files (x86)/Microsoft Visual Studio/18/*/VC/Tools/MSVC/*/bin/Hostarm64/arm64/armasm64.exe")
             if (NCE_ARMASM64_CANDIDATES)
                 list(SORT NCE_ARMASM64_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
                 list(GET NCE_ARMASM64_CANDIDATES 0 NCE_ARMASM64)
