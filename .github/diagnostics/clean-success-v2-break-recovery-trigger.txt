@@ -1,10 +1,9 @@
-Windows ARM64 NCE resume-gate semantic candidate
-base_artifact=7d339e634ae4c4d611f31d7fc732d4df3178dbe9
-candidate_pretrigger=476c1c2e3d38867c79563ad8c8886fe54dd72df3
-state_variable=host/bridge unmatched breakpoint return reason
-old=PrefetchAbort -> PhysicalCore Debug Suspend
-new=BreakLoop for non-guest PC -> scheduler return/reschedule
-guest_pc_breakpoint=existing PrefetchAbort behavior preserved
+Windows ARM64 NCE explicit physical x18 TEB restore candidate
+base_artifact=5cb6c51c91b02f73556badab2f9595f6ee62bbcb
+candidate_pretrigger=2094718fb69f9a328be7dc9b9de7d4c61f5cf55f
+physical_evidence=guest x18=0; VEH x18=0; !teb=0x0000008d3ad20000; AV at eden+0xD26620 reading TLS via x18
+state_variable=WindowsNceRestoreGuestContext explicitly sets CONTEXT X18 to NtCurrentTeb before NtContinue
+prior_resume_gate=preserved
 diagnostic_capture=none
 new_observer=none
 repo_active_queued_before_trigger=0/0
