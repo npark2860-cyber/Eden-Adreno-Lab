@@ -61,7 +61,7 @@ jobs:
 
           while IFS= read -r changed; do
             case "$changed" in
-              src/core/arm/nce/arm_nce_windows.cpp| |              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
+              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
                 ;;
               *)
                 echo "Unexpected changed path: $changed"
@@ -114,7 +114,7 @@ jobs:
           grep -Fq 'static_cast<size_t>(region.RegionSize) == length) {' <<<"$HOST_SRC"
           grep -Fq 'NCE_V18_SPLIT_FAIL' <<<"$HOST_SRC"
 
-          test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/yuzu/main.cpp             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/patcher.cpp             src/core/arm/nce/guest_context.h             src/core/arm/nce/arm_nce.h             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
+          test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/yuzu/main.cpp             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/patcher.cpp             src/core/arm/nce/guest_context.h             src/core/arm/nce/arm_nce.h             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
 
           git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
