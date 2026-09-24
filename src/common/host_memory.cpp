@@ -221,13 +221,43 @@ public:
         virtual_parameter_count = 1;
 #endif
 
-        // Allocate virtual address placeholder
+        // Allocate virtual address placeholder.
+        // Keep the existing Windows ARM64 NCE placement policy as the first attempt. Some Windows
+        // process layouts fragment the [2^36, 2^39) interval such that no 256-GiB contiguous hole
+        // remains even though a suitable hole exists below 2^36. In that case only, relax the
+        // application-imposed lower bound while preserving the 39-bit ceiling, alignment,
+        // reservation size, and single-arena direct-map contract.
         virtual_base = static_cast<u8*>(pfn_VirtualAlloc2(
             process, nullptr, virtual_size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS,
             virtual_parameters, virtual_parameter_count));
+#if defined(ARCHITECTURE_arm64) && defined(HAS_NCE)
+        DWORD constrained_error = ERROR_SUCCESS;
         if (!virtual_base) {
+            constrained_error = GetLastError();
+            nce_address_requirements.LowestStartingAddress = nullptr;
+            virtual_base = static_cast<u8*>(pfn_VirtualAlloc2(
+                process, nullptr, virtual_size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+                PAGE_NOACCESS, virtual_parameters, virtual_parameter_count));
+            if (virtual_base) {
+                LOG_WARNING(HW_Memory,
+                            "Windows NCE virtual reservation above 64 GiB failed with error {}; "
+                            "using relaxed-lower-bound arena at {:#x}",
+                            constrained_error, reinterpret_cast<uintptr_t>(virtual_base));
+            }
+        }
+#endif
+        if (!virtual_base) {
+#if defined(ARCHITECTURE_arm64) && defined(HAS_NCE)
+            const DWORD relaxed_error = GetLastError();
+            Release();
+            LOG_CRITICAL(HW_Memory,
+                         "Failed to reserve {} GiB of Windows NCE virtual memory "
+                         "(constrained error {}, relaxed error {})",
+                         virtual_size >> 30, constrained_error, relaxed_error);
+#else
             Release();
             LOG_CRITICAL(HW_Memory, "Failed to reserve {} GiB of virtual memory", virtual_size >> 30);
+#endif
             return false;
         }
         virtual_map_base = virtual_base;
