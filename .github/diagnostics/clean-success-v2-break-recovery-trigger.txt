@@ -1,11 +1,10 @@
-Windows ARM64 NCE relaxed lower-bound arena reservation candidate
-base_artifact=77c395c029ba80557e53393ab38b2b1ee6574ae3
-candidate_pretrigger=cadf110ce0846a40eb0f96b5b33ba27fedff363c
-observed_failure=256-GiB constrained NCE arena cannot fit current Windows VA layout; guest PC/SP remain MEM_FREE
-causal_chain=arena reserve failure -> no direct guest VA -> stack VirtualQuery failure -> PrefetchAbort -> DebugSuspended -> all cores idle
-state_variable=only after the existing constrained VirtualAlloc2 fails, retry with LowestStartingAddress=null while preserving <2^39 ceiling, HugePageSize alignment, reservation size, and contiguous direct-map arena
-validation_logging=capture first and relaxed VirtualAlloc2 errors; log relaxed-lower-bound success address
-prior_x18_teb_resume_gate=preserved
-diagnostic_capture=initialization-only HostMemory logging; no NCE hot-path observer
+Windows ARM64 NCE x18 fallback P1 cache-preserving single-step candidate
+base_artifact=dd08d23cd4dbf804e314a52b9c2e5dcd10e69338
+root_cause_class=sustained single-thread CPU saturation in dense BRK#F000 x18 fallback/re-entry loop
+observed_compile_hotspot=WindowsX18FallbackRunner -> X18Fallback::Step -> ArmDynarmic64::StepThread -> Dynarmic ARM64 compile
+fresh_run_hotspot=WindowsNceRestoreGuestContext with GuestContext PC inside three-consecutive-BRK#F000 loop
+state_variable=skip repeated Dynarmic invalidation only when guest PC and original instruction identity are unchanged; invalidate if the instruction at that PC changes
+preserved=BRK patching, VEH, virtual guest x18, GuestContext copies, TEB/stack transition, allocator fallback, exclusive/LSE policy
+diagnostic_capture=none
 repo_active_queued_before_trigger=0/0
 one_build_only

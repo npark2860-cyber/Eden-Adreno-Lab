@@ -103,7 +103,8 @@ public:
     void InvalidateCacheRange(u64 addr, std::size_t size) override;
 
     // IMP-006 selective fallback only: override the code word fetched at one guest PC without
-    // changing the process mapping. The JIT entry for that PC is invalidated before use.
+    // changing the process mapping. The private x18 runner may reuse a compiled single-step block
+    // only while the (pc, original instruction) identity remains unchanged.
     void SetSingleInstructionCodeOverride(u64 pc, u32 instruction);
     void ClearSingleInstructionCodeOverride();
 
@@ -123,6 +124,11 @@ private:
     std::size_t m_core_index{};
 
     std::optional<Dynarmic::A64::Jit> m_jit{};
+
+    // IMP-006 x18 fallback: remember the semantic identity of compiled single-step sites so a
+    // hot site can reuse its JIT block without invalidating it on every trap. A changed original
+    // instruction at the same guest PC still invalidates before the next step.
+    ankerl::unordered_dense::map<u64, u32> m_single_instruction_override_cache{};
 
     // SVC callback
     u32 m_svc{};

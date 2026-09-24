@@ -23,7 +23,16 @@ void ArmDynarmic64::SetSingleInstructionCodeOverride(u64 pc, u32 instruction) {
     }
 
     m_cb->cached_code_page.inst[(pc & page_mask) / sizeof(u32)] = instruction;
-    m_jit->InvalidateCacheRange(pc, sizeof(u32));
+
+    const auto [it, inserted] =
+        m_single_instruction_override_cache.try_emplace(pc, instruction);
+    if (!inserted && it->second != instruction) {
+        // The private x18 fallback backend can safely reuse a single-step block only while both
+        // the guest PC and the original patched instruction are unchanged. If a later code/module
+        // epoch reuses the same PC with different semantics, invalidate before the next step.
+        it->second = instruction;
+        m_jit->InvalidateCacheRange(pc, sizeof(u32));
+    }
 }
 
 void ArmDynarmic64::ClearSingleInstructionCodeOverride() {

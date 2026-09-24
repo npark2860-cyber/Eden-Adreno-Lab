@@ -61,7 +61,7 @@ jobs:
 
           while IFS= read -r changed; do
             case "$changed" in
-              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/core/CMakeLists.txt|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
+              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/core/arm/nce/x18_fallback.cpp|              src/core/arm/dynarmic/arm_dynarmic_64.h|              src/core/CMakeLists.txt|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
                 ;;
               *)
                 echo "Unexpected changed path: $changed"
@@ -119,9 +119,9 @@ jobs:
 
           test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/yuzu/main.cpp             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/patcher.cpp             src/core/arm/nce/guest_context.h             src/core/arm/nce/arm_nce.h             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
 
-          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
-          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus host-breakpoint resume-gate semantic correction\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=force physical x18 to NtCurrentTeb in arbitrary-PC guest CONTEXT before NtContinue; preserve prior resume-gate correction\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus x18 fallback P1 cache-preserving single-step\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=reuse Dynarmic single-step block only when guest PC plus original x18 instruction identity is unchanged; invalidate on semantic change\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
