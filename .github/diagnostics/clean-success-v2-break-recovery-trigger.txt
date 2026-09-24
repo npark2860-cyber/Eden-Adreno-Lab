@@ -1,10 +1,11 @@
-Windows ARM64 NCE x18 fallback P1 cache-preserving single-step candidate
-base_artifact=dd08d23cd4dbf804e314a52b9c2e5dcd10e69338
-root_cause_class=sustained single-thread CPU saturation in dense BRK#F000 x18 fallback/re-entry loop
-observed_compile_hotspot=WindowsX18FallbackRunner -> X18Fallback::Step -> ArmDynarmic64::StepThread -> Dynarmic ARM64 compile
-fresh_run_hotspot=WindowsNceRestoreGuestContext with GuestContext PC inside three-consecutive-BRK#F000 loop
-state_variable=skip repeated Dynarmic invalidation only when guest PC and original instruction identity are unchanged; invalidate if the instruction at that PC changes
-preserved=BRK patching, VEH, virtual guest x18, GuestContext copies, TEB/stack transition, allocator fallback, exclusive/LSE policy
-diagnostic_capture=none
-repo_active_queued_before_trigger=0/0
+Windows ARM64 NCE x18 P2A native bitfield trampoline candidate
+base_artifact=846ce3c8619333cee639e81aac23f9a316e8d706
+root_cause_class=sustained one-core saturation in dense BRK#F000 x18 fallback/re-entry loop
+p1_result=single-step cache preservation left end-to-end CPU at 5000ms per 5s and hot sample in WindowsNceRestoreGuestContext
+observed_original=0x331F7A4F BFI W15,W18,#1,#31
+state_variable=safe SBFM/BFM/UBFM-family x18 sites use generated native scratch-register trampoline instead of BRK/VEH/Dynarmic/NtContinue
+physical_x18=remains Windows TEB-owned; original instruction x18 fields are rewritten to non-conflicting x19-x28 scratch
+fallback=all non-bitfield SupportedOrdinary x18 sites retain BRK#F000 fallback
+dedicated_trampoline_precedence=X18SitePatcher skips sites already owned by untagged post-handler relocation
+repo_active_queued_before_trigger=pending-check
 one_build_only

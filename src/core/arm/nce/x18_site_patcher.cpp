@@ -51,9 +51,18 @@ void X18SitePatcher::Apply(Common::ProcessAddress load_base,
             continue;
         }
 
-        words[site.text_word_index] = BreakpointInstruction;
         const u64 runtime_pc = GetInteger(load_base) + GetInteger(code.addr) +
                                static_cast<u64>(site.text_word_index) * sizeof(u32);
+
+        // A dedicated generated NCE trampoline owns this site when RelocateAndCopy already
+        // registered an ordinary (untagged) post-handler entry for the same guest PC. P2A uses
+        // this precedence for safe bitfield x18 instructions; leave all other ordinary x18
+        // instructions on the existing BRK #0xF000 fallback path.
+        if (metadata.find(runtime_pc) != metadata.end()) {
+            continue;
+        }
+
+        words[site.text_word_index] = BreakpointInstruction;
         metadata.insert_or_assign(MetadataKey(runtime_pc), MetadataValue(site.instruction));
     }
 #else

@@ -3,12 +3,14 @@
 
 #include <numeric>
 #include <bit>
+#include <optional>
 #include "common/cpu_features.h"
 #include "common/alignment.h"
 #include "common/literals.h"
 #include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/guest_context.h"
 #include "core/arm/nce/instructions.h"
+#include "core/arm/nce/x18_fallback.h"
 #include "core/arm/nce/patcher.h"
 #if defined(_WIN32)
 #include "core/arm/nce/windows_generated_context.h"
@@ -33,6 +35,82 @@ using NativeExecutionParameters = Kernel::KThread::NativeExecutionParameters;
 constexpr size_t MaxRelativeBranch = 128_MiB;
 constexpr u32 ModuleCodeIndex = 0x24 / sizeof(u32);
 constexpr u32 NzcvMask = 0xF0000000U;
+
+#if defined(_WIN32)
+struct WindowsX18BitfieldPlan {
+    u32 rewritten_instruction{};
+    u32 value_scratch{};
+    u32 context_scratch{};
+    bool writes_x18{};
+};
+
+[[nodiscard]] constexpr u32 ReplaceWindowsX18BitfieldRegisterField(
+    u32 raw, u32 shift, u32 reg) noexcept {
+    constexpr u32 RegisterMask = 0x1FU;
+    const u32 mask = RegisterMask << shift;
+    return (raw & ~mask) | ((reg & RegisterMask) << shift);
+}
+
+[[nodiscard]] std::optional<WindowsX18BitfieldPlan>
+BuildWindowsX18BitfieldPlan(u32 instruction) {
+    // SBFM/BFM/UBFM (including aliases such as ASR/SXT/BFI/BFXIL) are pure register
+    // data-processing instructions: they cannot fault, branch, touch memory or use SP/PC.
+    // Keep P2A deliberately bounded to this family because a real hot fallback site was
+    // recovered as BFI W15,W18,#1,#31 (0x331F7A4F).
+    constexpr u32 BitfieldMask = 0x1F800000U;
+    constexpr u32 BitfieldPattern = 0x13000000U;
+    if ((instruction & BitfieldMask) != BitfieldPattern ||
+        X18Fallback::ClassifyInstruction(instruction) !=
+            X18InstructionClass::SupportedOrdinary) {
+        return std::nullopt;
+    }
+
+    constexpr u32 RegisterMask = 0x1FU;
+    const u32 rn = (instruction >> 5) & RegisterMask;
+    const u32 rd = instruction & RegisterMask;
+    if (rn != GuestX18Register && rd != GuestX18Register) {
+        return std::nullopt;
+    }
+
+    u32 value_scratch = 0;
+    u32 context_scratch = 0;
+    const auto is_architectural_operand = [&](u32 candidate) {
+        return candidate == rn || candidate == rd;
+    };
+
+    for (u32 candidate = 19; candidate <= 28; ++candidate) {
+        if (is_architectural_operand(candidate)) {
+            continue;
+        }
+        if (value_scratch == 0) {
+            value_scratch = candidate;
+        } else {
+            context_scratch = candidate;
+            break;
+        }
+    }
+    if (value_scratch == 0 || context_scratch == 0) {
+        return std::nullopt;
+    }
+
+    u32 rewritten = instruction;
+    if (rn == GuestX18Register) {
+        rewritten =
+            ReplaceWindowsX18BitfieldRegisterField(rewritten, 5, value_scratch);
+    }
+    if (rd == GuestX18Register) {
+        rewritten =
+            ReplaceWindowsX18BitfieldRegisterField(rewritten, 0, value_scratch);
+    }
+
+    return WindowsX18BitfieldPlan{
+        .rewritten_instruction = rewritten,
+        .value_scratch = value_scratch,
+        .context_scratch = context_scratch,
+        .writes_x18 = rd == GuestX18Register,
+    };
+}
+#endif
 
 Patcher::Patcher() : c(m_patch_instructions), c_pre(m_patch_instructions_pre) {
     // The first word of the patch section is always a branch to the first instruction of the
@@ -264,6 +342,43 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
             cg.dx(static_cast<u64>(reinterpret_cast<uintptr_t>(
                 &GetCurrentNceContextForGeneratedCode)));
         };
+
+    const auto WriteWindowsX18BitfieldTrampoline =
+        [&](ModuleDestLabel module_dest, const WindowsX18BitfieldPlan& plan,
+            oaknut::VectorCodeGenerator& cg) {
+            constexpr size_t GuestX18Offset =
+                offsetof(GuestContext, cpu_registers) + sizeof(u64) * GuestX18Register;
+
+            const oaknut::XReg value_reg{static_cast<int>(plan.value_scratch)};
+            const oaknut::XReg context_reg{static_cast<int>(plan.context_scratch)};
+
+            // Keep physical x18 Windows/TEB-owned at all times. Reuse the already-proven
+            // Windows generated-context lookup, then substitute virtual guest x18 into a
+            // non-conflicting nonvolatile scratch only for the original bitfield instruction.
+            // Saving both scratch registers on the guest stack preserves unrelated architectural
+            // state while avoiding BRK/VEH/Dynarmic/NtContinue for this instruction.
+            cg.STP(value_reg, context_reg, SP, PRE_INDEXED, -16);
+            WriteWindowsCurrentNceParametersLookup(cg, context_reg);
+            cg.LDR(context_reg, context_reg,
+                   offsetof(NativeExecutionParameters, native_context));
+            cg.LDR(value_reg, context_reg, GuestX18Offset);
+
+            // Bitfield instructions are non-faulting, non-branching and do not modify NZCV.
+            // All x18 register fields were rewritten to value_reg by the bounded plan above.
+            cg.dw(plan.rewritten_instruction);
+
+            if (plan.writes_x18) {
+                cg.STR(value_reg, context_reg, GuestX18Offset);
+            }
+
+            cg.LDP(value_reg, context_reg, SP, POST_INDEXED, 16);
+
+            if (&cg == &c_pre) {
+                this->BranchToModulePre(module_dest);
+            } else {
+                this->BranchToModule(module_dest);
+            }
+        };
 #endif
 
     // Loop through instructions, patching as needed.
@@ -385,6 +500,21 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
         }
 
 #if defined(_WIN32)
+        // P2A: eliminate the expensive BRK/VEH/host-return/NtContinue cycle for the directly
+        // observed ordinary-x18 bitfield family. The generated helper keeps physical x18 as TEB,
+        // substitutes virtual guest x18 through a scratch register, executes the original
+        // instruction natively, and branches straight back to the following guest instruction.
+        if (const auto plan = BuildWindowsX18BitfieldPlan(inst)) {
+            bool pre_buffer = false;
+            const auto ret = AddRelocations(pre_buffer);
+            if (pre_buffer) {
+                WriteWindowsX18BitfieldTrampoline(ret, *plan, c_pre);
+            } else {
+                WriteWindowsX18BitfieldTrampoline(ret, *plan, c);
+            }
+            continue;
+        }
+
         // Intercept the bounded single-instruction LSE families before Eden's broad Exclusive
         // signature. CASP overlaps Exclusive::Verify(); allowing it to fall through would set its
         // release bit via AsOrdered() and silently change guest ordering semantics.
