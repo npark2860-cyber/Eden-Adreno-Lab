@@ -1,12 +1,11 @@
-Windows ARM64 NCE explicit physical x18 TEB restore candidate
-base_artifact=5cb6c51c91b02f73556badab2f9595f6ee62bbcb
-previous_failed_run=35894133085
-previous_failure=configure-only: armasm64.exe not discovered on current hosted runner
-candidate_pretrigger=e5d5821104de5baaf6100c8c0ad136e4a72fb99f
-runtime_state_variable=WindowsNceRestoreGuestContext explicitly sets CONTEXT X18 to NtCurrentTeb before NtContinue
-build_fix=CMake discovers VS 2022/18 ARM64 assembler; workflow provisions Microsoft.VisualStudio.Component.VC.Tools.ARM64 only when absent
-prior_resume_gate=preserved
-diagnostic_capture=none
-new_observer=none
+Windows ARM64 NCE relaxed lower-bound arena reservation candidate
+base_artifact=77c395c029ba80557e53393ab38b2b1ee6574ae3
+candidate_pretrigger=cadf110ce0846a40eb0f96b5b33ba27fedff363c
+observed_failure=256-GiB constrained NCE arena cannot fit current Windows VA layout; guest PC/SP remain MEM_FREE
+causal_chain=arena reserve failure -> no direct guest VA -> stack VirtualQuery failure -> PrefetchAbort -> DebugSuspended -> all cores idle
+state_variable=only after the existing constrained VirtualAlloc2 fails, retry with LowestStartingAddress=null while preserving <2^39 ceiling, HugePageSize alignment, reservation size, and contiguous direct-map arena
+validation_logging=capture first and relaxed VirtualAlloc2 errors; log relaxed-lower-bound success address
+prior_x18_teb_resume_gate=preserved
+diagnostic_capture=initialization-only HostMemory logging; no NCE hot-path observer
 repo_active_queued_before_trigger=0/0
-replacement_build_only
+one_build_only
