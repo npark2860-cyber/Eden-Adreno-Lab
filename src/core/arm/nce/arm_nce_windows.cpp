@@ -247,7 +247,7 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     return true;
 }
 
-constexpr u32 P2BP2BGuestX18Register = 18;
+constexpr u32 P2BGuestX18Register = 18;
 
 [[nodiscard]] u64 ReadP2BGuestRegister(const GuestContext& guest, u32 reg) noexcept {
     // These P2B forms only use ordinary X/W registers for the decoded address operands.
