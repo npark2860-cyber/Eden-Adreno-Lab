@@ -1,10 +1,13 @@
-Windows ARM64 NCE P2D cached guest-stack bounds restore candidate
-base_artifact=9c0ecd0cda7b0e015447dd0e4f14a36cea3c080d
-p2c_result=exact P2C still saturated one core at 4968.8ms per 5s
-p2c_hot_thread=PID34296 TID0x7424
-p2c_hot_stack=NtQueryVirtualMemory -> VirtualQueryEx -> WindowsNceRestoreGuestContext
-finding=P2C removed memcpy hotspot; redundant guest-stack VirtualQuery allocation walk became dominant
-state_variable=WindowsNceRestoreGuestContext reuses guest.windows_guest_stack_limit/base already validated and published immediately beforehand by RunThread
-safety=keep strict nonzero/order/SP-in-range validation; no x18 fallback semantics changed
+Windows ARM64 NCE P2E callback-only private-stack fallback candidate
+base_artifact=ca6789df78ac47d155cfa1f737025bb877b5fce6
+p2d_result=exact P2D still saturated one core at 4968.8ms per 5s
+p2d_hot_thread=PID40816 TID0x7A8C
+p2d_hot_stack=XF18FALL -> memcpy
+p2d_hot_originals=0x783279CC,0x7872796C,0x320007F2,0x78725BAC
+p2d_hot_decode=STRH W12,[X14,X18,LSL#1]; LDRH W12,[X11,X18,LSL#1]; ORR W18,WZR,#3; LDRH W12,[X29,W18,UXTW#1]
+finding=remaining dominant memcpy comes from memory-touching ordinary-x18 fallback; opcode-by-opcode sync exceptions would keep migrating the hotspot
+state_variable=selective x18 Dynarmic fallback uses callback-only memory path; active MEM_PRIVATE guest stack is accessed directly by guest VA while all non-stack memory stays on Core::Memory; whole-stack SyncToBacking/SyncFromBacking is skipped for ordinary x18 fallback with an active private stack lease
+normal_dynarmic=unchanged callback behavior when no private view is active
+fallback_semantics=BRK/VEH/Dynarmic single-step/NtContinue unchanged
 active_queued_before_trigger=0/0
 one_build_only
