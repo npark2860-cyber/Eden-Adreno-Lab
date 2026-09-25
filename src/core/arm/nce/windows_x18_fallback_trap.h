@@ -18,6 +18,11 @@ struct GuestContext;
 
 namespace NCE {
 
+struct WindowsX18FallbackSiteInfo {
+    u32 instruction{};
+    bool may_access_memory{};
+};
+
 class WindowsX18FallbackTrap {
 public:
     // Internal RunThread-only marker. It is deliberately outside the public Core::HaltReason bits
@@ -26,6 +31,9 @@ public:
 
     [[nodiscard]] static bool TryRedirect(PEXCEPTION_POINTERS exception, GuestContext& guest,
                                           const X18FallbackMetadata& metadata) noexcept;
+
+    [[nodiscard]] static std::optional<WindowsX18FallbackSiteInfo> FindSiteInfo(
+        u64 pc, const X18FallbackMetadata& metadata) noexcept;
 
     [[nodiscard]] static std::optional<u32> FindOriginalInstruction(
         u64 pc, const X18FallbackMetadata& metadata) noexcept;
