@@ -256,25 +256,6 @@ constexpr u32 P2BGuestX18Register = 18;
     return reg == 31 ? guest.sp : guest.cpu_registers[reg];
 }
 
-[[nodiscard]] bool IsP2BRegisterOnlyHotX18Form(u32 instruction) noexcept {
-    constexpr u32 RegisterMask = 0x1FU;
-
-    // CMP Xn, Xm alias: SUBS XZR, Xn, Xm with the unshifted/LSL encoding used by the hot loop.
-    if ((instruction & 0xFFE0001FU) == 0xEB00001FU) {
-        const u32 rm = (instruction >> 16) & RegisterMask;
-        const u32 rn = (instruction >> 5) & RegisterMask;
-        return rm == P2BGuestX18Register || rn == P2BGuestX18Register;
-    }
-
-    // CMP Wn, #imm alias: SUBS WZR, Wn, #imm12 with shift=0.
-    if ((instruction & 0xFFC0001FU) == 0x7100001FU) {
-        const u32 rn = (instruction >> 5) & RegisterMask;
-        return rn == P2BGuestX18Register;
-    }
-
-    return false;
-}
-
 [[nodiscard]] std::optional<u64> GetP2BObservedByteAccessAddress(
     u32 instruction, const GuestContext& guest) noexcept {
     constexpr u32 RegisterMask = 0x1FU;
@@ -345,31 +326,34 @@ constexpr u32 P2BGuestX18Register = 18;
            access_backing_value < stack_backing_end;
 }
 
-[[nodiscard]] bool P2BNeedsPrivateStackSync(
+[[nodiscard]] bool P2CNeedsPrivateStackSync(
     u64 transition_result, Kernel::KProcess* process, const GuestContext& guest,
     const NCE::X18FallbackMetadata& metadata) {
     if (transition_result != NCE::WindowsX18FallbackTrap::ReturnMarker) {
         return true;
     }
 
-    const auto original =
-        NCE::WindowsX18FallbackTrap::FindOriginalInstruction(guest.pc, metadata);
-    if (!original.has_value()) {
+    const auto site = NCE::WindowsX18FallbackTrap::FindSiteInfo(guest.pc, metadata);
+    if (!site.has_value()) {
         return true;
     }
 
-    // Register-only hot forms cannot observe or modify stack backing.
-    if (IsP2BRegisterOnlyHotX18Form(*original)) {
+    // P2C generalizes the P2B register-only optimization. The patcher computes this property once
+    // from Dynarmic IR and records it in metadata, so the hot fallback path pays only a bit test.
+    // An instruction that emits no guest memory read/write IR cannot observe or modify the private
+    // stack backing, regardless of which ordinary ALU/branch family uses virtual guest x18.
+    if (!site->may_access_memory) {
         return false;
     }
 
-    // The two observed byte-memory forms can skip the 64-KiB private-stack copy only when their
-    // effective byte address neither lies in the stack VA nor aliases the same backing storage.
-    if (const auto address = GetP2BObservedByteAccessAddress(*original, guest)) {
+    // Preserve P2B's bounded byte-memory optimization. Memory-touching instructions skip the
+    // private-stack copy only when their effective address neither lies in the stack VA nor aliases
+    // the same backing storage.
+    if (const auto address = GetP2BObservedByteAccessAddress(site->instruction, guest)) {
         return P2BByteAccessAliasesPrivateStackBacking(process, guest, *address);
     }
 
-    // Every unclassified x18 fallback keeps the existing V16 full-sync behavior.
+    // Every other memory-touching x18 fallback keeps the established V16 full-sync behavior.
     return true;
 }
 
@@ -661,7 +645,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         // alias the private stack. Every other fallback retains the established V16 sync path.
         const bool needs_private_stack_sync =
             private_stack_lease.has_value() &&
-            P2BNeedsPrivateStackSync(static_cast<u64>(hr), process, m_guest_ctx, post_handlers);
+            P2CNeedsPrivateStackSync(static_cast<u64>(hr), process, m_guest_ctx, post_handlers);
 
         if (needs_private_stack_sync && !private_stack_lease->SyncToBacking()) {
             LOG_ERROR(Core_ARM, "V16 failed to synchronize private NCE stack to backing");
