@@ -4,6 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cstring>
+#include <limits>
+
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
@@ -21,25 +25,129 @@ DynarmicCallbacks64::DynarmicCallbacks64(ArmDynarmic64& parent, Kernel::KProcess
     , m_check_memory_access{m_debugger_enabled || !Settings::values.cpuopt_ignore_memory_aborts.GetValue()}
 {}
 
+void DynarmicCallbacks64::SetPrivateMemoryView(u64 base, u64 size) noexcept {
+    if (size == 0 || base > std::numeric_limits<u64>::max() - size) {
+        ClearPrivateMemoryView();
+        return;
+    }
+    m_private_memory_base = base;
+    m_private_memory_end = base + size;
+}
+
+void DynarmicCallbacks64::ClearPrivateMemoryView() noexcept {
+    m_private_memory_base = 0;
+    m_private_memory_end = 0;
+}
+
+bool DynarmicCallbacks64::ReadMemoryWithPrivateView(u64 vaddr, void* output,
+                                                    std::size_t size) {
+    if (size == 0) {
+        return true;
+    }
+    if (vaddr > std::numeric_limits<u64>::max() - size) {
+        return false;
+    }
+
+    const u64 request_end = vaddr + size;
+    if (m_private_memory_base == 0 || request_end <= m_private_memory_base ||
+        vaddr >= m_private_memory_end) {
+        return m_memory.ReadBlock(vaddr, output, size);
+    }
+
+    auto* const bytes = static_cast<u8*>(output);
+    std::size_t offset = 0;
+    while (offset < size) {
+        const u64 current = vaddr + offset;
+        if (current >= m_private_memory_base && current < m_private_memory_end) {
+            const auto chunk = static_cast<std::size_t>((std::min)(
+                static_cast<u64>(size - offset), m_private_memory_end - current));
+            std::memcpy(bytes + offset, reinterpret_cast<const void*>(current), chunk);
+            offset += chunk;
+            continue;
+        }
+
+        const u64 next =
+            current < m_private_memory_base
+                ? (std::min)(request_end, m_private_memory_base)
+                : request_end;
+        const auto chunk = static_cast<std::size_t>(next - current);
+        if (!m_memory.ReadBlock(current, bytes + offset, chunk)) {
+            return false;
+        }
+        offset += chunk;
+    }
+    return true;
+}
+
+bool DynarmicCallbacks64::WriteMemoryWithPrivateView(u64 vaddr, const void* input,
+                                                     std::size_t size) {
+    if (size == 0) {
+        return true;
+    }
+    if (vaddr > std::numeric_limits<u64>::max() - size) {
+        return false;
+    }
+
+    const u64 request_end = vaddr + size;
+    if (m_private_memory_base == 0 || request_end <= m_private_memory_base ||
+        vaddr >= m_private_memory_end) {
+        return m_memory.WriteBlock(vaddr, input, size);
+    }
+
+    const auto* const bytes = static_cast<const u8*>(input);
+    std::size_t offset = 0;
+    while (offset < size) {
+        const u64 current = vaddr + offset;
+        if (current >= m_private_memory_base && current < m_private_memory_end) {
+            const auto chunk = static_cast<std::size_t>((std::min)(
+                static_cast<u64>(size - offset), m_private_memory_end - current));
+            std::memcpy(reinterpret_cast<void*>(current), bytes + offset, chunk);
+            offset += chunk;
+            continue;
+        }
+
+        const u64 next =
+            current < m_private_memory_base
+                ? (std::min)(request_end, m_private_memory_base)
+                : request_end;
+        const auto chunk = static_cast<std::size_t>(next - current);
+        if (!m_memory.WriteBlock(current, bytes + offset, chunk)) {
+            return false;
+        }
+        offset += chunk;
+    }
+    return true;
+}
+
 u8 DynarmicCallbacks64::MemoryRead8(u64 vaddr) {
     CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Read);
-    return m_memory.Read8(vaddr);
+    u8 value{};
+    ReadMemoryWithPrivateView(vaddr, &value, sizeof(value));
+    return value;
 }
 u16 DynarmicCallbacks64::MemoryRead16(u64 vaddr) {
     CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Read);
-    return m_memory.Read16(vaddr);
+    u16 value{};
+    ReadMemoryWithPrivateView(vaddr, &value, sizeof(value));
+    return value;
 }
 u32 DynarmicCallbacks64::MemoryRead32(u64 vaddr) {
     CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Read);
-    return m_memory.Read32(vaddr);
+    u32 value{};
+    ReadMemoryWithPrivateView(vaddr, &value, sizeof(value));
+    return value;
 }
 u64 DynarmicCallbacks64::MemoryRead64(u64 vaddr) {
     CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Read);
-    return m_memory.Read64(vaddr);
+    u64 value{};
+    ReadMemoryWithPrivateView(vaddr, &value, sizeof(value));
+    return value;
 }
 Dynarmic::A64::Vector DynarmicCallbacks64::MemoryRead128(u64 vaddr) {
     CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Read);
-    return {m_memory.Read64(vaddr), m_memory.Read64(vaddr + 8)};
+    std::array<u64, 2> value{};
+    ReadMemoryWithPrivateView(vaddr, value.data(), sizeof(value));
+    return {value[0], value[1]};
 }
 
 std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
@@ -55,28 +163,28 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
 
 void DynarmicCallbacks64::MemoryWrite8(u64 vaddr, u8 value) {
     if (CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Write)) {
-        m_memory.Write8(vaddr, value);
+        WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
     }
 }
 void DynarmicCallbacks64::MemoryWrite16(u64 vaddr, u16 value) {
     if (CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Write)) {
-        m_memory.Write16(vaddr, value);
+        WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
     }
 }
 void DynarmicCallbacks64::MemoryWrite32(u64 vaddr, u32 value) {
     if (CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Write)) {
-        m_memory.Write32(vaddr, value);
+        WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
     }
 }
 void DynarmicCallbacks64::MemoryWrite64(u64 vaddr, u64 value) {
     if (CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Write)) {
-        m_memory.Write64(vaddr, value);
+        WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
     }
 }
 void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value) {
     if (CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write)) {
-        m_memory.Write64(vaddr, value[0]);
-        m_memory.Write64(vaddr + 8, value[1]);
+        const std::array<u64, 2> words{value[0], value[1]};
+        WriteMemoryWithPrivateView(vaddr, words.data(), sizeof(words));
     }
 }
 
@@ -390,14 +498,25 @@ void ArmDynarmic64::RewindBreakpointInstruction() {
     this->SetContext(m_breakpoint_context);
 }
 
-ArmDynarmic64::ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProcess* process, DynarmicExclusiveMonitor& exclusive_monitor, std::size_t core_index)
+ArmDynarmic64::ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProcess* process,
+                               DynarmicExclusiveMonitor& exclusive_monitor,
+                               std::size_t core_index, bool force_memory_callbacks)
     : ArmInterface{uses_wall_clock}, m_system{system}, m_exclusive_monitor{exclusive_monitor}
     , m_cb(std::make_optional<DynarmicCallbacks64>(*this, process))
     , m_core_index{core_index}
 {
     auto& page_table = process->GetPageTable().GetBasePageTable();
     auto& page_table_impl = page_table.GetImpl();
-    MakeJit(&page_table_impl, page_table.GetAddressSpaceWidth());
+    MakeJit(force_memory_callbacks ? nullptr : &page_table_impl,
+            page_table.GetAddressSpaceWidth());
+}
+
+void ArmDynarmic64::SetPrivateMemoryView(u64 base, u64 size) noexcept {
+    m_cb->SetPrivateMemoryView(base, size);
+}
+
+void ArmDynarmic64::ClearPrivateMemoryView() noexcept {
+    m_cb->ClearPrivateMemoryView();
 }
 
 ArmDynarmic64::~ArmDynarmic64() = default;
