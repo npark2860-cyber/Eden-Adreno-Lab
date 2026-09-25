@@ -19,7 +19,7 @@ WindowsX18FallbackRunner::WindowsX18FallbackRunner(System& system, bool uses_wal
     : m_exclusive_monitor{std::make_unique<DynarmicExclusiveMonitor>(
           process->GetMemory(), Core::Hardware::NUM_CPU_CORES)},
       m_backend{std::make_unique<ArmDynarmic64>(system, uses_wall_clock, process,
-                                                *m_exclusive_monitor, core_index)} {}
+                                                *m_exclusive_monitor, core_index, true)} {}
 
 WindowsX18FallbackRunner::~WindowsX18FallbackRunner() = default;
 
