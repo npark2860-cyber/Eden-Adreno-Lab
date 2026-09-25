@@ -18,6 +18,7 @@
 #include "core/arm/nce/windows_patch_code_metadata.h"
 #include "core/arm/nce/windows_x18_exclusive.h"
 #include "core/arm/nce/windows_x18_lse.h"
+#include "core/arm/nce/windows_x18_fallback_runner.h"
 #endif
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -379,6 +380,88 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
                 this->BranchToModule(module_dest);
             }
         };
+
+    const auto WriteWindowsX18DirectTrampoline =
+        [&](ModuleDestLabel instruction_pc, ModuleDestLabel module_dest, u32 instruction,
+            oaknut::VectorCodeGenerator& cg, oaknut::Label& save_ctx,
+            oaknut::Label& load_ctx) {
+            const bool is_pre = (&cg == &c_pre);
+            constexpr u32 BlrBase = 0xD63F0000U;
+            constexpr size_t WindowsTebStackBaseOffset = 0x08;
+            constexpr size_t HostStackBaseFromHostContext =
+                offsetof(GuestContext, windows_host_stack_base) - offsetof(GuestContext, host_ctx);
+            constexpr size_t HostStackLimitFromHostContext =
+                offsetof(GuestContext, windows_host_stack_limit) - offsetof(GuestContext, host_ctx);
+            constexpr size_t HostRegsOffset = offsetof(HostContext, host_saved_regs);
+            constexpr size_t HostVregsOffset = offsetof(HostContext, host_saved_vregs);
+
+            oaknut::Label guest_pc;
+            oaknut::Label helper_address;
+            oaknut::Label direct_success;
+
+            cg.STR(X30, SP, PRE_INDEXED, -16);
+            cg.BL(save_ctx);
+            cg.LDR(X30, SP, POST_INDEXED, 16);
+
+            WriteWindowsCurrentNceParametersLookup(cg, X2);
+            cg.LDR(X2, X2, offsetof(NativeExecutionParameters, native_context));
+            cg.LDR(X3, guest_pc);
+            cg.STR(X3, X2, offsetof(GuestContext, pc));
+
+            cg.MOV(X0, X2);
+            cg.MOV(W1, instruction);
+            cg.LDR(X16, helper_address);
+            cg.dw(BlrBase | (16U << 5));
+            cg.CBZ(X0, direct_success);
+
+            this->LockContext(cg);
+            WriteWindowsCurrentNceParametersLookup(cg, X1);
+            cg.LDR(X1, X1, offsetof(NativeExecutionParameters, native_context));
+            cg.ADD(X1, X1, offsetof(GuestContext, host_ctx));
+
+            cg.LDR(X3, X1, HostStackBaseFromHostContext);
+            cg.LDR(X4, X1, HostStackLimitFromHostContext);
+            cg.LDR(X2, X1, offsetof(HostContext, host_sp));
+            cg.STP(X3, X4, X18, WindowsTebStackBaseOffset);
+            cg.MOV(SP, X2);
+
+            cg.LDP(X19, X20, X1, HostRegsOffset);
+            cg.LDP(X21, X22, X1, HostRegsOffset + 2 * sizeof(u64));
+            cg.LDP(X23, X24, X1, HostRegsOffset + 4 * sizeof(u64));
+            cg.LDP(X25, X26, X1, HostRegsOffset + 6 * sizeof(u64));
+            cg.LDP(X27, X28, X1, HostRegsOffset + 8 * sizeof(u64));
+            cg.LDP(X29, X30, X1, HostRegsOffset + 10 * sizeof(u64));
+            cg.LDP(Q8, Q9, X1, HostVregsOffset);
+            cg.LDP(Q10, Q11, X1, HostVregsOffset + 2 * sizeof(u128));
+            cg.LDP(Q12, Q13, X1, HostVregsOffset + 4 * sizeof(u128));
+            cg.LDP(Q14, Q15, X1, HostVregsOffset + 6 * sizeof(u128));
+            cg.RET();
+
+            cg.l(direct_success);
+
+            WriteWindowsCurrentNceParametersLookup(cg, X1);
+            cg.LDR(X1, X1, offsetof(NativeExecutionParameters, native_context));
+            cg.LDR(X30, X1, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 30);
+            cg.STR(X30, SP, PRE_INDEXED, -16);
+            cg.BL(load_ctx);
+            cg.LDR(X30, SP, POST_INDEXED, 16);
+
+            if (is_pre) {
+                this->BranchToModulePre(module_dest);
+            } else {
+                this->BranchToModule(module_dest);
+            }
+
+            cg.l(guest_pc);
+            if (is_pre) {
+                this->WriteModulePcPre(instruction_pc);
+            } else {
+                this->WriteModulePc(instruction_pc);
+            }
+            cg.l(helper_address);
+            cg.dx(static_cast<u64>(reinterpret_cast<uintptr_t>(
+                &WindowsNceExecuteDirectX18)));
+        };
 #endif
 
     // Loop through instructions, patching as needed.
@@ -556,6 +639,24 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
 #endif
             curr_patch->m_exclusives.push_back(i);
         }
+
+#if defined(_WIN32)
+        // P3A: keep decoder-supported linear/non-SP ordinary x18 inside the current guest epoch.
+        // Branch/terminal/SP-changing forms remain on the established BRK fallback.
+        if (X18Fallback::CanUseDirectTrampoline(inst)) {
+            const uintptr_t this_offset = i * sizeof(u32);
+            bool pre_buffer = false;
+            const auto ret = AddRelocations(pre_buffer);
+            if (pre_buffer) {
+                WriteWindowsX18DirectTrampoline(this_offset, ret, inst, c_pre,
+                                                m_save_context_pre, m_load_context_pre);
+            } else {
+                WriteWindowsX18DirectTrampoline(this_offset, ret, inst, c,
+                                                m_save_context, m_load_context);
+            }
+            continue;
+        }
+#endif
     }
 
     // Determine patching mode for the final relocation step

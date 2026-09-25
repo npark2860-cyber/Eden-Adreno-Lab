@@ -54,10 +54,21 @@ public:
         const X18FallbackMetadata& metadata, u64 private_stack_base,
         u64 private_stack_size);
 
+    void SetDirectPrivateStackView(u64 base, u64 size) noexcept;
+    void ClearDirectPrivateStackView() noexcept;
+
+    [[nodiscard]] X18FallbackStepResult ExecuteDirect(Kernel::KThread* thread,
+                                                      GuestContext& guest,
+                                                      u32 instruction);
+
 private:
     std::unique_ptr<DynarmicExclusiveMonitor> m_exclusive_monitor;
     std::unique_ptr<ArmDynarmic64> m_backend;
+    u64 m_direct_private_stack_base{};
+    u64 m_direct_private_stack_size{};
 };
+
+extern "C" u64 WindowsNceExecuteDirectX18(GuestContext* guest, u32 instruction) noexcept;
 
 } // namespace NCE
 } // namespace Core

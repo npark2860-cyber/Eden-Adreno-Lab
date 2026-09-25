@@ -122,10 +122,14 @@ jobs:
           X18_CLASSIFIER_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/x18_classifier.cpp")"
           grep -Fq 'IsGuestMemoryAccess' <<<"$X18_CLASSIFIER_SRC"
           grep -Fq 'MayAccessGuestMemory' <<<"$X18_CLASSIFIER_SRC"
+          grep -Fq 'CanUseDirectTrampoline' <<<"$X18_CLASSIFIER_SRC"
 
           X18_TRAP_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/windows_x18_fallback_trap.cpp")"
           grep -Fq 'FindSiteInfo' <<<"$X18_TRAP_SRC"
           grep -Fq 'MetadataMayAccessMemoryBit' <<<"$X18_TRAP_SRC"
+
+          grep -Fq 'WriteWindowsX18DirectTrampoline' <<<"$PATCH_SRC"
+          grep -Fq 'WindowsNceExecuteDirectX18' <<<"$PATCH_SRC"
 
           DYN64_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/dynarmic/arm_dynarmic_64.cpp")"
           grep -Fq 'ReadMemoryWithPrivateView' <<<"$DYN64_SRC"
@@ -135,8 +139,11 @@ jobs:
           X18_RUNNER_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/windows_x18_fallback_runner.cpp")"
           grep -Fq 'SetPrivateMemoryView' <<<"$X18_RUNNER_SRC"
           grep -Fq 'core_index, true' <<<"$X18_RUNNER_SRC"
+          grep -Fq 'ExecuteDirect' <<<"$X18_RUNNER_SRC"
+          grep -Fq 'WindowsNceExecuteDirectX18' <<<"$X18_RUNNER_SRC"
 
           grep -Fq 'fallback_uses_private_stack_view' <<<"$ARM_SRC"
+          grep -Fq 'SetDirectPrivateStackView' <<<"$ARM_SRC"
 
           grep -Fq 'Preserve the working 20da host-return recovery' <<<"$ARM_SRC"
           grep -Fq 'breakpoint_pc_is_guest' <<<"$ARM_SRC"
@@ -153,7 +160,7 @@ jobs:
 
           git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/nce/x18_fallback.h             src/core/arm/nce/x18_classifier.cpp             src/core/arm/nce/windows_x18_fallback_trap.cpp             src/core/arm/nce/windows_x18_fallback_trap.h             src/core/arm/nce/x18_site_patcher.h             src/core/arm/nce/windows_x18_fallback_runner.cpp             src/core/arm/nce/windows_x18_fallback_runner.h             src/core/arm/nce/patcher.cpp             src/core/arm/nce/x18_site_patcher.cpp             src/core/arm/dynarmic/arm_dynarmic_64.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
-          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A-P2D reductions plus P2E callback-only x18 fallback private-stack view\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=run the selective Dynarmic x18 fallback without page-table/fastmem bypass; route accesses inside the active MEM_PRIVATE stack directly to the guest VA and all other accesses through Core::Memory, eliminating per-fallback whole-stack copies while preserving normal memory/rasterizer semantics outside the private stack\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A-P2E reductions plus P3A direct ordinary-x18 trampoline\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=execute linear non-SP decoder-supported ordinary x18 from generated patch trampolines using the existing single-step backend inside the same RunThread epoch; preserve P2E private-stack callbacks; avoid BRK/VEH/RunThread/NtContinue on the normal completed path\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7

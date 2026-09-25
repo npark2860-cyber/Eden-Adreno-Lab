@@ -142,6 +142,49 @@ bool X18Fallback::MayAccessGuestMemory(u32 instruction) {
     return !should_continue && !emitted_ir;
 }
 
+
+bool X18Fallback::CanUseDirectTrampoline(u32 instruction) {
+    if (ClassifyInstruction(instruction) != X18InstructionClass::SupportedOrdinary) {
+        return false;
+    }
+
+    const Dynarmic::A64::LocationDescriptor descriptor{0, Dynarmic::FP::FPCR{0}, true};
+    Dynarmic::IR::Block block{static_cast<Dynarmic::IR::LocationDescriptor>(descriptor)};
+    const bool should_continue =
+        Dynarmic::A64::TranslateSingleInstruction(block, descriptor, instruction);
+
+    if (!should_continue) {
+        return false;
+    }
+
+    bool emitted_ir = false;
+    for (const auto& inst : block.Instructions()) {
+        emitted_ir = true;
+        using Dynarmic::IR::Opcode;
+        switch (inst.GetOpcode()) {
+        case Opcode::A64SetSP:
+        case Opcode::A64SetPC:
+        case Opcode::A64CallSupervisor:
+        case Opcode::A64ExceptionRaised:
+        case Opcode::A64ClearExclusive:
+        case Opcode::A64ExclusiveReadMemory8:
+        case Opcode::A64ExclusiveReadMemory16:
+        case Opcode::A64ExclusiveReadMemory32:
+        case Opcode::A64ExclusiveReadMemory64:
+        case Opcode::A64ExclusiveReadMemory128:
+        case Opcode::A64ExclusiveWriteMemory8:
+        case Opcode::A64ExclusiveWriteMemory16:
+        case Opcode::A64ExclusiveWriteMemory32:
+        case Opcode::A64ExclusiveWriteMemory64:
+        case Opcode::A64ExclusiveWriteMemory128:
+            return false;
+        default:
+            break;
+        }
+    }
+
+    return emitted_ir;
+}
 X18InstructionClass X18Fallback::ClassifyInstruction(u32 instruction) {
     if (KnownDecoderDisabledAtomicTouchesX18(instruction)) {
         return X18InstructionClass::ExcludedUnsupportedAtomic;

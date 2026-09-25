@@ -36,6 +36,7 @@ public:
 
     [[nodiscard]] static X18InstructionClass ClassifyInstruction(u32 instruction);
     [[nodiscard]] static bool MayAccessGuestMemory(u32 instruction);
+    [[nodiscard]] static bool CanUseDirectTrampoline(u32 instruction);
 
     [[nodiscard]] static constexpr X18FallbackStepResult DecodeStepReason(
         HaltReason step_reason) noexcept {

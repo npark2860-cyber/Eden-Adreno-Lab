@@ -608,6 +608,14 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             break;
         }
 
+        if (private_stack_lease.has_value()) {
+            m_windows_x18_runner->SetDirectPrivateStackView(
+                m_guest_ctx.windows_guest_stack_limit,
+                m_guest_ctx.windows_guest_stack_base - m_guest_ctx.windows_guest_stack_limit);
+        } else {
+            m_windows_x18_runner->ClearDirectPrivateStackView();
+        }
+
         if (const auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
             hr = static_cast<HaltReason>(NCE::WindowsNceEnterGuest(
                 &m_guest_ctx, reinterpret_cast<const void*>(it->second)));
@@ -694,6 +702,10 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
         // A normal one-instruction x18 fallback updated GuestContext::pc. Re-enter the native NCE
         // path using the same post-handler/arbitrary-PC selection contract as ordinary RunThread.
+    }
+
+    if (m_windows_x18_runner != nullptr) {
+        m_windows_x18_runner->ClearDirectPrivateStackView();
     }
 
     // The private replacement belongs to the complete RunThread epoch. Internal NCE fault/retry

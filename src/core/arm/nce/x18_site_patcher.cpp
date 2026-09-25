@@ -58,6 +58,12 @@ void X18SitePatcher::Apply(Common::ProcessAddress load_base,
         const u64 runtime_pc = GetInteger(load_base) + GetInteger(code.addr) +
                                static_cast<u64>(site.text_word_index) * sizeof(u32);
 
+        // RelocateAndCopy may already have replaced this original x18 instruction with a branch
+        // to a generated Windows-safe trampoline. Never overwrite that branch with BRK #0xF000.
+        if (words[site.text_word_index] != site.instruction) {
+            continue;
+        }
+
         // A dedicated generated NCE trampoline owns this site when RelocateAndCopy already
         // registered an ordinary (untagged) post-handler entry for the same guest PC. P2A uses
         // this precedence for safe bitfield x18 instructions; leave all other ordinary x18
