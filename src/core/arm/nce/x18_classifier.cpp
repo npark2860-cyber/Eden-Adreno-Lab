@@ -76,6 +76,36 @@ constexpr u32 X18 = 18;
            IsX18(GetRt(instruction));
 }
 
+[[nodiscard]] bool IsGuestMemoryAccess(const Dynarmic::IR::Inst& inst) {
+    using Dynarmic::IR::Opcode;
+
+    switch (inst.GetOpcode()) {
+    case Opcode::A64ReadMemory8:
+    case Opcode::A64ReadMemory16:
+    case Opcode::A64ReadMemory32:
+    case Opcode::A64ReadMemory64:
+    case Opcode::A64ReadMemory128:
+    case Opcode::A64ExclusiveReadMemory8:
+    case Opcode::A64ExclusiveReadMemory16:
+    case Opcode::A64ExclusiveReadMemory32:
+    case Opcode::A64ExclusiveReadMemory64:
+    case Opcode::A64ExclusiveReadMemory128:
+    case Opcode::A64WriteMemory8:
+    case Opcode::A64WriteMemory16:
+    case Opcode::A64WriteMemory32:
+    case Opcode::A64WriteMemory64:
+    case Opcode::A64WriteMemory128:
+    case Opcode::A64ExclusiveWriteMemory8:
+    case Opcode::A64ExclusiveWriteMemory16:
+    case Opcode::A64ExclusiveWriteMemory32:
+    case Opcode::A64ExclusiveWriteMemory64:
+    case Opcode::A64ExclusiveWriteMemory128:
+        return true;
+    default:
+        return false;
+    }
+}
+
 [[nodiscard]] bool IsX18RegisterReference(const Dynarmic::IR::Inst& inst) {
     using Dynarmic::IR::Opcode;
 
@@ -91,6 +121,26 @@ constexpr u32 X18 = 18;
 }
 
 } // namespace
+
+bool X18Fallback::MayAccessGuestMemory(u32 instruction) {
+    const Dynarmic::A64::LocationDescriptor descriptor{0, Dynarmic::FP::FPCR{0}, true};
+    Dynarmic::IR::Block block{static_cast<Dynarmic::IR::LocationDescriptor>(descriptor)};
+
+    const bool should_continue =
+        Dynarmic::A64::TranslateSingleInstruction(block, descriptor, instruction);
+
+    bool emitted_ir = false;
+    for (const auto& inst : block.Instructions()) {
+        emitted_ir = true;
+        if (IsGuestMemoryAccess(inst)) {
+            return true;
+        }
+    }
+
+    // Unknown/decoder-rejected instructions stay conservative. Valid terminal ordinary
+    // instructions (for example BR) emit IR even though should_continue is false.
+    return !should_continue && !emitted_ir;
+}
 
 X18InstructionClass X18Fallback::ClassifyInstruction(u32 instruction) {
     if (KnownDecoderDisabledAtomicTouchesX18(instruction)) {
