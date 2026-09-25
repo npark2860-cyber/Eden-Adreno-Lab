@@ -25,7 +25,8 @@ WindowsX18FallbackRunner::~WindowsX18FallbackRunner() = default;
 
 WindowsX18FallbackDispatchResult WindowsX18FallbackRunner::Dispatch(
     u64 transition_result, Kernel::KThread* thread, GuestContext& guest,
-    const X18FallbackMetadata& metadata) {
+    const X18FallbackMetadata& metadata, u64 private_stack_base,
+    u64 private_stack_size) {
     WindowsX18FallbackDispatchResult result{};
 
     if (transition_result != WindowsX18FallbackTrap::ReturnMarker) {
@@ -39,7 +40,15 @@ WindowsX18FallbackDispatchResult WindowsX18FallbackRunner::Dispatch(
     }
 
     result.metadata_found = true;
+
+    if (private_stack_base != 0 && private_stack_size != 0) {
+        m_backend->SetPrivateMemoryView(private_stack_base, private_stack_size);
+    } else {
+        m_backend->ClearPrivateMemoryView();
+    }
+
     result.step = X18Fallback::Step(*m_backend, thread, guest, *instruction);
+    m_backend->ClearPrivateMemoryView();
     return result;
 }
 
