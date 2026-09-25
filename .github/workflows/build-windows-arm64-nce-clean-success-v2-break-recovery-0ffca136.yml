@@ -130,6 +130,9 @@ jobs:
 
           grep -Fq 'WriteWindowsX18DirectTrampoline' <<<"$PATCH_SRC"
           grep -Fq 'WindowsNceExecuteDirectX18' <<<"$PATCH_SRC"
+          grep -Fq 'no Windows/C++ helper may run on the guest stack' <<<"$PATCH_SRC"
+          grep -Fq 'windows_host_stack_base' <<<"$PATCH_SRC"
+          grep -Fq 'windows_guest_stack_base' <<<"$PATCH_SRC"
 
           DYN64_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/dynarmic/arm_dynarmic_64.cpp")"
           grep -Fq 'ReadMemoryWithPrivateView' <<<"$DYN64_SRC"
@@ -160,7 +163,7 @@ jobs:
 
           git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/nce/x18_fallback.h             src/core/arm/nce/x18_classifier.cpp             src/core/arm/nce/windows_x18_fallback_trap.cpp             src/core/arm/nce/windows_x18_fallback_trap.h             src/core/arm/nce/x18_site_patcher.h             src/core/arm/nce/windows_x18_fallback_runner.cpp             src/core/arm/nce/windows_x18_fallback_runner.h             src/core/arm/nce/patcher.cpp             src/core/arm/nce/x18_site_patcher.cpp             src/core/arm/dynarmic/arm_dynarmic_64.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
-          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A-P2E reductions plus P3A direct ordinary-x18 trampoline\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=execute linear non-SP decoder-supported ordinary x18 from generated patch trampolines using the existing single-step backend inside the same RunThread epoch; preserve P2E private-stack callbacks; avoid BRK/VEH/RunThread/NtContinue on the normal completed path\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A-P2E reductions plus P3B direct ordinary-x18 host-stack helper trampoline\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=execute linear non-SP decoder-supported ordinary x18 from generated patch trampolines inside the same RunThread epoch, but switch to host TEB bounds and host SP before the C++ single-step helper, then restore guest state directly and switch back to guest bounds/SP without BRK/VEH/RunThread/NtContinue\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7

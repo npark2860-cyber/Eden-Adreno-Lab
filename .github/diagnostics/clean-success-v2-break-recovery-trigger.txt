@@ -1,13 +1,13 @@
-Windows ARM64 NCE P3A direct ordinary-x18 trampoline candidate
-base_artifact=38773ac5cce6119dc25cc04856b220ae6f401367
-p2e_result=exact P2E still saturated one core at 5062.5ms per 5s
-p2e_hot_thread=PID45124 TID0x8A94
-p2e_hot_stack=NtQueryVirtualMemory -> VirtualQueryEx -> EnsureWindowsGuestStackLease/RunThread re-entry seam
-root_cause=ordinary guest-x18 BRK fallback exits native execution once per instruction; P1-P2E only moved secondary cost among JIT compile, stack memcpy and VirtualQuery while one-core saturation remained
-p3a_state_variable=linear non-SP decoder-supported ordinary x18 branches to generated patch code, saves guest state, executes the original instruction through the cached callback-only single-step backend inside the same RunThread epoch, reloads guest state and branches directly to the next guest instruction
-normal_path=no BRK; no VEH; no host-stack handoff; no RunThread re-entry; no NtContinue
-halt_path=real halt/fault acquires the context and returns through the existing host continuation
-ownership_fix=X18SitePatcher does not overwrite a site already rewritten by RelocateAndCopy; activates P2A/P3 direct patch ownership
-preserve=P2E private stack callbacks; physical x18 Windows TEB ownership; exclusive/LSE native seams; allocator/TEB/stack fixes
+Windows ARM64 NCE P3B direct ordinary-x18 host-stack helper candidate
+base_artifact=2883508f07178031e3f802bb95097dc44a4bf53a
+p3a_result=exact P3A boots into immediate native fault storm and log terminates around 9.305s
+p3a_fault_pages=0x2094991000,0x2094992000
+p3a_finding=generic direct x18 C++/Dynarmic helper was invoked while guest TEB bounds and guest SP were active; deep host call frames consumed guest stack and corrupted/faulted guest execution
+root_cause_fix=all ordinary Windows/C++ direct-x18 helper work runs only with host TEB bounds and captured host SP active
+p3b_success_path=save guest state -> host TEB bounds -> host SP -> single-step helper -> restore guest architectural state directly -> guest TEB bounds -> guest SP -> next guest instruction
+normal_path=no BRK; no VEH; no RunThread re-entry; no NtContinue
+post_guest_sp=no C ABI call; direct register/vector/status reload only
+halt_path=helper nonzero halt returns through existing host continuation with scheduler lock acquired
+preserve=P2E private-stack callback view; physical x18 TEB ownership; x18 patch ownership fix; exclusive/LSE native seams
 active_queued_before_trigger=0/0
 one_build_only

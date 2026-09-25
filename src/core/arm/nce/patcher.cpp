@@ -386,19 +386,21 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
             oaknut::VectorCodeGenerator& cg, oaknut::Label& save_ctx,
             oaknut::Label& load_ctx) {
             const bool is_pre = (&cg == &c_pre);
+            (void)load_ctx;
+
             constexpr u32 BlrBase = 0xD63F0000U;
             constexpr size_t WindowsTebStackBaseOffset = 0x08;
-            constexpr size_t HostStackBaseFromHostContext =
-                offsetof(GuestContext, windows_host_stack_base) - offsetof(GuestContext, host_ctx);
-            constexpr size_t HostStackLimitFromHostContext =
-                offsetof(GuestContext, windows_host_stack_limit) - offsetof(GuestContext, host_ctx);
             constexpr size_t HostRegsOffset = offsetof(HostContext, host_saved_regs);
             constexpr size_t HostVregsOffset = offsetof(HostContext, host_saved_vregs);
+            constexpr size_t GuestVregsOffset = offsetof(GuestContext, vector_registers);
 
             oaknut::Label guest_pc;
             oaknut::Label helper_address;
             oaknut::Label direct_success;
 
+            // Snapshot live guest architectural state while the guest stack is still active.
+            // WriteSaveContext deliberately keeps physical x18 Windows/TEB-owned and preserves
+            // virtual guest x18 in GuestContext.
             cg.STR(X30, SP, PRE_INDEXED, -16);
             cg.BL(save_ctx);
             cg.LDR(X30, SP, POST_INDEXED, 16);
@@ -408,22 +410,27 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
             cg.LDR(X3, guest_pc);
             cg.STR(X3, X2, offsetof(GuestContext, pc));
 
+            // P3B: no Windows/C++ helper may run on the guest stack. Restore the host TEB bounds
+            // first and immediately switch to the already-captured host SP before entering the
+            // Dynarmic single-step helper.
+            cg.LDR(X3, X2, offsetof(GuestContext, windows_host_stack_base));
+            cg.LDR(X4, X2, offsetof(GuestContext, windows_host_stack_limit));
+            cg.LDR(X5, X2, offsetof(GuestContext, host_ctx) + offsetof(HostContext, host_sp));
+            cg.STP(X3, X4, X18, WindowsTebStackBaseOffset);
+            cg.MOV(SP, X5);
+
             cg.MOV(X0, X2);
             cg.MOV(W1, instruction);
             cg.LDR(X16, helper_address);
             cg.dw(BlrBase | (16U << 5));
             cg.CBZ(X0, direct_success);
 
+            // A real halt/fault is already on the host stack with host TEB bounds installed.
+            // Acquire scheduler ownership and return through the original RunThread continuation.
             this->LockContext(cg);
             WriteWindowsCurrentNceParametersLookup(cg, X1);
             cg.LDR(X1, X1, offsetof(NativeExecutionParameters, native_context));
             cg.ADD(X1, X1, offsetof(GuestContext, host_ctx));
-
-            cg.LDR(X3, X1, HostStackBaseFromHostContext);
-            cg.LDR(X4, X1, HostStackLimitFromHostContext);
-            cg.LDR(X2, X1, offsetof(HostContext, host_sp));
-            cg.STP(X3, X4, X18, WindowsTebStackBaseOffset);
-            cg.MOV(SP, X2);
 
             cg.LDP(X19, X20, X1, HostRegsOffset);
             cg.LDP(X21, X22, X1, HostRegsOffset + 2 * sizeof(u64));
@@ -439,12 +446,52 @@ bool Patcher::PatchText(std::span<const u8> program_image, const Kernel::CodeSet
 
             cg.l(direct_success);
 
-            WriteWindowsCurrentNceParametersLookup(cg, X1);
-            cg.LDR(X1, X1, offsetof(NativeExecutionParameters, native_context));
-            cg.LDR(X30, X1, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 30);
-            cg.STR(X30, SP, PRE_INDEXED, -16);
-            cg.BL(load_ctx);
-            cg.LDR(X30, SP, POST_INDEXED, 16);
+            // Stay on the host stack while locating GuestContext. From this point onward restore
+            // guest state directly, mirroring WindowsNceEnterGuest, so no C ABI call executes
+            // after the guest SP is reinstalled.
+            WriteWindowsCurrentNceParametersLookup(cg, X17);
+            cg.LDR(X17, X17, offsetof(NativeExecutionParameters, native_context));
+
+            cg.LDR(W9, X17, offsetof(GuestContext, fpcr));
+            cg.MSR(oaknut::SystemReg::FPCR, X9);
+            cg.LDR(W9, X17, offsetof(GuestContext, fpsr));
+            cg.MSR(oaknut::SystemReg::FPSR, X9);
+            cg.LDR(W9, X17, offsetof(GuestContext, nzcv));
+            cg.MSR(oaknut::SystemReg::NZCV, X9);
+
+            for (int i = 0; i <= 30; i += 2) {
+                cg.LDP(oaknut::QReg{i}, oaknut::QReg{i + 1}, X17,
+                       GuestVregsOffset + 16 * i);
+            }
+
+            // x30 temporarily carries guest SP. x14/x15 are reserved until the TEB pair handoff;
+            // x16/x17 remain patch scratch until the final two guest-register reloads.
+            cg.LDR(X30, X17, offsetof(GuestContext, sp));
+            cg.LDP(X0, X1, X17, 0x000);
+            cg.LDP(X2, X3, X17, 0x010);
+            cg.LDP(X4, X5, X17, 0x020);
+            cg.LDP(X6, X7, X17, 0x030);
+            cg.LDP(X8, X9, X17, 0x040);
+            cg.LDP(X10, X11, X17, 0x050);
+            cg.LDP(X12, X13, X17, 0x060);
+            cg.LDP(X19, X20, X17, 0x098);
+            cg.LDP(X21, X22, X17, 0x0A8);
+            cg.LDP(X23, X24, X17, 0x0B8);
+            cg.LDP(X25, X26, X17, 0x0C8);
+            cg.LDP(X27, X28, X17, 0x0D8);
+            cg.LDR(X29, X17, 0x0E8);
+
+            // Match the D2 leaf stack handoff: publish a complete guest TEB interval and switch SP
+            // immediately, with no call/probe/stack access in between.
+            cg.LDR(X14, X17, offsetof(GuestContext, windows_guest_stack_base));
+            cg.LDR(X15, X17, offsetof(GuestContext, windows_guest_stack_limit));
+            cg.STP(X14, X15, X18, WindowsTebStackBaseOffset);
+            cg.MOV(SP, X30);
+
+            cg.LDP(X14, X15, X17, 0x070);
+            cg.LDR(X30, X17, 0x0F0);
+            cg.LDR(X16, X17, 0x080);
+            cg.LDR(X17, X17, 0x088);
 
             if (is_pre) {
                 this->BranchToModulePre(module_dest);
