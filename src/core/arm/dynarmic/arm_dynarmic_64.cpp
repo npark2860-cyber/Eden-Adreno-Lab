@@ -166,6 +166,13 @@ Dynarmic::A64::Vector DynarmicCallbacks64::MemoryRead128(u64 vaddr) {
 }
 
 std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
+    // P3E: the private x18 runner uses Dynarmic single-step, whose translator fetches exactly the
+    // current PC once. Return the original guest opcode directly for that active override. This
+    // avoids the former unconditional 4 KiB ReadBlock performed before every direct-x18 Step().
+    if (m_single_instruction_override_active && vaddr == m_single_instruction_override_pc) {
+        return m_single_instruction_override_instruction;
+    }
+
     if (!m_memory.IsValidVirtualAddressRange(vaddr, sizeof(u32)))
         return std::nullopt;
     auto const aligned_vaddr = vaddr & ~Core::Memory::YUZU_PAGEMASK;
