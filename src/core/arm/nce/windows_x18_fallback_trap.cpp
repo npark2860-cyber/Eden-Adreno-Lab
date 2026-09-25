@@ -8,7 +8,7 @@
 
 namespace Core::NCE {
 
-std::optional<u32> WindowsX18FallbackTrap::FindOriginalInstruction(
+std::optional<WindowsX18FallbackSiteInfo> WindowsX18FallbackTrap::FindSiteInfo(
     u64 pc, const X18FallbackMetadata& metadata) noexcept {
     const auto it = metadata.find(X18SitePatcher::MetadataKey(pc));
     if (it == metadata.end()) {
@@ -16,10 +16,26 @@ std::optional<u32> WindowsX18FallbackTrap::FindOriginalInstruction(
     }
 
     const u64 value = it->second;
-    if (static_cast<u32>(value >> 32) != X18SitePatcher::MetadataMagic) {
+    const u32 tagged_magic =
+        static_cast<u32>((value & ~X18SitePatcher::MetadataMayAccessMemoryBit) >> 32);
+    if (tagged_magic != X18SitePatcher::MetadataMagic) {
         return std::nullopt;
     }
-    return static_cast<u32>(value);
+
+    return WindowsX18FallbackSiteInfo{
+        .instruction = static_cast<u32>(value),
+        .may_access_memory =
+            (value & X18SitePatcher::MetadataMayAccessMemoryBit) != 0,
+    };
+}
+
+std::optional<u32> WindowsX18FallbackTrap::FindOriginalInstruction(
+    u64 pc, const X18FallbackMetadata& metadata) noexcept {
+    const auto info = FindSiteInfo(pc, metadata);
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    return info->instruction;
 }
 
 bool WindowsX18FallbackTrap::TryRedirect(PEXCEPTION_POINTERS exception, GuestContext& guest,
