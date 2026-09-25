@@ -51,7 +51,8 @@ public:
 
     [[nodiscard]] WindowsX18FallbackDispatchResult Dispatch(
         u64 transition_result, Kernel::KThread* thread, GuestContext& guest,
-        const X18FallbackMetadata& metadata);
+        const X18FallbackMetadata& metadata, u64 private_stack_base,
+        u64 private_stack_size);
 
 private:
     std::unique_ptr<DynarmicExclusiveMonitor> m_exclusive_monitor;
