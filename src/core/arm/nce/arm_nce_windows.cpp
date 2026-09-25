@@ -247,6 +247,8 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     return true;
 }
 
+constexpr u32 P2BP2BGuestX18Register = 18;
+
 [[nodiscard]] u64 ReadP2BGuestRegister(const GuestContext& guest, u32 reg) noexcept {
     // These P2B forms only use ordinary X/W registers for the decoded address operands.
     // Rn==31 is SP for the byte store base; the register-offset load is deliberately limited
@@ -261,13 +263,13 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     if ((instruction & 0xFFE0001FU) == 0xEB00001FU) {
         const u32 rm = (instruction >> 16) & RegisterMask;
         const u32 rn = (instruction >> 5) & RegisterMask;
-        return rm == GuestX18Register || rn == GuestX18Register;
+        return rm == P2BGuestX18Register || rn == P2BGuestX18Register;
     }
 
     // CMP Wn, #imm alias: SUBS WZR, Wn, #imm12 with shift=0.
     if ((instruction & 0xFFC0001FU) == 0x7100001FU) {
         const u32 rn = (instruction >> 5) & RegisterMask;
-        return rn == GuestX18Register;
+        return rn == P2BGuestX18Register;
     }
 
     return false;
@@ -282,8 +284,8 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     if ((instruction & 0xFFE0FC00U) == 0x38606800U) {
         const u32 rm = (instruction >> 16) & RegisterMask;
         const u32 rn = (instruction >> 5) & RegisterMask;
-        if (rm == GuestX18Register && rn != 31) {
-            return guest.cpu_registers[rn] + guest.cpu_registers[GuestX18Register];
+        if (rm == P2BGuestX18Register && rn != 31) {
+            return guest.cpu_registers[rn] + guest.cpu_registers[P2BGuestX18Register];
         }
     }
 
@@ -291,7 +293,7 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     // Dynarmic still owns the architectural X18 writeback itself.
     if ((instruction & 0xFFE00C00U) == 0x38000400U) {
         const u32 rn = (instruction >> 5) & RegisterMask;
-        if (rn == GuestX18Register) {
+        if (rn == P2BGuestX18Register) {
             return ReadP2BGuestRegister(guest, rn);
         }
     }
