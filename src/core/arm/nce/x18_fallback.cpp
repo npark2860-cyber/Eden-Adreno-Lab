@@ -13,16 +13,12 @@
 namespace Core {
 
 void ArmDynarmic64::SetSingleInstructionCodeOverride(u64 pc, u32 instruction) {
-    const u64 page_mask = Dynarmic::CODE_PAGE_SIZE - 1;
-    const u64 aligned_pc = pc & ~page_mask;
-
-    if (m_cb->last_code_addr != aligned_pc) {
-        m_cb->m_memory.ReadBlock(aligned_pc, &m_cb->cached_code_page,
-                                 sizeof(m_cb->cached_code_page));
-        m_cb->last_code_addr = aligned_pc;
-    }
-
-    m_cb->cached_code_page.inst[(pc & page_mask) / sizeof(u32)] = instruction;
+    // P3E: Dynarmic's single-stepping translator performs exactly one MemoryReadCode(pc).
+    // Publish the original guest opcode directly instead of pre-reading/mutating a full 4 KiB
+    // page. A compiled single-step block remains keyed by (PC, semantic instruction) below.
+    m_cb->m_single_instruction_override_pc = pc;
+    m_cb->m_single_instruction_override_instruction = instruction;
+    m_cb->m_single_instruction_override_active = true;
 
     const auto [it, inserted] =
         m_single_instruction_override_cache.try_emplace(pc, instruction);
@@ -36,7 +32,9 @@ void ArmDynarmic64::SetSingleInstructionCodeOverride(u64 pc, u32 instruction) {
 }
 
 void ArmDynarmic64::ClearSingleInstructionCodeOverride() {
-    m_cb->last_code_addr = u64(-1);
+    // Do not invalidate the ordinary code-page cache here. The override never mutates that page.
+    // ISB/IC callbacks retain ownership of real code-cache/page-cache invalidation.
+    m_cb->m_single_instruction_override_active = false;
 }
 
 } // namespace Core
