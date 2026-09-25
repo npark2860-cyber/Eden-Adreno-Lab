@@ -61,7 +61,7 @@ jobs:
 
           while IFS= read -r changed; do
             case "$changed" in
-              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/core/arm/nce/x18_fallback.cpp|              src/core/arm/nce/x18_fallback.h|              src/core/arm/nce/x18_classifier.cpp|              src/core/arm/nce/windows_x18_fallback_trap.cpp|              src/core/arm/nce/windows_x18_fallback_trap.h|              src/core/arm/nce/x18_site_patcher.h|              src/core/arm/nce/patcher.cpp|              src/core/arm/nce/x18_site_patcher.cpp|              src/core/arm/dynarmic/arm_dynarmic_64.h|              src/core/CMakeLists.txt|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
+              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/core/arm/nce/x18_fallback.cpp|              src/core/arm/nce/x18_fallback.h|              src/core/arm/nce/x18_classifier.cpp|              src/core/arm/nce/windows_x18_fallback_trap.cpp|              src/core/arm/nce/windows_x18_fallback_trap.h|              src/core/arm/nce/x18_site_patcher.h|              src/core/arm/nce/windows_x18_fallback_runner.cpp|              src/core/arm/nce/windows_x18_fallback_runner.h|              src/core/arm/nce/patcher.cpp|              src/core/arm/nce/x18_site_patcher.cpp|              src/core/arm/dynarmic/arm_dynarmic_64.cpp|              src/core/arm/dynarmic/arm_dynarmic_64.h|              src/core/CMakeLists.txt|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
                 ;;
               *)
                 echo "Unexpected changed path: $changed"
@@ -127,6 +127,17 @@ jobs:
           grep -Fq 'FindSiteInfo' <<<"$X18_TRAP_SRC"
           grep -Fq 'MetadataMayAccessMemoryBit' <<<"$X18_TRAP_SRC"
 
+          DYN64_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/dynarmic/arm_dynarmic_64.cpp")"
+          grep -Fq 'ReadMemoryWithPrivateView' <<<"$DYN64_SRC"
+          grep -Fq 'WriteMemoryWithPrivateView' <<<"$DYN64_SRC"
+          grep -Fq 'force_memory_callbacks' <<<"$DYN64_SRC"
+
+          X18_RUNNER_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/windows_x18_fallback_runner.cpp")"
+          grep -Fq 'SetPrivateMemoryView' <<<"$X18_RUNNER_SRC"
+          grep -Fq 'core_index, true' <<<"$X18_RUNNER_SRC"
+
+          grep -Fq 'fallback_uses_private_stack_view' <<<"$ARM_SRC"
+
           grep -Fq 'Preserve the working 20da host-return recovery' <<<"$ARM_SRC"
           grep -Fq 'breakpoint_pc_is_guest' <<<"$ARM_SRC"
           grep -Fq 'HaltReason::PrefetchAbort' <<<"$ARM_SRC"
@@ -140,9 +151,9 @@ jobs:
 
           test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/yuzu/main.cpp             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/guest_context.h             src/core/arm/nce/arm_nce.h             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
 
-          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/nce/x18_fallback.h             src/core/arm/nce/x18_classifier.cpp             src/core/arm/nce/windows_x18_fallback_trap.cpp             src/core/arm/nce/windows_x18_fallback_trap.h             src/core/arm/nce/x18_site_patcher.h             src/core/arm/nce/patcher.cpp             src/core/arm/nce/x18_site_patcher.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/nce/x18_fallback.h             src/core/arm/nce/x18_classifier.cpp             src/core/arm/nce/windows_x18_fallback_trap.cpp             src/core/arm/nce/windows_x18_fallback_trap.h             src/core/arm/nce/x18_site_patcher.h             src/core/arm/nce/windows_x18_fallback_runner.cpp             src/core/arm/nce/windows_x18_fallback_runner.h             src/core/arm/nce/patcher.cpp             src/core/arm/nce/x18_site_patcher.cpp             src/core/arm/dynarmic/arm_dynarmic_64.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
-          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A/P2B/P2C x18 fallback reductions plus P2D cached guest-stack bounds restore\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=retain existing x18 fallback semantics and P2C sync elision, but remove redundant VirtualQuery allocation walk from WindowsNceRestoreGuestContext by consuming the guest stack bounds already validated and published by RunThread immediately before entry\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A-P2D reductions plus P2E callback-only x18 fallback private-stack view\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=run the selective Dynarmic x18 fallback without page-table/fastmem bypass; route accesses inside the active MEM_PRIVATE stack directly to the guest VA and all other accesses through Core::Memory, eliminating per-fallback whole-stack copies while preserving normal memory/rasterizer semantics outside the private stack\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
