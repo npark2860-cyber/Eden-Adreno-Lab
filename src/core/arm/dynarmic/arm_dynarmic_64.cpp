@@ -121,30 +121,45 @@ bool DynarmicCallbacks64::WriteMemoryWithPrivateView(u64 vaddr, const void* inpu
 
 u8 DynarmicCallbacks64::MemoryRead8(u64 vaddr) {
     CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Read);
+    if (m_private_memory_base == 0) {
+        return m_memory.Read8(vaddr);
+    }
     u8 value{};
     ReadMemoryWithPrivateView(vaddr, &value, sizeof(value));
     return value;
 }
 u16 DynarmicCallbacks64::MemoryRead16(u64 vaddr) {
     CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Read);
+    if (m_private_memory_base == 0) {
+        return m_memory.Read16(vaddr);
+    }
     u16 value{};
     ReadMemoryWithPrivateView(vaddr, &value, sizeof(value));
     return value;
 }
 u32 DynarmicCallbacks64::MemoryRead32(u64 vaddr) {
     CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Read);
+    if (m_private_memory_base == 0) {
+        return m_memory.Read32(vaddr);
+    }
     u32 value{};
     ReadMemoryWithPrivateView(vaddr, &value, sizeof(value));
     return value;
 }
 u64 DynarmicCallbacks64::MemoryRead64(u64 vaddr) {
     CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Read);
+    if (m_private_memory_base == 0) {
+        return m_memory.Read64(vaddr);
+    }
     u64 value{};
     ReadMemoryWithPrivateView(vaddr, &value, sizeof(value));
     return value;
 }
 Dynarmic::A64::Vector DynarmicCallbacks64::MemoryRead128(u64 vaddr) {
     CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Read);
+    if (m_private_memory_base == 0) {
+        return {m_memory.Read64(vaddr), m_memory.Read64(vaddr + 8)};
+    }
     std::array<u64, 2> value{};
     ReadMemoryWithPrivateView(vaddr, value.data(), sizeof(value));
     return {value[0], value[1]};
@@ -163,28 +178,49 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
 
 void DynarmicCallbacks64::MemoryWrite8(u64 vaddr, u8 value) {
     if (CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Write)) {
-        WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
+        if (m_private_memory_base == 0) {
+            m_memory.Write8(vaddr, value);
+        } else {
+            WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
+        }
     }
 }
 void DynarmicCallbacks64::MemoryWrite16(u64 vaddr, u16 value) {
     if (CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Write)) {
-        WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
+        if (m_private_memory_base == 0) {
+            m_memory.Write16(vaddr, value);
+        } else {
+            WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
+        }
     }
 }
 void DynarmicCallbacks64::MemoryWrite32(u64 vaddr, u32 value) {
     if (CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Write)) {
-        WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
+        if (m_private_memory_base == 0) {
+            m_memory.Write32(vaddr, value);
+        } else {
+            WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
+        }
     }
 }
 void DynarmicCallbacks64::MemoryWrite64(u64 vaddr, u64 value) {
     if (CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Write)) {
-        WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
+        if (m_private_memory_base == 0) {
+            m_memory.Write64(vaddr, value);
+        } else {
+            WriteMemoryWithPrivateView(vaddr, &value, sizeof(value));
+        }
     }
 }
 void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value) {
     if (CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write)) {
-        const std::array<u64, 2> words{value[0], value[1]};
-        WriteMemoryWithPrivateView(vaddr, words.data(), sizeof(words));
+        if (m_private_memory_base == 0) {
+            m_memory.Write64(vaddr, value[0]);
+            m_memory.Write64(vaddr + 8, value[1]);
+        } else {
+            const std::array<u64, 2> words{value[0], value[1]};
+            WriteMemoryWithPrivateView(vaddr, words.data(), sizeof(words));
+        }
     }
 }
 
