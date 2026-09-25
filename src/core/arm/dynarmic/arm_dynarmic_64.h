@@ -72,6 +72,14 @@ public:
 
     Dynarmic::CodePage cached_code_page;
     u64 last_code_addr = u64(-1);
+
+    // P3E selective single-step override. Dynarmic single-stepping translates exactly one
+    // instruction, so the fallback backend can return the original guest opcode directly for
+    // that PC instead of copying and mutating an entire 4 KiB code page before every Step().
+    bool m_single_instruction_override_active{};
+    u64 m_single_instruction_override_pc{};
+    u32 m_single_instruction_override_instruction{};
+
     ArmDynarmic64& m_parent;
     Core::Memory::Memory& m_memory;
     u64 m_tpidrro_el0{};
