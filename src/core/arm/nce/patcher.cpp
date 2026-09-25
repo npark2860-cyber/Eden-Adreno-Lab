@@ -1285,7 +1285,23 @@ void Patcher::WriteCtrEl0Handler(ModuleDestLabel module_dest, oaknut::XReg dest_
 }
 
 void Patcher::WriteCntfrqHandler(ModuleDestLabel module_dest, oaknut::XReg dest_reg, oaknut::VectorCodeGenerator& cg) {
+#if defined(_WIN32)
+    if (dest_reg.index() == GuestX18Register) {
+        // P3D: X18 is the Windows TEB platform register. CNTFRQ_EL0 -> X18 must update the
+        // virtual guest register in GuestContext instead of clobbering the live TEB pointer.
+        cg.STP(X0, X1, SP, PRE_INDEXED, -16);
+        WriteWindowsCurrentNceParametersLookup(cg, X0);
+        cg.LDR(X0, X0, offsetof(NativeExecutionParameters, native_context));
+        cg.MOV(X1, Common::WallClock::CNTFRQ);
+        cg.STR(X1, X0,
+               offsetof(GuestContext, cpu_registers) + sizeof(u64) * GuestX18Register);
+        cg.LDP(X0, X1, SP, POST_INDEXED, 16);
+    } else {
+        cg.MOV(dest_reg, Common::WallClock::CNTFRQ);
+    }
+#else
     cg.MOV(dest_reg, Common::WallClock::CNTFRQ);
+#endif
 
     // Jump back to the instruction after the emulated MRS.
     if (&cg == &c_pre)
@@ -1303,39 +1319,50 @@ void Patcher::WriteCntpctHandler(ModuleDestLabel module_dest, oaknut::XReg dest_
     const auto factor = clock.GetGuestCNTFRQFactor();
     const auto raw_factor = std::bit_cast<std::array<u64, 2>>(factor);
 
-    const auto use_x2_x3 = dest_reg.index() == 0 || dest_reg.index() == 1;
-    oaknut::XReg scratch0 = use_x2_x3 ? X2 : X0;
-    oaknut::XReg scratch1 = use_x2_x3 ? X3 : X1;
-
     oaknut::Label factorlo;
     oaknut::Label factorhi;
 
-    // Save scratches.
-    cg.STP(scratch0, scratch1, SP, PRE_INDEXED, -16);
+#if defined(_WIN32)
+    if (dest_reg.index() == GuestX18Register) {
+        // P3D: compute the guest counter in ordinary scratch registers, then commit it to the
+        // virtual guest x18 slot. Physical x18 must remain the Windows TEB pointer throughout.
+        cg.STP(X0, X1, SP, PRE_INDEXED, -16);
+        cg.STP(X2, X3, SP, PRE_INDEXED, -16);
 
-    // Load counter value.
-    cg.MRS(dest_reg, oaknut::SystemReg::CNTVCT_EL0);
+        cg.MRS(X0, oaknut::SystemReg::CNTVCT_EL0);
+        cg.LDR(X1, factorlo);
+        cg.LDR(X3, factorhi);
+        cg.UMULH(X1, X0, X1);
+        cg.MADD(X0, X0, X3, X1);
 
-    // Load scaling factor.
-    cg.LDR(scratch0, factorlo);
-    cg.LDR(scratch1, factorhi);
+        WriteWindowsCurrentNceParametersLookup(cg, X2);
+        cg.LDR(X2, X2, offsetof(NativeExecutionParameters, native_context));
+        cg.STR(X0, X2,
+               offsetof(GuestContext, cpu_registers) + sizeof(u64) * GuestX18Register);
 
-    // Multiply low bits and get result.
-    cg.UMULH(scratch0, dest_reg, scratch0);
+        cg.LDP(X2, X3, SP, POST_INDEXED, 16);
+        cg.LDP(X0, X1, SP, POST_INDEXED, 16);
+    } else
+#endif
+    {
+        const auto use_x2_x3 = dest_reg.index() == 0 || dest_reg.index() == 1;
+        oaknut::XReg scratch0 = use_x2_x3 ? X2 : X0;
+        oaknut::XReg scratch1 = use_x2_x3 ? X3 : X1;
 
-    // Multiply high bits and add low bit result.
-    cg.MADD(dest_reg, dest_reg, scratch1, scratch0);
+        cg.STP(scratch0, scratch1, SP, PRE_INDEXED, -16);
+        cg.MRS(dest_reg, oaknut::SystemReg::CNTVCT_EL0);
+        cg.LDR(scratch0, factorlo);
+        cg.LDR(scratch1, factorhi);
+        cg.UMULH(scratch0, dest_reg, scratch0);
+        cg.MADD(dest_reg, dest_reg, scratch1, scratch0);
+        cg.LDP(scratch0, scratch1, SP, POST_INDEXED, 16);
+    }
 
-    // Reload scratches.
-    cg.LDP(scratch0, scratch1, SP, POST_INDEXED, 16);
-
-    // Jump back to the instruction after the emulated MRS.
     if (&cg == &c_pre)
         this->BranchToModulePre(module_dest);
     else
         this->BranchToModule(module_dest);
 
-    // Scaling factor constant values.
     cg.l(factorlo);
     cg.dx(raw_factor[0]);
     cg.l(factorhi);
