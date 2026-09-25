@@ -639,12 +639,16 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             break;
         }
 
-        // While the native guest stack is temporarily MEM_PRIVATE, Dynarmic fallback normally
-        // requires a full stack copy to/from Core::Memory's section-backed storage. P2B removes
-        // that 64-KiB round trip only for the exact hot ordinary-x18 forms proven not to touch or
-        // alias the private stack. Every other fallback retains the established V16 sync path.
-        const bool needs_private_stack_sync =
+        // P2E: the x18 fallback backend is callback-only. While a private native stack lease is
+        // active, its memory callbacks read/write that exact MEM_PRIVATE stack view directly and
+        // use Core::Memory for every address outside the stack. Therefore ordinary x18 fallback no
+        // longer needs a whole-stack SyncToBacking/SyncFromBacking round trip.
+        const bool fallback_uses_private_stack_view =
             private_stack_lease.has_value() &&
+            static_cast<u64>(hr) == NCE::WindowsX18FallbackTrap::ReturnMarker;
+
+        const bool needs_private_stack_sync =
+            private_stack_lease.has_value() && !fallback_uses_private_stack_view &&
             P2CNeedsPrivateStackSync(static_cast<u64>(hr), process, m_guest_ctx, post_handlers);
 
         if (needs_private_stack_sync && !private_stack_lease->SyncToBacking()) {
@@ -653,8 +657,16 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             break;
         }
 
+        const u64 private_stack_base =
+            fallback_uses_private_stack_view ? m_guest_ctx.windows_guest_stack_limit : 0;
+        const u64 private_stack_size =
+            fallback_uses_private_stack_view
+                ? m_guest_ctx.windows_guest_stack_base - m_guest_ctx.windows_guest_stack_limit
+                : 0;
+
         const auto fallback = m_windows_x18_runner->Dispatch(
-            static_cast<u64>(hr), thread, m_guest_ctx, post_handlers);
+            static_cast<u64>(hr), thread, m_guest_ctx, post_handlers, private_stack_base,
+            private_stack_size);
 
         if (fallback.handled && needs_private_stack_sync &&
             !private_stack_lease->SyncFromBacking()) {
