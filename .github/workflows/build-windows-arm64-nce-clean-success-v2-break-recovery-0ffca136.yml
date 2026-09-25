@@ -114,6 +114,8 @@ jobs:
           grep -Fq 'BuildWindowsX18BitfieldPlan' <<<"$PATCH_SRC"
           grep -Fq 'WriteWindowsX18BitfieldTrampoline' <<<"$PATCH_SRC"
           grep -Fq 'physical x18 Windows/TEB-owned at all times' <<<"$PATCH_SRC"
+          grep -Fq 'CNTFRQ_EL0 -> X18 must update the' <<<"$PATCH_SRC"
+          grep -Fq 'compute the guest counter in ordinary scratch registers' <<<"$PATCH_SRC"
 
           X18_SITE_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/x18_site_patcher.cpp")"
           grep -Fq 'metadata.find(runtime_pc) != metadata.end()' <<<"$X18_SITE_SRC"
@@ -166,7 +168,7 @@ jobs:
 
           git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/nce/x18_fallback.h             src/core/arm/nce/x18_classifier.cpp             src/core/arm/nce/windows_x18_fallback_trap.cpp             src/core/arm/nce/windows_x18_fallback_trap.h             src/core/arm/nce/x18_site_patcher.h             src/core/arm/nce/windows_x18_fallback_runner.cpp             src/core/arm/nce/windows_x18_fallback_runner.h             src/core/arm/nce/patcher.cpp             src/core/arm/nce/x18_site_patcher.cpp             src/core/arm/dynarmic/arm_dynarmic_64.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
-          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A-P2E reductions plus P3C direct ordinary-x18 stack-rollover refresh guard\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=preserve P3B direct ordinary-x18 normal path, but if live guest SP falls outside cached guest stack bounds, return one internal refresh marker before executing the x18 so RunThread rolls over the private stack lease and TEB bounds, then retries the same PC\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A-P2E reductions plus P3C stack refresh plus P3D Windows-safe CNTFRQ/CNTPCT x18 handlers\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=preserve P3C direct x18 path and stack refresh, but virtualize CNTFRQ_EL0/CNTPCT_EL0 destinations when Rt is x18 so regular generated handlers never overwrite the Windows TEB platform register\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
