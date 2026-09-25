@@ -16,6 +16,7 @@ namespace Core::NCE {
 struct X18FallbackSite {
     u32 text_word_index{};
     u32 instruction{};
+    bool may_access_memory{};
 };
 
 // Reuse the existing process-owned post-handler map without colliding with ordinary guest PCs.
@@ -31,13 +32,16 @@ public:
         0xD4200000u | (BreakpointImmediate << 5);
     static constexpr u64 MetadataKeyBit = 1ull << 63;
     static constexpr u32 MetadataMagic = 0x58313836u; // "X186"
+    static constexpr u64 MetadataMayAccessMemoryBit = 1ull << 63;
 
     [[nodiscard]] static constexpr u64 MetadataKey(u64 runtime_pc) noexcept {
         return runtime_pc | MetadataKeyBit;
     }
 
-    [[nodiscard]] static constexpr u64 MetadataValue(u32 instruction) noexcept {
-        return (static_cast<u64>(MetadataMagic) << 32) | instruction;
+    [[nodiscard]] static constexpr u64 MetadataValue(u32 instruction,
+                                                     bool may_access_memory) noexcept {
+        return (static_cast<u64>(MetadataMagic) << 32) | instruction |
+               (may_access_memory ? MetadataMayAccessMemoryBit : 0);
     }
 
     [[nodiscard]] static std::vector<X18FallbackSite> Collect(
