@@ -35,6 +35,7 @@ public:
     static constexpr u32 NzcvMask = 0xF0000000u;
 
     [[nodiscard]] static X18InstructionClass ClassifyInstruction(u32 instruction);
+    [[nodiscard]] static bool MayAccessGuestMemory(u32 instruction);
 
     [[nodiscard]] static constexpr X18FallbackStepResult DecodeStepReason(
         HaltReason step_reason) noexcept {
