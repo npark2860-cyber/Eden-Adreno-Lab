@@ -1,12 +1,13 @@
-Windows ARM64 NCE P3C direct-x18 stack-rollover refresh candidate
-base_artifact=2b4ddf588e881e93fc79c658e6ede22869989e01
-p3b_result=real hardware reached previous loading state; hottest thread 4593.8ms per 5s, about 9.3 percent below P2E 5062.5ms; later process exited around 177s
-p3b_tail=three Unmapped InvalidateNCE faults at 0x0 immediately before exit
-finding=P3 removed per-x18 RunThread re-entry, but native guest code can change SP between x18 sites; cached windows_guest_stack_limit/base and active private lease can then describe the previous stack allocation
-existing_contract=EnsureWindowsGuestStackLease already explicitly supports guest user-space stack rollover inside one RunThread epoch
-p3c_state_variable=before direct single-step, compare live guest SP against cached guest stack bounds; if outside, do not execute the x18 and return an internal DirectStackRefreshMarker
-refresh_path=RunThread consumes marker, clears direct private view, loops once through existing EnsureWindowsGuestStackLease and InstallGuestTebStackBounds, then retries the same guest PC
-normal_path=unchanged P3B direct path; no per-x18 VirtualQuery, BRK, VEH, RunThread re-entry or NtContinue
-preserve=P3B host-stack helper ownership; P2E private-stack callbacks; physical x18 TEB ownership; x18 patch ownership fix; exclusive/LSE native seams
+Windows ARM64 NCE P3D Windows-safe timer-to-x18 handler candidate
+base_artifact=c72de292b237e4dc314c34106a72df58796e9002
+p3c_result=real hardware still exits around 181s with the same three Unmapped InvalidateNCE faults at 0x0
+p3c_conclusion=stack rollover was not the delayed crash cause
+root_cause=P3 x18 patch ownership fix stops X18SitePatcher from overwriting already-relocated system-register handlers; WriteCtrEl0Handler was x18-safe, but WriteCntfrqHandler and WriteCntpctHandler still wrote their result directly to physical x18
+windows_abi=physical x18 is the live Windows TEB platform register and must never receive guest CNTFRQ/CNTPCT values
+p3d_fix=CNTFRQ_EL0 -> X18 and CNTPCT_EL0 -> X18 now compute/store into GuestContext::cpu_registers[18] while preserving physical x18
+normal_non_x18_handlers=unchanged
+direct_x18_path=unchanged P3C
+stack_refresh=preserved P3C
+preserve=P2E private-stack callbacks; native exclusive/LSE seams; allocator/TEB/stack transition fixes
 active_queued_before_trigger=0/0
 one_build_only
