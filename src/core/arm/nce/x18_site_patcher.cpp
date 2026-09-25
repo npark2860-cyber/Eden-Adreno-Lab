@@ -26,7 +26,11 @@ std::vector<X18FallbackSite> X18SitePatcher::Collect(
         const u32 instruction = words[i];
         if (X18Fallback::ClassifyInstruction(instruction) ==
             X18InstructionClass::SupportedOrdinary) {
-            result.push_back({.text_word_index = i, .instruction = instruction});
+            result.push_back({
+                .text_word_index = i,
+                .instruction = instruction,
+                .may_access_memory = X18Fallback::MayAccessGuestMemory(instruction),
+            });
         }
     }
 #else
@@ -63,7 +67,8 @@ void X18SitePatcher::Apply(Common::ProcessAddress load_base,
         }
 
         words[site.text_word_index] = BreakpointInstruction;
-        metadata.insert_or_assign(MetadataKey(runtime_pc), MetadataValue(site.instruction));
+        metadata.insert_or_assign(MetadataKey(runtime_pc),
+                                  MetadataValue(site.instruction, site.may_access_memory));
     }
 #else
     (void)load_base;
