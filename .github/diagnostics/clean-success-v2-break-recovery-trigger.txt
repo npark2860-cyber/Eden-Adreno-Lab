@@ -1,11 +1,13 @@
-Windows ARM64 NCE x18 P2A native bitfield trampoline candidate
-base_artifact=846ce3c8619333cee639e81aac23f9a316e8d706
-root_cause_class=sustained one-core saturation in dense BRK#F000 x18 fallback/re-entry loop
-p1_result=single-step cache preservation left end-to-end CPU at 5000ms per 5s and hot sample in WindowsNceRestoreGuestContext
-observed_original=0x331F7A4F BFI W15,W18,#1,#31
-state_variable=safe SBFM/BFM/UBFM-family x18 sites use generated native scratch-register trampoline instead of BRK/VEH/Dynarmic/NtContinue
-physical_x18=remains Windows TEB-owned; original instruction x18 fields are rewritten to non-conflicting x19-x28 scratch
-fallback=all non-bitfield SupportedOrdinary x18 sites retain BRK#F000 fallback
-dedicated_trampoline_precedence=X18SitePatcher skips sites already owned by untagged post-handler relocation
-repo_active_queued_before_trigger=pending-check
+Windows ARM64 NCE x18 P2B selective private-stack sync elision candidate
+base_artifact=eb83e03a45f1918725c200fef1926a7103c52b68
+p2a_result=exact P2A still saturated one core at 4984.4ms per 5s
+p2a_hot_thread=PID32368 TID0x1834
+observed_hot_state=XF18FALL with 64KiB private stack SyncToBacking/SyncFromBacking
+observed_hot_originals=0x38726B4B,0x3800164B,0xEB1203BF,0x71000E5F
+observed_guest_x18=0x36A3785C49
+observed_private_stack=0x25DB2D4000..0x25DB2E4000
+state_variable=keep BRK/VEH/Dynarmic fallback unchanged but skip private-stack full-copy only for observed compare forms and observed byte memory forms whose effective address neither overlaps nor aliases private stack backing
+safety=unclassified, invalid, stack-overlapping, or backing-aliasing accesses retain existing V16 full sync
+hot_path_logging=none
+repo_active_queued_before_trigger=0/0
 one_build_only
