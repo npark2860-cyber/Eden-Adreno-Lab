@@ -37,6 +37,9 @@ class DynarmicCallbacks64 : public Dynarmic::A64::UserCallbacks {
 public:
     explicit DynarmicCallbacks64(ArmDynarmic64& parent, Kernel::KProcess* process);
 
+    void SetPrivateMemoryView(u64 base, u64 size) noexcept;
+    void ClearPrivateMemoryView() noexcept;
+
     u8 MemoryRead8(u64 vaddr) override;
     u16 MemoryRead16(u64 vaddr) override;
     u32 MemoryRead32(u64 vaddr) override;
@@ -74,13 +77,16 @@ public:
     Kernel::KProcess* m_process{};
     const bool m_debugger_enabled{};
     const bool m_check_memory_access{};
+    u64 m_private_memory_base{};
+    u64 m_private_memory_end{};
     static constexpr u64 MinimumRunCycles = 10000U;
 };
 
 class ArmDynarmic64 final : public ArmInterface {
 public:
     ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProcess* process,
-                  DynarmicExclusiveMonitor& exclusive_monitor, std::size_t core_index);
+                  DynarmicExclusiveMonitor& exclusive_monitor, std::size_t core_index,
+                  bool force_memory_callbacks = false);
     ~ArmDynarmic64() override;
 
     Architecture GetArchitecture() const override {
@@ -107,6 +113,9 @@ public:
     // only while the (pc, original instruction) identity remains unchanged.
     void SetSingleInstructionCodeOverride(u64 pc, u32 instruction);
     void ClearSingleInstructionCodeOverride();
+
+    void SetPrivateMemoryView(u64 base, u64 size) noexcept;
+    void ClearPrivateMemoryView() noexcept;
 
 protected:
     const Kernel::DebugWatchpoint* HaltedWatchpoint() const override;
