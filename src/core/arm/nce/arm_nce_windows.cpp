@@ -247,6 +247,130 @@ void RestoreHostTebStackBounds(WindowsTebStackBounds& bounds) noexcept {
     return true;
 }
 
+[[nodiscard]] u64 ReadP2BGuestRegister(const GuestContext& guest, u32 reg) noexcept {
+    // These P2B forms only use ordinary X/W registers for the decoded address operands.
+    // Rn==31 is SP for the byte store base; the register-offset load is deliberately limited
+    // below to Rn!=31 so no ambiguous ZR/SP role is admitted.
+    return reg == 31 ? guest.sp : guest.cpu_registers[reg];
+}
+
+[[nodiscard]] bool IsP2BRegisterOnlyHotX18Form(u32 instruction) noexcept {
+    constexpr u32 RegisterMask = 0x1FU;
+
+    // CMP Xn, Xm alias: SUBS XZR, Xn, Xm with the unshifted/LSL encoding used by the hot loop.
+    if ((instruction & 0xFFE0001FU) == 0xEB00001FU) {
+        const u32 rm = (instruction >> 16) & RegisterMask;
+        const u32 rn = (instruction >> 5) & RegisterMask;
+        return rm == GuestX18Register || rn == GuestX18Register;
+    }
+
+    // CMP Wn, #imm alias: SUBS WZR, Wn, #imm12 with shift=0.
+    if ((instruction & 0xFFC0001FU) == 0x7100001FU) {
+        const u32 rn = (instruction >> 5) & RegisterMask;
+        return rn == GuestX18Register;
+    }
+
+    return false;
+}
+
+[[nodiscard]] std::optional<u64> GetP2BObservedByteAccessAddress(
+    u32 instruction, const GuestContext& guest) noexcept {
+    constexpr u32 RegisterMask = 0x1FU;
+
+    // LDRB Wt, [Xn, X18] using the observed UXTX/LSL #0 register-offset form.
+    // Keep this bounded to the exact operand role seen in the P2A hot loop.
+    if ((instruction & 0xFFE0FC00U) == 0x38606800U) {
+        const u32 rm = (instruction >> 16) & RegisterMask;
+        const u32 rn = (instruction >> 5) & RegisterMask;
+        if (rm == GuestX18Register && rn != 31) {
+            return guest.cpu_registers[rn] + guest.cpu_registers[GuestX18Register];
+        }
+    }
+
+    // STRB Wt, [X18], #simm9. The byte access uses the pre-writeback X18 address;
+    // Dynarmic still owns the architectural X18 writeback itself.
+    if ((instruction & 0xFFE00C00U) == 0x38000400U) {
+        const u32 rn = (instruction >> 5) & RegisterMask;
+        if (rn == GuestX18Register) {
+            return ReadP2BGuestRegister(guest, rn);
+        }
+    }
+
+    return std::nullopt;
+}
+
+[[nodiscard]] bool P2BByteAccessAliasesPrivateStackBacking(
+    Kernel::KProcess* process, const GuestContext& guest, u64 address) {
+    if (process == nullptr) {
+        return true;
+    }
+
+    const u64 stack_low = guest.windows_guest_stack_limit;
+    const u64 stack_high = guest.windows_guest_stack_base;
+    if (stack_low == 0 || stack_high <= stack_low) {
+        return true;
+    }
+
+    // Direct virtual overlap is the common case.
+    if (address >= stack_low && address < stack_high) {
+        return true;
+    }
+
+    // Also catch a second guest VA aliasing the same physical/backing stack storage.
+    // EnsureWindowsGuestStackLease already proved this stack backing is contiguous.
+    auto& memory = process->GetMemory();
+    const auto* const stack_backing =
+        memory.GetPointerSilent(Common::ProcessAddress{stack_low});
+    const auto* const access_backing =
+        memory.GetPointerSilent(Common::ProcessAddress{address});
+    if (stack_backing == nullptr || access_backing == nullptr) {
+        // Invalid/unmapped accesses stay on the conservative full-sync path so fallback fault
+        // behavior is unchanged.
+        return true;
+    }
+
+    const auto stack_backing_begin =
+        reinterpret_cast<std::uintptr_t>(stack_backing);
+    const auto stack_size = static_cast<std::uintptr_t>(stack_high - stack_low);
+    const auto stack_backing_end = stack_backing_begin + stack_size;
+    if (stack_backing_end < stack_backing_begin) {
+        return true;
+    }
+
+    const auto access_backing_value =
+        reinterpret_cast<std::uintptr_t>(access_backing);
+    return access_backing_value >= stack_backing_begin &&
+           access_backing_value < stack_backing_end;
+}
+
+[[nodiscard]] bool P2BNeedsPrivateStackSync(
+    u64 transition_result, Kernel::KProcess* process, const GuestContext& guest,
+    const NCE::X18FallbackMetadata& metadata) {
+    if (transition_result != NCE::WindowsX18FallbackTrap::ReturnMarker) {
+        return true;
+    }
+
+    const auto original =
+        NCE::WindowsX18FallbackTrap::FindOriginalInstruction(guest.pc, metadata);
+    if (!original.has_value()) {
+        return true;
+    }
+
+    // Register-only hot forms cannot observe or modify stack backing.
+    if (IsP2BRegisterOnlyHotX18Form(*original)) {
+        return false;
+    }
+
+    // The two observed byte-memory forms can skip the 64-KiB private-stack copy only when their
+    // effective byte address neither lies in the stack VA nor aliases the same backing storage.
+    if (const auto address = GetP2BObservedByteAccessAddress(*original, guest)) {
+        return P2BByteAccessAliasesPrivateStackBacking(process, guest, *address);
+    }
+
+    // Every unclassified x18 fallback keeps the existing V16 full-sync behavior.
+    return true;
+}
+
 struct BreakTransformState {
     ArmNce* nce{};
     bool transformed{};
@@ -529,10 +653,15 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
             break;
         }
 
-        // While the native guest stack is temporarily MEM_PRIVATE, Dynarmic fallback still
-        // observes Core::Memory's section-backed storage. Synchronize the leased stack at this
-        // engine boundary so both execution engines observe one coherent guest state.
-        if (private_stack_lease.has_value() && !private_stack_lease->SyncToBacking()) {
+        // While the native guest stack is temporarily MEM_PRIVATE, Dynarmic fallback normally
+        // requires a full stack copy to/from Core::Memory's section-backed storage. P2B removes
+        // that 64-KiB round trip only for the exact hot ordinary-x18 forms proven not to touch or
+        // alias the private stack. Every other fallback retains the established V16 sync path.
+        const bool needs_private_stack_sync =
+            private_stack_lease.has_value() &&
+            P2BNeedsPrivateStackSync(static_cast<u64>(hr), process, m_guest_ctx, post_handlers);
+
+        if (needs_private_stack_sync && !private_stack_lease->SyncToBacking()) {
             LOG_ERROR(Core_ARM, "V16 failed to synchronize private NCE stack to backing");
             hr = HaltReason::PrefetchAbort;
             break;
@@ -541,7 +670,7 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         const auto fallback = m_windows_x18_runner->Dispatch(
             static_cast<u64>(hr), thread, m_guest_ctx, post_handlers);
 
-        if (fallback.handled && private_stack_lease.has_value() &&
+        if (fallback.handled && needs_private_stack_sync &&
             !private_stack_lease->SyncFromBacking()) {
             LOG_ERROR(Core_ARM, "V16 failed to synchronize fallback stack writes to private view");
             hr = HaltReason::PrefetchAbort;
