@@ -61,7 +61,7 @@ jobs:
 
           while IFS= read -r changed; do
             case "$changed" in
-              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/core/arm/nce/x18_fallback.cpp|              src/core/arm/nce/patcher.cpp|              src/core/arm/nce/x18_site_patcher.cpp|              src/core/arm/dynarmic/arm_dynarmic_64.h|              src/core/CMakeLists.txt|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
+              src/core/arm/nce/arm_nce_windows.cpp|              src/core/arm/nce/windows_nce_transition.cpp|              src/core/arm/nce/x18_fallback.cpp|              src/core/arm/nce/x18_fallback.h|              src/core/arm/nce/x18_classifier.cpp|              src/core/arm/nce/windows_x18_fallback_trap.cpp|              src/core/arm/nce/windows_x18_fallback_trap.h|              src/core/arm/nce/x18_site_patcher.h|              src/core/arm/nce/patcher.cpp|              src/core/arm/nce/x18_site_patcher.cpp|              src/core/arm/dynarmic/arm_dynarmic_64.h|              src/core/CMakeLists.txt|              src/common/host_memory.cpp|              .github/workflows/build-windows-arm64-nce-clean-success-v2-break-recovery-0ffca136.yml|              .github/diagnostics/clean-success-v2-break-recovery-trigger.txt)
                 ;;
               *)
                 echo "Unexpected changed path: $changed"
@@ -82,7 +82,7 @@ jobs:
           grep -Fq 'guest_sp > stack_end' <<<"$ARM_SRC"
           grep -Fq 'SyncToBacking()' <<<"$ARM_SRC"
           grep -Fq 'SyncFromBacking()' <<<"$ARM_SRC"
-          grep -Fq 'P2BNeedsPrivateStackSync' <<<"$ARM_SRC"
+          grep -Fq 'P2CNeedsPrivateStackSync' <<<"$ARM_SRC"
           grep -Fq 'P2BByteAccessAliasesPrivateStackBacking' <<<"$ARM_SRC"
           grep -Fq 'needs_private_stack_sync' <<<"$ARM_SRC"
           grep -Fq '!process->GetMemory().IsValidVirtualAddressRange(context.Pc, sizeof(u32))' <<<"$ARM_SRC"
@@ -114,6 +114,15 @@ jobs:
 
           X18_SITE_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/x18_site_patcher.cpp")"
           grep -Fq 'metadata.find(runtime_pc) != metadata.end()' <<<"$X18_SITE_SRC"
+          grep -Fq 'MayAccessGuestMemory' <<<"$X18_SITE_SRC"
+
+          X18_CLASSIFIER_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/x18_classifier.cpp")"
+          grep -Fq 'IsGuestMemoryAccess' <<<"$X18_CLASSIFIER_SRC"
+          grep -Fq 'MayAccessGuestMemory' <<<"$X18_CLASSIFIER_SRC"
+
+          X18_TRAP_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/windows_x18_fallback_trap.cpp")"
+          grep -Fq 'FindSiteInfo' <<<"$X18_TRAP_SRC"
+          grep -Fq 'MetadataMayAccessMemoryBit' <<<"$X18_TRAP_SRC"
 
           grep -Fq 'Preserve the working 20da host-return recovery' <<<"$ARM_SRC"
           grep -Fq 'breakpoint_pc_is_guest' <<<"$ARM_SRC"
@@ -128,9 +137,9 @@ jobs:
 
           test -z "$(git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/yuzu/main.cpp             src/core/arm/nce/windows_nce_entry.asm             src/core/arm/nce/guest_context.h             src/core/arm/nce/arm_nce.h             src/common/host_memory.h             src/common/host_memory_windows_lease.h             src/core/hle/kernel/physical_core.cpp             src/core/hle/kernel/physical_core.h)"
 
-          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/nce/patcher.cpp             src/core/arm/nce/x18_site_patcher.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
+          git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/nce/x18_fallback.h             src/core/arm/nce/x18_classifier.cpp             src/core/arm/nce/windows_x18_fallback_trap.cpp             src/core/arm/nce/windows_x18_fallback_trap.h             src/core/arm/nce/x18_site_patcher.h             src/core/arm/nce/patcher.cpp             src/core/arm/nce/x18_site_patcher.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
-          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A bitfield trampoline plus P2B selective private-stack sync elision\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=retain BRK/Dynarmic fallback but skip 64-KiB private-stack SyncToBacking/SyncFromBacking only for observed x18 CMP forms and observed byte load/store forms whose effective address cannot overlap or alias the private stack backing\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A bitfield trampoline plus P2B/P2C private-stack sync elision\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=retain BRK/Dynarmic fallback but encode guest-memory access once at x18 patch time; skip 64-KiB stack sync for every metadata-proven no-memory ordinary x18 fallback, while retaining P2B bounded alias-safe byte-memory elision and full sync for all other memory-touching forms\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
