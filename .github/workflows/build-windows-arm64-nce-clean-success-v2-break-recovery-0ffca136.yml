@@ -82,6 +82,9 @@ jobs:
           grep -Fq 'guest_sp > stack_end' <<<"$ARM_SRC"
           grep -Fq 'SyncToBacking()' <<<"$ARM_SRC"
           grep -Fq 'SyncFromBacking()' <<<"$ARM_SRC"
+          grep -Fq 'P2BNeedsPrivateStackSync' <<<"$ARM_SRC"
+          grep -Fq 'P2BByteAccessAliasesPrivateStackBacking' <<<"$ARM_SRC"
+          grep -Fq 'needs_private_stack_sync' <<<"$ARM_SRC"
           grep -Fq '!process->GetMemory().IsValidVirtualAddressRange(context.Pc, sizeof(u32))' <<<"$ARM_SRC"
 
           ASM_SRC="$(git -C "$SOURCE" show "$GITHUB_SHA:src/core/arm/nce/windows_nce_entry.asm")"
@@ -127,7 +130,7 @@ jobs:
 
           git -C "$SOURCE" diff "$BASE_SHA" "$GITHUB_SHA" --             src/core/arm/nce/arm_nce_windows.cpp             src/core/arm/nce/windows_nce_transition.cpp             src/core/arm/nce/x18_fallback.cpp             src/core/arm/nce/patcher.cpp             src/core/arm/nce/x18_site_patcher.cpp             src/core/arm/dynarmic/arm_dynarmic_64.h             src/core/CMakeLists.txt             src/common/host_memory.cpp             > "$PROV/CLEAN_SUCCESS_V2_RUNTIME.diff"
 
-          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus x18 P2A native bitfield trampoline\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=replace safe ordinary-x18 SBFM/BFM/UBFM-family BRK fallback with generated native scratch-register trampoline while preserving physical x18 TEB ownership\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
+          printf 'BASE_SHA=%s\nCANDIDATE_SHA=%s\nSOURCE_MODE=exact Git object\nCOMPOSITION=clean-success v2 plus P2A bitfield trampoline plus P2B selective private-stack sync elision\nLOG_CLEANUP=silence exact-placeholder split no-op Info log only; retain fail logging and behavior\nSTATE_VARIABLE=retain BRK/Dynarmic fallback but skip 64-KiB private-stack SyncToBacking/SyncFromBacking only for observed x18 CMP forms and observed byte load/store forms whose effective address cannot overlap or alias the private stack backing\nDIAGNOSTIC_CAPTURE=none\n'             "$BASE_SHA" "$GITHUB_SHA" > "$PROV/BUILD_INFO.txt"
 
       - name: Checkout fixed Eden CI workflow
         uses: actions/checkout@v7
