@@ -1,13 +1,19 @@
-Windows ARM64 NCE P3D Windows-safe timer-to-x18 handler candidate
-base_artifact=c72de292b237e4dc314c34106a72df58796e9002
-p3c_result=real hardware still exits around 181s with the same three Unmapped InvalidateNCE faults at 0x0
-p3c_conclusion=stack rollover was not the delayed crash cause
-root_cause=P3 x18 patch ownership fix stops X18SitePatcher from overwriting already-relocated system-register handlers; WriteCtrEl0Handler was x18-safe, but WriteCntfrqHandler and WriteCntpctHandler still wrote their result directly to physical x18
-windows_abi=physical x18 is the live Windows TEB platform register and must never receive guest CNTFRQ/CNTPCT values
-p3d_fix=CNTFRQ_EL0 -> X18 and CNTPCT_EL0 -> X18 now compute/store into GuestContext::cpu_registers[18] while preserving physical x18
-normal_non_x18_handlers=unchanged
-direct_x18_path=unchanged P3C
-stack_refresh=preserved P3C
-preserve=P2E private-stack callbacks; native exclusive/LSE seams; allocator/TEB/stack transition fixes
+Windows ARM64 NCE P3E direct single-step opcode override candidate
+base_artifact=10a4bebdcae162250425cd9113713e4f638b0adb
+p3d_real_device=P3D reaches the Tales in-game NOW LOADING path and eventually progresses, but execution is abnormally slow rather than deadlocked
+etw_capture=30.1125624 seconds external WPR CPU+CSwitch trace, exact P3D eden.exe hash verified
+etw_eden_cpu=33.362017 CPU-seconds in 30.112562 wall seconds
+etw_hot_tid=0x63D4
+etw_hot_tid_cpu=25.706535 seconds, 85.37 percent of one logical core
+etw_conclusion=ultra-slow loading is primarily CPU-bound, not an off-CPU wait/deadlock
+binary_source_proof=X18Fallback::Step performs full context roundtrip and SetSingleInstructionCodeOverride pre-reads 4096 bytes every generic direct-x18 Step
+dynarmic_contract=SingleStepping translation calls MemoryReadCode exactly once for the current PC and then terminates the block
+p3e_state_variable=replace the unconditional 4 KiB ReadBlock plus cached-page opcode mutation with an active (PC, original-instruction) override returned directly by MemoryReadCode
+jit_hit_behavior=compiled single-step block can run without any code-page read
+jit_miss_behavior=the one MemoryReadCode(current PC) returns the supplied original instruction directly
+semantic_identity=existing per-(PC,instruction) override cache and JIT invalidation on changed instruction are preserved
+real_code_invalidation=ordinary cached page remains unmodified; existing ISB/IC callbacks retain ordinary page-cache invalidation ownership
+context_roundtrip=unchanged deliberately, to isolate the measured cost of removing the unconditional page copy
+preserve=P3D timer-x18 correctness; P3C stack guard; P3B host-stack helper; P2E private-stack callbacks; native exclusive/LSE paths
 active_queued_before_trigger=0/0
 one_build_only
