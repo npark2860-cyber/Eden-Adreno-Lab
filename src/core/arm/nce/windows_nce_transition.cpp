@@ -96,33 +96,17 @@ extern "C" [[noreturn]] void WindowsNceRestoreGuestContext(GuestContext* guest) 
     }
     parameters->lock.store(SpinLockUnlocked, std::memory_order_release);
 
-    // RtlRestoreContext converts a rejected NtContinue into an immediate fail-fast. Call the
-    // underlying transition directly so the arbitrary-PC guest restore and exception continuation
-    // share the same Windows context-resume primitive.
-    MEMORY_BASIC_INFORMATION stack_mbi{};
-    if (VirtualQuery(reinterpret_cast<const void*>(guest->sp - 1), &stack_mbi,
-                     sizeof(stack_mbi)) == 0 ||
-        stack_mbi.AllocationBase == nullptr) {
-        std::abort();
-    }
+    // RunThread has already validated the active guest stack immediately before this arbitrary-PC
+    // restore and published its exact allocation bounds in GuestContext. Re-querying and walking
+    // the same VirtualQuery allocation here once per x18 fallback re-entry became the dominant P2C
+    // cost after private-stack memcpy traffic was removed. Consume the already-validated bounds
+    // instead; keep strict range checks so a stale/invalid transition contract still fails closed.
     const auto allocation_base =
-        reinterpret_cast<std::uintptr_t>(stack_mbi.AllocationBase);
-    std::uintptr_t allocation_end = allocation_base;
-    for (std::uintptr_t cursor = allocation_base;;) {
-        MEMORY_BASIC_INFORMATION region{};
-        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) == 0 ||
-            region.AllocationBase != stack_mbi.AllocationBase) {
-            break;
-        }
-        const auto region_end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) +
-                                static_cast<std::uintptr_t>(region.RegionSize);
-        if (region_end <= cursor) {
-            break;
-        }
-        allocation_end = region_end;
-        cursor = region_end;
-    }
-    if (guest->sp <= allocation_base || guest->sp > allocation_end) {
+        static_cast<std::uintptr_t>(guest->windows_guest_stack_limit);
+    const auto allocation_end =
+        static_cast<std::uintptr_t>(guest->windows_guest_stack_base);
+    if (allocation_base == 0 || allocation_end <= allocation_base ||
+        guest->sp <= allocation_base || guest->sp > allocation_end) {
         std::abort();
     }
 
