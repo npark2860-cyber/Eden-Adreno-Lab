@@ -42,6 +42,8 @@ struct WindowsX18FallbackDispatchResult {
 // guest-x18 fallback seam and can later be embedded by the Windows ArmNce implementation.
 class WindowsX18FallbackRunner {
 public:
+    static constexpr u64 DirectStackRefreshMarker = 0x5831385354524546ull; // "X18STREF"
+
     WindowsX18FallbackRunner(System& system, bool uses_wall_clock, Kernel::KProcess* process,
                              std::size_t core_index);
     ~WindowsX18FallbackRunner();

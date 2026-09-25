@@ -100,6 +100,17 @@ extern "C" u64 WindowsNceExecuteDirectX18(GuestContext* guest, u32 instruction) 
         return pending_before;
     }
 
+    // P3C: native guest code may change SP between direct-x18 sites without leaving the current
+    // RunThread epoch. P3A/P3B removed the per-x18 host return that previously let RunThread
+    // refresh the private stack lease and TEB bounds. Never execute a direct x18 against stale
+    // stack metadata: request one internal RunThread refresh before this instruction instead.
+    const u64 stack_limit = guest->windows_guest_stack_limit;
+    const u64 stack_base = guest->windows_guest_stack_base;
+    if (stack_limit == 0 || stack_base <= stack_limit ||
+        guest->sp <= stack_limit || guest->sp > stack_base) {
+        return WindowsX18FallbackRunner::DirectStackRefreshMarker;
+    }
+
     const auto step = runner->ExecuteDirect(thread, *guest, instruction);
 
     const u64 pending_after = guest->esr_el1.exchange(0, std::memory_order_acq_rel);

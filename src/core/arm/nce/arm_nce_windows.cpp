@@ -626,6 +626,16 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
         RestoreHostTebStackBounds(teb_stack_bounds);
         NCE::CurrentNceContext::Clear();
 
+        // P3C stack-rollover marker is internal to this RunThread epoch. The direct trampoline
+        // deliberately did not execute the x18 instruction. Loop once so the existing
+        // EnsureWindowsGuestStackLease/InstallGuestTebStackBounds path can roll the private lease
+        // and publish bounds for the current guest SP, then re-enter at the same guest PC.
+        if (static_cast<u64>(hr) ==
+            NCE::WindowsX18FallbackRunner::DirectStackRefreshMarker) {
+            m_windows_x18_runner->ClearDirectPrivateStackView();
+            continue;
+        }
+
         if (m_windows_pending_nce_fault) {
             const u64 pending_fault_address = m_windows_pending_nce_fault_address;
             const u64 pending_fault_page = m_windows_pending_nce_fault_page;
